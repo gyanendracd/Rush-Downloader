@@ -1,0 +1,192 @@
+<title>Downloader Comparison</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap">
+<style>
+  /* Layout: a short verdict first, then one wide feature grid that scrolls inside its own frame,
+     with the feature names and the RushDownload column pinned. */
+  :root {
+    --bg: #f5f7fc;
+    --surface: #ffffff;
+    --ink: #101a33;
+    --muted: #5a6680;
+    --line: #dde3ef;
+    --accent: #0b60fb;
+    --accent-soft: #e6eeff;
+    --yes: #15803d;
+    --part: #b45309;
+    --no: #b8c0d0;
+    --display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+    --body: "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1220; --surface: #151c2e; --ink: #e8edf8; --muted: #9aa6bf; --line: #27314a;
+      --accent: #7aa8ff; --accent-soft: #1a2850; --yes: #4ad38a; --part: #f0b35a; --no: #47526c;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1220; --surface: #151c2e; --ink: #e8edf8; --muted: #9aa6bf; --line: #27314a;
+    --accent: #7aa8ff; --accent-soft: #1a2850; --yes: #4ad38a; --part: #f0b35a; --no: #47526c;
+    color-scheme: dark;
+  }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.55 var(--body);
+    padding-block: 28px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 22px; }
+  h1 { font: 700 30px/1.15 var(--display); margin: 0; text-wrap: balance; }
+  h2 { font: 700 18px/1.25 var(--display); margin: 0; }
+  p { margin: 0; }
+  .lede { color: var(--muted); max-width: 68ch; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted); font-size: 13px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .mark { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font-size: 13px; font-weight: 700; line-height: 1; }
+  .mark.y { background: color-mix(in srgb, var(--yes) 16%, transparent); color: var(--yes); }
+  .mark.p { background: color-mix(in srgb, var(--part) 16%, transparent); color: var(--part); }
+  .mark.n { color: var(--no); }
+  .verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .verdict > div { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+  .verdict ul { margin: 0; padding-left: 18px; display: grid; gap: 5px; color: var(--muted); font-size: 14px; }
+  .verdict li strong { color: var(--ink); font-weight: 600; }
+  .frame { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow-x: auto; }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 1120px; font-size: 13px; }
+  th, td { padding: 9px 8px; border-bottom: 1px solid var(--line); text-align: center; }
+  thead th { position: sticky; top: 0; background: var(--surface); font: 600 12px/1.25 var(--body); color: var(--muted); vertical-align: bottom; z-index: 2; }
+  thead th small { display: block; font-weight: 400; font-size: 11px; }
+  th.feature, td.feature { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1; min-width: 230px; max-width: 280px; font-weight: 500; }
+  thead th.feature { z-index: 3; }
+  td.feature small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; line-height: 1.4; margin-top: 2px; }
+  .ours { background: var(--accent-soft); }
+  thead th.ours { color: var(--accent); font-weight: 700; background: var(--accent-soft); }
+  tr.group td { text-align: left; font: 700 12px/1 var(--body); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--bg); padding: 12px 10px 8px; position: sticky; left: 0; }
+  tr.total td { font-weight: 700; font-variant-numeric: tabular-nums; border-bottom: 0; }
+  tr.total td.feature small { font-weight: 400; }
+  .notes { color: var(--muted); font-size: 13px; display: grid; gap: 6px; max-width: 80ch; }
+  .notes strong { color: var(--ink); font-weight: 600; }
+</style>
+
+<div class="wrap">
+  <header style="display:grid;gap:10px">
+    <h1>RushDownload next to the downloaders people already use</h1>
+    <p class="lede">Twelve tools, 31 features. RushDownload's column is what is built and tested in the project today, not what is planned. The other columns come from general knowledge of each tool as of mid-2026 and were not re-checked against today's releases.</p>
+    <div class="legend" aria-label="Legend">
+      <span><b class="mark y" aria-hidden="true">✓</b> Yes</span>
+      <span><b class="mark p" aria-hidden="true">◐</b> Partly, or with limits</span>
+      <span><b class="mark n" aria-hidden="true">✕</b> No</span>
+    </div>
+  </header>
+
+  <section class="verdict" aria-label="Summary">
+    <div>
+      <h2>Where RushDownload is ahead</h2>
+      <ul>
+        <li><strong>One box for everything.</strong> Files, video pages, torrents and whole profiles go in the same link box. Only JDownloader and FDM come close, and neither covers all four.</li>
+        <li><strong>Whole profiles, sorted.</strong> Photos and videos of a social profile land in Images and Videos folders. Only JDownloader offers this among the rest.</li>
+        <li><strong>Sign in inside the app.</strong> No extension or cookie export needed for most sites.</li>
+        <li><strong>Free, no ads, modern look.</strong> IDM costs money and uTorrent shows ads.</li>
+      </ul>
+    </div>
+    <div>
+      <h2>Where it is behind</h2>
+      <ul>
+        <li><strong>No browser extension.</strong> IDM, FDM, XDM and AB Download Manager all catch downloads straight from the browser.</li>
+        <li><strong>Windows only.</strong> FDM, JDownloader, Motrix and AB Download Manager also run on macOS and Linux.</li>
+        <li><strong>No scheduler, no proxy, no seeding.</strong> Every desktop manager here has at least two of the three.</li>
+        <li><strong>No playlists.</strong> A playlist link downloads one video. yt-dlp, Seal and JDownloader take the whole list.</li>
+        <li><strong>No file-hoster accounts or captchas.</strong> That is JDownloader's home ground.</li>
+      </ul>
+    </div>
+  </section>
+
+  <div class="frame" role="region" aria-label="Feature comparison table" tabindex="0">
+    <table id="grid"></table>
+  </div>
+
+  <section class="notes">
+    <p><strong>About RushDownload's marks.</strong> Video sites, resolutions, audio-only and streams work through yt-dlp, and profiles through gallery-dl; both must be installed. Profile downloads were tested live on one public site only. Torrents stop uploading when the download ends, by design. Sites that need a Google sign-in still need a cookies file.</p>
+    <p><strong>About "Torrent".</strong> uTorrent and BitTorrent are the same program under two names, so they share a column.</p>
+    <p><strong>Nobody here downloads DRM-protected streaming</strong> such as Netflix or Prime Video, and RushDownload will not either.</p>
+  </section>
+</div>
+
+<script>
+  const tools = [
+    ["RushDownload", "this app"], ["IDM", "paid"], ["FDM", ""], ["XDM", ""], ["JDownloader 2", ""], ["Motrix", ""],
+    ["AB Download Manager", ""], ["uTorrent / BitTorrent", ""], ["Seal", "Android"], ["NewPipe", "Android"], ["cobalt", "website"], ["yt-dlp", "command line"],
+  ];
+  // One letter per tool, in the order above: y yes, p partly, n no.
+  const rows = [
+    "Downloading files",
+    ["Several connections for one file", "", "yyyyyyynpynp"],
+    ["Pause and resume", "", "yyyyyyyynynp"],
+    ["Speed limit", "", "yyyyyyyyynny"],
+    ["Queue with a limit on how many run at once", "", "yyyyyyyyppnn"],
+    ["Scheduler (start at a set time)", "", "nyyypnyynnnn"],
+    ["Import a list of links", "", "yyyyyyynpnny"],
+    ["Progress shown per connection", "", "yypypnypnnnn"],
+    "From the browser",
+    ["Browser extension", "", "nyyyypynnnnn"],
+    ["Catches a video playing on a page", "RushDownload scans the page for media links only", "pypypnpnnnnn"],
+    ["Downloads as a signed-in user", "Private or login-only content", "yypyynpnynny"],
+    "Video sites",
+    ["Many video sites (YouTube, Instagram, Vimeo…)", "", "yppyynnnyppy"],
+    ["Choose the resolution", "", "yyyyynnnyyyy"],
+    ["Audio only", "", "ynppynnnyyyy"],
+    ["Thumbnail and title before downloading", "", "ynypynnnyynn"],
+    ["Several connections for site videos", "", "yyyyynnnpynp"],
+    ["Whole playlists", "", "pnppynnnynny"],
+    ["Whole social profile, photos and videos", "", "ynnnynnnpnnp"],
+    ["Streams in pieces (HLS, DASH)", "", "yypyynpnyyyy"],
+    "Torrents",
+    ["Magnet links and .torrent files", "", "ynynnynynnnn"],
+    ["Choose which files to download", "", "ynynnynynnnn"],
+    ["Keeps seeding after the download", "", "nnynnynynnnn"],
+    "Extras",
+    ["File-hoster accounts and captchas", "", "nnnnynnnnnnn"],
+    ["Proxy support", "", "nyyyyyyyynny"],
+    "Where it runs",
+    ["Windows", "", "yyyyyyyynnpy"],
+    ["macOS", "", "nnypyyyynnpy"],
+    ["Linux", "", "nnyyyyynnnpy"],
+    ["Android", "", "nnynnnpyyypp"],
+    ["iPhone and iPad", "", "nnnnnnnnnnpn"],
+    "Cost and openness",
+    ["Free to use", "", "ynyyyyypyyyy"],
+    ["No ads", "", "yyyypyynyyyy"],
+    ["Open source", "RushDownload's code is not published yet", "nnnypyynyyyy"],
+  ];
+  const glyph = { y: "✓", p: "◐", n: "✕" };
+  const word = { y: "Yes", p: "Partly", n: "No" };
+  const table = document.getElementById("grid");
+  let html = "<thead><tr><th class='feature' scope='col'>Feature</th>";
+  tools.forEach(([name, sub], i) => {
+    html += `<th scope="col"${i === 0 ? ' class="ours"' : ""}>${name}${sub ? `<small>${sub}</small>` : ""}</th>`;
+  });
+  html += "</tr></thead><tbody>";
+  const score = tools.map(() => 0);
+  let count = 0;
+  for (const row of rows) {
+    if (typeof row === "string") {
+      html += `<tr class="group"><td colspan="${tools.length + 1}">${row}</td></tr>`;
+      continue;
+    }
+    const [name, note, marks] = row;
+    count++;
+    html += `<tr><td class="feature">${name}${note ? `<small>${note}</small>` : ""}</td>`;
+    [...marks].forEach((m, i) => {
+      score[i] += m === "y" ? 1 : m === "p" ? 0.5 : 0;
+      html += `<td${i === 0 ? ' class="ours"' : ""}><b class="mark ${m}" title="${word[m]}" aria-label="${word[m]}">${glyph[m]}</b></td>`;
+    });
+    html += "</tr>";
+  }
+  html += `<tr class="total"><td class="feature">Features covered, of ${count}<small>A part counts as half</small></td>`;
+  score.forEach((s, i) => {
+    html += `<td${i === 0 ? ' class="ours"' : ""}>${Number.isInteger(s) ? s : s.toFixed(1)}</td>`;
+  });
+  table.innerHTML = html + "</tr></tbody>";
+</script>

@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/engine", "src-tauri"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+# `tauri dev` uses the dev profile; keep the download path optimized there too
+# so speeds measured during development are representative.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.rushdownload-engine]
+opt-level = 3

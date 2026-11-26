@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Check,
@@ -21,11 +21,13 @@ import {
   canPause,
   displayName,
   etaOf,
+  fileSrc,
   formatBytes,
   formatDate,
   formatDuration,
   formatSpeed,
   percentOf,
+  pictureKind,
   STATUS_LABEL,
   type CurrentFile,
   type Download,
@@ -92,12 +94,40 @@ const ITEM_STATE: Record<DownloadItem["state"], string> = {
   downloading: "Downloading",
   waiting: "Waiting",
   missed: "Not available",
+  deleted: "Deleted",
 };
 
-/** A small picture of one item: the site's own, else a sign of its kind. */
-function ItemPicture({ item, large }: { item: DownloadItem; large?: boolean }) {
+/** True once the element has come into view (or at once, when not `wanted`). */
+function useSeen<T extends Element>(wanted: boolean): [React.RefObject<T | null>, boolean] {
+  const place = useRef<T | null>(null);
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    const el = place.current;
+    if (!wanted || seen || !el) return;
+    const watch = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) setSeen(true);
+      },
+      // A little ahead of the scroll, so pictures are there on arrival.
+      { rootMargin: "120px" },
+    );
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [wanted, seen]);
+  return [place, seen];
+}
+
+/** A small picture of one item: the site's own, else the file itself, else a sign of its kind. */
+export function ItemPicture({ item, large }: { item: DownloadItem; large?: boolean }) {
   const [broken, setBroken] = useState(false);
   const cls = `item-thumb${large ? " item-thumb-large" : ""}`;
+  // The site's picture where there is one; otherwise the file itself, once it
+  // is on this computer: a photo as it is, a video by its first frame.
+  const kind = item.path ? pictureKind(item.file ?? item.path) : null;
+  const local = !item.thumbnail && item.path && kind ? fileSrc(item.path) : null;
+  // A row's own file is only opened once the row has come into view: a long
+  // list would otherwise read every photo and video in the folder at once.
+  const [place, seen] = useSeen<HTMLSpanElement>(!!local);
   if (item.thumbnail && !broken) {
     return (
       <img
@@ -109,6 +139,27 @@ function ItemPicture({ item, large }: { item: DownloadItem; large?: boolean }) {
         onError={() => setBroken(true)}
       />
     );
+  }
+  if (local && !broken && seen) {
+    return kind === "video" ? (
+      <video
+        className={cls}
+        // "#t=0.1": just past the start, where the first real frame is.
+        src={`${local}#t=0.1`}
+        preload="metadata"
+        muted
+        playsInline
+        disablePictureInPicture
+        tabIndex={-1}
+        aria-hidden="true"
+        onError={() => setBroken(true)}
+      />
+    ) : (
+      <img className={cls} src={local} alt="" decoding="async" onError={() => setBroken(true)} />
+    );
+  }
+  if (local && !broken) {
+    return <span ref={place} className={`${cls} item-thumb-empty shimmer`} aria-hidden="true" />;
   }
   const ext = /\.([a-z0-9]{2,5})$/i.exec(item.file ?? item.title)?.[1].toLowerCase() ?? "";
   const Glyph = /^(jpe?g|png|gif|webp|bmp|avif|heic|svg)$/.test(ext) ? ImageGlyph : item.file && !/^(mp4|mkv|webm|mov|m4v)$/.test(ext) ? FileGlyph : Film;
@@ -131,7 +182,9 @@ function ItemCard(props: { item: DownloadItem; place: string; pct: number | null
     : { left, bottom: window.innerHeight - row.top + 6, width: WIDTH };
   return createPortal(
     <div className="item-card" role="tooltip" style={style}>
-      {item.thumbnail && <ItemPicture item={item} large />}
+      {(item.thumbnail || (item.path && pictureKind(item.file ?? item.path) && fileSrc(item.path))) && (
+        <ItemPicture item={item} large />
+      )}
       <strong>{item.title}</strong>
       <dl>
         <Fact label="Status">
@@ -237,6 +290,8 @@ function ItemList({ d }: { d: Download }) {
                   pct != null ? `${pct}%` : "Downloading"
                 ) : item.state === "missed" ? (
                   "Not available"
+                ) : item.state === "deleted" ? (
+                  "Deleted"
                 ) : (
                   "Waiting"
                 )}

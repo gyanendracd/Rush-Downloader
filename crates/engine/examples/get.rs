@@ -12,7 +12,10 @@ async fn main() -> Result<(), String> {
     let dir = PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
     let connections = args.next().and_then(|c| c.parse().ok());
 
-    let state = std::env::temp_dir().join(format!("rushdownload-cli-{}", std::process::id()));
+    // RUSHDOWNLOAD_STATE names a folder to keep state in (one with a cookies.txt, say).
+    let state = std::env::var_os("RUSHDOWNLOAD_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("rushdownload-cli-{}", std::process::id())));
     let engine = Engine::new(&state, Settings::new(dir))?;
     let id = engine.add(NewDownload {
         url,
@@ -22,11 +25,18 @@ async fn main() -> Result<(), String> {
 
     let started = Instant::now();
     let mut changes = engine.subscribe();
+    let mut last = None;
     loop {
         let _ = tokio::time::timeout(Duration::from_secs(1), changes.changed()).await;
         let Some(t) = engine.list().into_iter().find(|t| t.id == id) else {
             return Err("download disappeared".into());
         };
+        // Each change of status, with how long it took to get there.
+        if last != Some(t.status) {
+            last = Some(t.status);
+            println!("
+[{:6.1}s] {:?}", started.elapsed().as_secs_f64(), t.status);
+        }
         match t.status {
             Status::Completed => {
                 let secs = started.elapsed().as_secs_f64();

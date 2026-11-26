@@ -23,7 +23,7 @@ use tokio::runtime::Handle;
 use tokio::sync::watch;
 
 pub use media::MediaInfo;
-pub use profile::{PlaylistInfo, ProfileRef};
+pub use profile::{PlaylistInfo, ProfileFace, ProfileRef};
 pub use scan::{Found, FoundKind};
 pub use torrent::{TorrentFile, TorrentPreview};
 
@@ -168,10 +168,15 @@ pub struct TaskInfo {
     pub items: u64,
     /// The file a running profile or playlist download is fetching right now.
     pub current: Option<CurrentFile>,
+    /// The picture the site shows for a video or playlist, once it is known.
+    pub thumbnail: Option<String>,
+    /// When a finished download's file was found to be gone, in seconds
+    /// since 1970; `None` while it is where it was saved.
+    pub deleted_at: Option<u64>,
 }
 
 /// One video or file of a profile or playlist download, for display.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemInfo {
     pub title: String,
     pub state: ItemState,
@@ -179,6 +184,8 @@ pub struct ItemInfo {
     pub size: Option<u64>,
     /// The name of its file, once it is there.
     pub file: Option<String>,
+    /// Where that file is on this computer, so that it can be shown.
+    pub path: Option<PathBuf>,
     /// Its picture on the site.
     pub thumbnail: Option<String>,
     /// How long a video runs, in seconds.
@@ -189,7 +196,7 @@ pub struct ItemInfo {
     pub url: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ItemState {
     Done,
@@ -197,6 +204,8 @@ pub enum ItemState {
     Waiting,
     /// The download finished without it: the site would not give it.
     Missed,
+    /// It was downloaded, and its file has since been deleted or moved away.
+    Deleted,
 }
 
 /// One file of a profile or playlist, while it is being fetched.
@@ -261,6 +270,15 @@ pub(crate) struct Record {
     /// Files fetched so far, for profile downloads.
     #[serde(default)]
     pub items: u64,
+    /// The picture the site shows for it: a video's own, or a playlist's
+    /// first video's. Learned when the site is first asked about the link.
+    #[serde(default)]
+    pub thumbnail: Option<String>,
+    /// When a finished download's file was first found to be gone (deleted
+    /// or moved away outside the app), in seconds since 1970. Cleared if the
+    /// file comes back.
+    #[serde(default)]
+    pub deleted_at: Option<u64>,
 }
 
 struct Entry {
@@ -313,6 +331,8 @@ impl Entry {
             profile: r.profile,
             items: r.items,
             current: self.live.as_ref().and_then(|l| l.current.lock().unwrap().clone()),
+            thumbnail: r.thumbnail.clone(),
+            deleted_at: r.deleted_at,
         }
     }
 }
@@ -444,33 +464,7 @@ impl Engine {
     /// The videos or files of a profile or playlist download, each with how
     /// far along it is. Empty for any other kind of download.
     pub fn items(&self, id: u64) -> Vec<ItemInfo> {
-        let (folder, current) = {
-            let st = self.inner.state.lock().unwrap();
-            let Some(e) = st.entries.iter().find(|e| e.rec.id == id && e.rec.profile) else {
-                return Vec::new();
-            };
-            let current = e.live.as_ref().and_then(|l| l.current.lock().unwrap().clone());
-            (e.rec.part_started.then(|| e.rec.dir.join(&e.rec.filename)), current)
-        };
-        let listed = self.inner.lists.lock().unwrap().get(&id).filter(|l| !l.items.is_empty()).cloned();
-        if let Some(listed) = listed {
-            return listed.show(current.as_ref(), folder.as_deref());
-        }
-        // Nothing listed (a photo profile, or the app was restarted): what is in the folder.
-        let mut items = folder.map(|f| profile::on_disk(&f)).unwrap_or_default();
-        if let Some(file) = current.filter(|c| c.total.is_none()) {
-            items.push(ItemInfo {
-                title: file.name,
-                state: ItemState::Downloading,
-                size: Some(file.downloaded),
-                file: None,
-                thumbnail: None,
-                duration: None,
-                channel: None,
-                url: None,
-            });
-        }
-        items
+        self.inner.items(id)
     }
 
     /// Whether the helper programs for site downloads are installed.
@@ -489,6 +483,12 @@ impl Engine {
         self.inner.dns.proxy()
     }
 
+    /// The sign-ins a browser on this computer keeps, as cookie-file lines.
+    /// `browser` is one of the names in `media::COOKIE_BROWSERS`.
+    pub async fn browser_cookies(browser: &str) -> Result<Vec<String>, String> {
+        media::browser_cookies(browser).await
+    }
+
     /// The file holding sign-ins made inside the app (it may not exist yet).
     pub fn cookies_file(&self) -> PathBuf {
         self.inner.cookies_file()
@@ -503,6 +503,19 @@ impl Engine {
     /// A playlist's name, picture and number of videos, before downloading.
     pub async fn playlist_info(&self, url: &str) -> Result<PlaylistInfo, String> {
         profile::playlist_info(&self.inner, url).await
+    }
+
+    /// Whose profile a link points at: the name it shows, its picture and
+    /// its line about itself. Quick, and works without being signed in.
+    pub async fn profile_face(&self, url: &str) -> ProfileFace {
+        profile::profile_face(&self.inner, url).await
+    }
+
+    /// Everything a profile shows a visitor who is not signed in, numbers
+    /// included (posts, followers, following, joined), for the sites that
+    /// tell. Asked with no sign-in, so it never depends on one.
+    pub async fn profile_stats(&self, url: &str) -> ProfileFace {
+        profile::profile_stats(&self.inner, url).await
     }
 
     /// Reads what a torrent contains (name, files, sizes) without downloading
@@ -634,6 +647,8 @@ impl Engine {
                 named_stem: None,
                 profile: profile.is_some(),
                 items: 0,
+                thumbnail: None,
+                deleted_at: None,
             };
             st.entries.push(Entry {
                 rec,
@@ -705,6 +720,8 @@ impl Engine {
                 delete_files(&e.rec, delete_file);
             }
         }
+        // Gone from the list, gone from the record of what it fetched.
+        let _ = std::fs::remove_file(self.inner.remembered_file(id));
         self.inner.changed();
         self.inner.pump();
     }
@@ -772,6 +789,34 @@ fn with_network_hint(msg: String, secure_dns: bool) -> String {
     } else {
         format!("{msg}. If this site opens in your browser, turn on Secure DNS under Settings, Network, then retry")
     }
+}
+
+/// What a finished download's folder holds now, together with what it is
+/// remembered to have fetched: anything remembered that is no longer there
+/// stays in the list, as deleted. The remembered order is kept.
+fn with_remembered(now_there: Vec<ItemInfo>, remembered: Vec<ItemInfo>) -> Vec<ItemInfo> {
+    if remembered.is_empty() {
+        return now_there;
+    }
+    // The same item, seen now and remembered: by its file's name, or, where
+    // the file is gone and with it the name, by its title.
+    let same = |now: &ItemInfo, old: &ItemInfo| match (&now.file, &old.file) {
+        (Some(a), Some(b)) => a == b,
+        _ => now.title == old.title,
+    };
+    let mut there: Vec<Option<ItemInfo>> = now_there.into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(there.len().max(remembered.len()));
+    for old in remembered {
+        let found = there.iter_mut().find(|slot| slot.as_ref().is_some_and(|item| same(item, &old)));
+        out.push(match found.and_then(Option::take) {
+            // Still there, as it was fetched.
+            Some(item) if item.state == ItemState::Done => item,
+            // Gone: what is remembered of it says more than what is left.
+            _ => ItemInfo { state: ItemState::Deleted, path: None, ..old },
+        });
+    }
+    out.extend(there.into_iter().flatten());
+    out
 }
 
 fn now() -> u64 {
@@ -916,6 +961,115 @@ impl Inner {
         self.notify();
     }
 
+    /// The videos or files of a profile or playlist download, each with how
+    /// far along it is. Once the download has finished, what it fetched is
+    /// remembered: a file that has since been deleted is still listed, as
+    /// deleted.
+    fn items(&self, id: u64) -> Vec<ItemInfo> {
+        let (folder, current, finished) = {
+            let st = self.state.lock().unwrap();
+            let Some(e) = st.entries.iter().find(|e| e.rec.id == id && e.rec.profile) else {
+                return Vec::new();
+            };
+            let current = e.live.as_ref().and_then(|l| l.current.lock().unwrap().clone());
+            (
+                e.rec.part_started.then(|| e.rec.dir.join(&e.rec.filename)),
+                current,
+                e.rec.status == Status::Completed && e.live.is_none(),
+            )
+        };
+        let listed = self.lists.lock().unwrap().get(&id).filter(|l| !l.items.is_empty()).cloned();
+        let mut items = match listed {
+            Some(listed) => listed.show(current.as_ref(), folder.as_deref()),
+            None => {
+                // Nothing listed (a photo profile, or the app was restarted): what is in the folder.
+                let mut items = folder.map(|f| profile::on_disk(&f)).unwrap_or_default();
+                if let Some(file) = current.filter(|c| c.total.is_none()) {
+                    items.push(ItemInfo {
+                        title: file.name,
+                        state: ItemState::Downloading,
+                        size: Some(file.downloaded),
+                        file: None,
+                        path: None,
+                        thumbnail: None,
+                        duration: None,
+                        channel: None,
+                        url: None,
+                    });
+                }
+                items
+            }
+        };
+        if finished {
+            items = with_remembered(items, self.remembered_items(id));
+        }
+        items
+    }
+
+    /// Where the list of what a finished profile or playlist download
+    /// fetched is kept, so that it outlives the files themselves.
+    fn remembered_file(&self, id: u64) -> PathBuf {
+        let dir = self.state_file.parent().map(|p| p.join("history")).unwrap_or_else(|| PathBuf::from("history"));
+        dir.join(format!("{id}.json"))
+    }
+
+    fn remembered_items(&self, id: u64) -> Vec<ItemInfo> {
+        std::fs::read(self.remembered_file(id))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// Writes down what a profile or playlist download fetched, when it
+    /// finishes. Only what is there is written: a later, shorter look at the
+    /// folder must not make the record forget.
+    fn remember_items(&self, id: u64) {
+        let fetched: Vec<ItemInfo> = self.items(id).into_iter().filter(|item| item.state == ItemState::Done).collect();
+        if fetched.is_empty() {
+            return;
+        }
+        let file = self.remembered_file(id);
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(bytes) = serde_json::to_vec(&fetched) {
+            let _ = std::fs::write(file, bytes);
+        }
+    }
+
+    /// Looks at every finished download's file: one that is gone is marked
+    /// as deleted from that moment, and one that is back loses the mark.
+    /// The files are looked at without holding up anything else.
+    fn notice_deleted(&self) {
+        let finished: Vec<(u64, PathBuf, bool)> = {
+            let st = self.state.lock().unwrap();
+            st.entries
+                .iter()
+                .filter(|e| e.live.is_none() && e.rec.status == Status::Completed)
+                .map(|e| (e.rec.id, e.rec.dir.join(&e.rec.filename), e.rec.deleted_at.is_some()))
+                .collect()
+        };
+        let turned: Vec<(u64, bool)> = finished
+            .into_iter()
+            .filter_map(|(id, path, marked)| {
+                let gone = !path.exists();
+                (gone != marked).then_some((id, gone))
+            })
+            .collect();
+        if turned.is_empty() {
+            return;
+        }
+        {
+            let mut st = self.state.lock().unwrap();
+            for (id, gone) in turned {
+                if let Some(e) = st.entries.iter_mut().find(|e| e.rec.id == id && e.rec.status == Status::Completed) {
+                    e.rec.deleted_at = gone.then(now);
+                }
+            }
+        }
+        self.changed();
+    }
+
     fn save(&self) {
         let _guard = self.save_lock.lock().unwrap();
         let saved = {
@@ -980,6 +1134,9 @@ impl Inner {
     }
 
     fn finish(self: &Arc<Self>, id: u64, live: &Arc<Live>, res: Result<(), Fail>) {
+        // A profile or playlist that ran to its end has its files written
+        // down, so the record of them outlives the files.
+        let fetched_many = res.is_ok() && !live.removed.load(Relaxed);
         {
             let mut st = self.state.lock().unwrap();
             if let Some(i) = st.entries.iter().position(|e| e.rec.id == id) {
@@ -1016,6 +1173,9 @@ impl Inner {
                 }
             }
         }
+        if fetched_many {
+            self.remember_items(id);
+        }
         self.changed();
         self.pump();
     }
@@ -1051,6 +1211,65 @@ async fn ticker(inner: Weak<Inner>) {
             }
             inner.notify();
         }
+        // Every three seconds: has a finished file been deleted, or come back?
+        if n % 6 == 1 {
+            let look = inner.clone();
+            let _ = tokio::task::spawn_blocking(move || look.notice_deleted()).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn item(name: &str, state: ItemState) -> ItemInfo {
+        ItemInfo {
+            title: name.into(),
+            state,
+            size: Some(10),
+            file: Some(name.into()),
+            path: (state == ItemState::Done).then(|| PathBuf::from("folder").join(name)),
+            thumbnail: None,
+            duration: None,
+            channel: None,
+            url: None,
+        }
+    }
+
+    #[test]
+    fn what_was_fetched_is_still_listed_after_its_file_is_deleted() {
+        let remembered = vec![item("a.jpg", ItemState::Done), item("b.jpg", ItemState::Done), item("c.mp4", ItemState::Done)];
+        // b.jpg has been deleted from the folder; d.jpg was put there since.
+        let there = vec![item("a.jpg", ItemState::Done), item("c.mp4", ItemState::Done), item("d.jpg", ItemState::Done)];
+        let shown = with_remembered(there.clone(), remembered);
+        let said: Vec<(&str, ItemState)> = shown.iter().map(|i| (i.title.as_str(), i.state)).collect();
+        assert_eq!(
+            said,
+            vec![
+                ("a.jpg", ItemState::Done),
+                ("b.jpg", ItemState::Deleted),
+                ("c.mp4", ItemState::Done),
+                ("d.jpg", ItemState::Done),
+            ]
+        );
+        // a deleted file cannot be shown; one that is there still can
+        assert_eq!(shown[1].path, None);
+        assert!(shown[0].path.is_some());
+        // the whole folder gone: everything remembered, all of it deleted
+        let all_gone = with_remembered(Vec::new(), vec![item("a.jpg", ItemState::Done), item("b.jpg", ItemState::Done)]);
+        assert!(all_gone.iter().all(|i| i.state == ItemState::Deleted) && all_gone.len() == 2);
+        // nothing remembered (a download from before this was kept): the folder as it is
+        assert_eq!(with_remembered(there.clone(), Vec::new()), there);
+        // a video the listing still knows, by its title only, once its file is gone:
+        // it is the remembered one, deleted, and is not listed a second time
+        let mut remembered = item("001 - A video [abc].mp4", ItemState::Done);
+        remembered.title = "A video".into();
+        let mut listed = item("A video", ItemState::Deleted);
+        listed.file = None;
+        let shown = with_remembered(vec![listed], vec![remembered]);
+        assert_eq!(shown.len(), 1);
+        assert_eq!((shown[0].state, shown[0].file.as_deref()), (ItemState::Deleted, Some("001 - A video [abc].mp4")));
     }
 }
 

@@ -36,9 +36,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  api,
   canPause,
   categoryOf,
+  deletedAgo,
   displayName,
+  isDeleted,
   etaOf,
   formatBytes,
   formatSpeed,
@@ -78,6 +81,9 @@ export interface Actions {
   /** Starts whatever the text is: torrents go to the torrent dialog, every
    *  other link starts downloading. Resolves false when nothing was started. */
   submitLink: (text: string, media?: MediaOptions) => Promise<boolean>;
+  /** Fetches a download again from its link, as a new download: for one
+   *  whose file has been deleted. */
+  again: (d: Download) => void;
   toast: (message: string, tone?: "error" | "info") => void;
 }
 
@@ -162,10 +168,105 @@ export function categoryIcon(c: Category): LucideIcon {
   return CATEGORY_ICON[c];
 }
 
-/** Coloured file tile; the colour says what kind of file it is. */
+/** Profile pictures already asked for, by the profile's link. One question
+ *  per link while the app is open; an answer is also kept for next time. */
+const faces = new Map<string, Promise<string | null>>();
+const FACE_KEPT = "rushdownload.face.";
+
+function kept(link: string): string | null {
+  try {
+    return window.localStorage.getItem(FACE_KEPT + link);
+  } catch {
+    return null;
+  }
+}
+
+function forget(link: string) {
+  faces.delete(link);
+  try {
+    window.localStorage.removeItem(FACE_KEPT + link);
+  } catch {
+    // nothing was kept
+  }
+}
+
+/** The picture of the profile a download is saving, once it is known. */
+function useProfilePicture(d: Download): [string | null, () => void] {
+  // A playlist is saved the same way but is nobody's profile.
+  const link = d.profile && !/[?&]list=/.test(d.url) ? d.url : null;
+  const [picture, setPicture] = useState<string | null>(() => (link ? kept(link) : null));
+  useEffect(() => {
+    if (!link) {
+      setPicture(null);
+      return;
+    }
+    const had = kept(link);
+    setPicture(had);
+    if (had) return;
+    let stale = false;
+    let asked = faces.get(link);
+    if (!asked) {
+      asked = api
+        .profileFace(link)
+        .then((face) => face.picture)
+        .catch(() => null);
+      faces.set(link, asked);
+    }
+    asked.then((found) => {
+      if (!found) return;
+      try {
+        window.localStorage.setItem(FACE_KEPT + link, found);
+      } catch {
+        // kept for this run only
+      }
+      if (!stale) setPicture(found);
+    });
+    return () => {
+      stale = true;
+    };
+  }, [link]);
+  // A picture the site no longer serves (its address has changed) is dropped,
+  // and asked for afresh the next time.
+  const failed = () => {
+    if (link) forget(link);
+    setPicture(null);
+  };
+  return [picture, failed];
+}
+
+/** Coloured file tile; the colour says what kind of file it is. A profile
+ *  being saved shows whose it is instead: the profile's own picture. */
 export function FileIcon({ d, large }: { d: Download; large?: boolean }) {
   const category = categoryOf(d);
   const Icon = CATEGORY_ICON[category];
+  const [picture, pictureFailed] = useProfilePicture(d);
+  // A video from a site (or a playlist of them) shows the site's picture of
+  // it, in the tile's own shape. One that will not load gives way to the tile.
+  const [thumbFailed, setThumbFailed] = useState<string | null>(null);
+  if (!picture && d.thumbnail && thumbFailed !== d.thumbnail) {
+    return (
+      <img
+        className={`file-icon file-thumb${large ? " file-icon-lg" : ""}`}
+        src={d.thumbnail}
+        alt=""
+        aria-hidden="true"
+        referrerPolicy="no-referrer"
+        onError={() => setThumbFailed(d.thumbnail)}
+      />
+    );
+  }
+  if (picture) {
+    return (
+      <img
+        className={`file-icon file-face${large ? " file-icon-lg" : ""}`}
+        src={picture}
+        alt=""
+        aria-hidden="true"
+        referrerPolicy="no-referrer"
+        onError={pictureFailed}
+      />
+    );
+  }
   return (
     <span className={`file-icon cat-${category}${large ? " file-icon-lg" : ""}`} aria-hidden="true">
       <Icon size={large ? 26 : 18} strokeWidth={2} />
@@ -312,6 +413,15 @@ export function RowMeta({ d }: { d: Download }) {
     case "paused":
       return <>Paused · {amountOf(d)}</>;
     case "completed":
+      // The file is gone from where it was saved: that is what there is to say.
+      if (isDeleted(d)) {
+        return (
+          <>
+            <span className="tone-deleted">Deleted</span> · {deletedAgo(d)}
+            {d.total != null ? ` · was ${formatBytes(d.total)}` : ""}
+          </>
+        );
+      }
       return (
         <>
           <span className="tone-ok">Completed</span>
@@ -654,22 +764,27 @@ export function downloadMenu(d: Download, a: Actions): MenuItem[] {
     items.push({ label: "Open on Browser page", icon: Globe, onSelect: () => a.browse(d.url) });
     items.push({ label: "Find media on this page", icon: ScanSearch, onSelect: () => a.scan(d.url) });
   }
-  if (d.status === "completed") {
+  // A file that is gone cannot be opened, shown or deleted; it can be fetched again.
+  const gone = isDeleted(d);
+  if (gone && /^(https?|magnet):/i.test(d.url)) {
+    items.push({ label: "Download again", icon: RotateCw, onSelect: () => a.again(d) });
+  }
+  if (d.status === "completed" && !gone) {
     items.push({ label: "Open file", icon: SquareArrowOutUpRight, onSelect: () => a.open(d) });
     items.push({ label: "Show in folder", icon: FolderOpen, onSelect: () => a.reveal(d) });
   }
   items.push("separator");
   items.push({ label: "Copy link", icon: LinkGlyph, onSelect: () => a.copy(d.url, "Link") });
-  if (d.status === "completed") {
+  if (d.status === "completed" && !gone) {
     items.push({ label: "Copy file path", icon: Copy, onSelect: () => a.copy(d.path, "File path") });
   }
   items.push("separator");
   items.push({
-    label: d.status === "completed" ? "Remove from list" : "Cancel and remove",
+    label: gone ? "Remove from history" : d.status === "completed" ? "Remove from list" : "Cancel and remove",
     icon: X,
     onSelect: () => a.remove([d.id]),
   });
-  if (d.status === "completed") {
+  if (d.status === "completed" && !gone) {
     items.push({ label: "Delete file from disk", icon: Trash2, danger: true, onSelect: () => a.deleteFile(d) });
   }
   return items;
@@ -680,6 +795,22 @@ export function downloadMenu(d: Download, a: Actions): MenuItem[] {
 /** The round control at the end of a row: what you can do, or how it ended. */
 function RowAction({ d }: { d: Download }) {
   const { actions } = useApp();
+  // Nothing is left to open; what can be done is to fetch it again.
+  if (isDeleted(d)) {
+    const again = /^(https?|magnet):/i.test(d.url);
+    return (
+      <button
+        type="button"
+        className="round round-deleted"
+        title={again ? "Deleted. Download again" : "Deleted"}
+        aria-label={again ? "Deleted. Download again" : "Deleted"}
+        disabled={!again}
+        onClick={() => actions.again(d)}
+      >
+        <RotateCw size={14} strokeWidth={2.5} aria-hidden="true" />
+      </button>
+    );
+  }
   if (d.status === "completed") {
     return (
       <button type="button" className="round round-ok" title="Open file" aria-label="Completed. Open file" onClick={() => actions.open(d)}>
@@ -720,7 +851,7 @@ export function DownloadRow(props: {
 
   return (
     <li
-      className={`row row-${d.status}${props.selected ? " is-selected" : ""}`}
+      className={`row row-${d.status}${isDeleted(d) ? " is-deleted" : ""}${props.selected ? " is-selected" : ""}`}
       aria-selected={props.selected}
       onClick={props.onSelect}
       onContextMenu={(e) => {

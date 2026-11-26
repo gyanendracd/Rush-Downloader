@@ -1246,3 +1246,23 @@ async fn playlist_lookup_gives_its_name_picture_and_size() {
     println!("videos to check for resolutions: {}", info.samples.len());
     assert!(!info.title.is_empty() && info.count + info.photos > 0);
 }
+
+/// Needs internet, yt-dlp and gallery-dl:
+/// `cargo test --release -p rushdownload-engine -- --ignored profile_card --nocapture`
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn profile_card_has_the_profiles_name_and_picture() {
+    let dir = temp_dir("profilecard");
+    let engine = engine(&dir);
+    // A photo-and-video profile: counted by gallery-dl, which also says whose it is.
+    let found = engine.playlist_info("https://bsky.app/profile/bsky.app").await.unwrap();
+    println!("profile: {found:?}");
+    assert_eq!(found.title, "Bluesky");
+    assert!(found.thumbnail.is_some_and(|p| p.contains("avatar")));
+    assert!(found.count + found.photos > 0);
+    // A channel: its listing has its name and its own picture.
+    let found = engine.playlist_info("https://www.youtube.com/@GyanPlayZZ").await.unwrap();
+    println!("channel: {} | {:?} | {} videos", found.title, found.thumbnail, found.count);
+    assert!(!found.title.is_empty());
+    assert!(found.thumbnail.is_some());
+}

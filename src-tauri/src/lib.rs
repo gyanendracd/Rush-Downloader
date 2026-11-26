@@ -1,5 +1,5 @@
 use rushdownload_engine::{
-    Engine, Found, ItemInfo, MediaInfo, NewDownload, PlaylistInfo, ProfileRef, Settings, Status, TaskInfo, ToolStatus, TorrentPreview,
+    Engine, Found, ItemInfo, MediaInfo, NewDownload, PlaylistInfo, ProfileFace, ProfileRef, Settings, Status, TaskInfo, ToolStatus, TorrentPreview,
 };
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl};
 use tauri_plugin_opener::OpenerExt;
@@ -13,12 +13,21 @@ fn list_downloads(state: State<AppState>) -> Vec<TaskInfo> {
 
 /// The videos or files of a profile or playlist download.
 #[tauri::command]
-async fn download_items(state: State<'_, AppState>, id: u64) -> Result<Vec<ItemInfo>, String> {
+async fn download_items(app: AppHandle, state: State<'_, AppState>, id: u64) -> Result<Vec<ItemInfo>, String> {
     let engine = state.0.clone();
     // The folder may be read for this, which must not hold up the window.
-    tauri::async_runtime::spawn_blocking(move || engine.items(id))
+    let items = tauri::async_runtime::spawn_blocking(move || engine.items(id))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // The window shows each finished file as its own picture, which it may
+    // only do for folders it has been let into: these ones, and no others.
+    let mut folders: Vec<&std::path::Path> = items.iter().filter_map(|item| item.path.as_deref()?.parent()).collect();
+    folders.sort();
+    folders.dedup();
+    for folder in folders {
+        let _ = app.asset_protocol_scope().allow_directory(folder, false);
+    }
+    Ok(items)
 }
 
 #[tauri::command]
@@ -130,6 +139,12 @@ const LOGIN_COOKIES: &[(&str, &[&str])] = &[
     ("youtube.com", &["LOGIN_INFO", "SID", "__Secure-1PSID"]),
     ("google.com", &["SID", "__Secure-1PSID"]),
     ("github.com", &["user_session"]),
+    ("vk.com", &["remixsid"]),
+    ("twitch.tv", &["auth-token"]),
+    ("bilibili.com", &["SESSDATA"]),
+    ("linkedin.com", &["li_at"]),
+    ("threads.com", &["sessionid"]),
+    ("threads.net", &["sessionid"]),
 ];
 
 /// Sites a sign-in is kept for, shortest form ("x.com", "instagram.com").
@@ -540,6 +555,21 @@ async fn signin_close(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<
     Ok(signed_in_sites(&file))
 }
 
+/// Brings over the sign-ins a browser on this computer keeps (Firefox, Brave
+/// and so on), so the user does not have to sign in again or export a file.
+/// Every cookie the browser holds is kept, the way an imported cookies file
+/// is; only real sign-ins are counted in the list that is shown.
+#[tauri::command]
+async fn import_browser_sign_in(state: State<'_, AppState>, browser: String) -> Result<Vec<String>, String> {
+    let file = state.0.cookies_file();
+    let lines = Engine::browser_cookies(&browser).await?;
+    let added = merge_cookies(&file, &lines).map_err(|e| format!("Could not save the sign-in: {e}"))?;
+    if added == 0 {
+        return Err("That browser holds no sign-ins".into());
+    }
+    Ok(signed_in_sites(&file))
+}
+
 #[tauri::command]
 fn sign_in_status(state: State<AppState>) -> Vec<String> {
     signed_in_sites(&state.0.cookies_file())
@@ -578,6 +608,18 @@ async fn forget_sign_ins(app: AppHandle, state: State<'_, AppState>) -> Result<(
 async fn playlist_info(state: State<'_, AppState>, url: String) -> Result<PlaylistInfo, String> {
     let engine = state.0.clone();
     engine.playlist_info(&url).await
+}
+
+#[tauri::command]
+async fn profile_face(state: State<'_, AppState>, url: String) -> Result<ProfileFace, String> {
+    let engine = state.0.clone();
+    Ok(engine.profile_face(&url).await)
+}
+
+#[tauri::command]
+async fn profile_stats(state: State<'_, AppState>, url: String) -> Result<ProfileFace, String> {
+    let engine = state.0.clone();
+    Ok(engine.profile_stats(&url).await)
 }
 
 #[tauri::command]
@@ -737,6 +779,8 @@ pub fn run() {
             media_info,
             link_size,
             profile_of,
+            profile_face,
+            profile_stats,
             playlist_info,
             signin_open,
             signin_bounds,
@@ -746,6 +790,7 @@ pub fn run() {
             signin_close,
             sign_in_status,
             import_sign_in,
+            import_browser_sign_in,
             forget_sign_ins,
             pause_download,
             resume_download,

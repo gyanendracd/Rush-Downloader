@@ -3,10 +3,20 @@
 // from main.tsx only when the app is not running inside Tauri in dev mode and
 // is never part of a production build.
 
-import type { Download, Found, NewDownload, Settings, ToolStatus, TorrentPreview } from "./api";
+import type { Download, Found, NewDownload, ProfileFace, Settings, ToolStatus, TorrentPreview } from "./api";
 
 const MB = 1024 * 1024;
 const now = Math.floor(Date.now() / 1000);
+
+/** A stand-in for the picture a site shows for a video. */
+const SAMPLE_THUMB =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+      '<stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#1d4ed8"/></linearGradient></defs>' +
+      '<rect width="320" height="180" fill="url(#g)"/><circle cx="160" cy="90" r="34" fill="#fff" opacity=".9"/>' +
+      '<path d="M150 72l30 18-30 18z" fill="#1d4ed8"/></svg>',
+  );
 
 function make(partial: Partial<Download> & Pick<Download, "id" | "url" | "filename" | "status">): Download {
   const dir = "D:\\Downloads";
@@ -26,6 +36,8 @@ function make(partial: Partial<Download> & Pick<Download, "id" | "url" | "filena
     profile: false,
     items: 0,
     current: null,
+    thumbnail: null,
+    deleted_at: null,
     created_at: now,
     segments: [],
     ...partial,
@@ -43,7 +55,7 @@ const liveSegments = segments(640 * MB, [0.4, 0.3, 0.35, 0.2, 0.25, 0.1, 0.15, 0
 let downloads: Download[] = [
   make({ id: 1, url: "https://example.com/files/project-backup-2026.zip", filename: "project-backup-2026.zip", status: "completed", total: 1240 * MB, downloaded: 1240 * MB, created_at: now - 86400 }),
   make({ id: 2, url: "https://example.com/docs/annual-report.pdf", filename: "annual-report.pdf", status: "completed", total: 12 * MB, downloaded: 12 * MB, created_at: now - 7200 }),
-  make({ id: 3, url: "https://example.com/watch/conference-keynote", filename: "Conference keynote 1080p [a1b2c3].mp4", status: "completed", total: 452 * MB, downloaded: 452 * MB, media: true, created_at: now - 3600 }),
+  make({ id: 3, url: "https://example.com/watch/conference-keynote", filename: "Conference keynote 1080p [a1b2c3].mp4", status: "completed", total: 452 * MB, downloaded: 452 * MB, media: true, thumbnail: SAMPLE_THUMB, created_at: now - 3600 }),
   make({ id: 4, url: "https://example.com/music/field-recording.flac", filename: "field-recording.flac", status: "completed", total: 86 * MB, downloaded: 86 * MB, created_at: now - 1800 }),
   make({
     id: 5,
@@ -83,6 +95,40 @@ let downloads: Download[] = [
     current: { name: "Lecture 4: a rather long title that will not fit on one line of the dialog", downloaded: 20 * MB, total: 180 * MB, index: 4, count: 12 },
     created_at: now - 30,
   }),
+  // Files deleted from disk since: one lately (still on the Downloads page,
+  // struck through), one long ago (only in History).
+  make({
+    id: 13,
+    url: "https://example.com/files/holiday-video.mp4",
+    filename: "holiday-video.mp4",
+    status: "completed",
+    total: 310 * MB,
+    downloaded: 310 * MB,
+    deleted_at: now - 2 * 86400,
+    created_at: now - 6 * 86400,
+  }),
+  make({
+    id: 14,
+    url: "https://example.com/files/old-installer.exe",
+    filename: "old-installer.exe",
+    status: "completed",
+    total: 48 * MB,
+    downloaded: 48 * MB,
+    deleted_at: now - 15 * 86400,
+    created_at: now - 40 * 86400,
+  }),
+  // A whole profile, saved: its row and its dialog show whose it is.
+  make({
+    id: 12,
+    url: "https://example.com/@sample.studio",
+    filename: "sample.studio (Example)",
+    status: "completed",
+    profile: true,
+    items: 6,
+    total: 76 * MB,
+    downloaded: 76 * MB,
+    created_at: now - 4000,
+  }),
 ];
 
 let settings: Settings = {
@@ -94,7 +140,7 @@ let settings: Settings = {
   secure_dns: true,
 };
 
-let nextId = 12;
+let nextId = 15;
 const listeners = new Map<symbol, (list: Download[]) => void>();
 const emit = () => listeners.forEach((cb) => cb(downloads.map((d) => ({ ...d }))));
 const patch = (id: number, change: Partial<Download>) => {
@@ -142,18 +188,52 @@ const mediaListeners = new Set<(found: { url: string; kind: "video" | "audio" | 
 const navListeners = new Set<(url: string) => void>();
 const titleListeners = new Set<(title: string) => void>();
 
+/** A profile about which nothing could be found. */
+const NOBODY = {
+  name: null,
+  picture: null,
+  about: null,
+  banner: null,
+  posts: null,
+  media: null,
+  followers: null,
+  following: null,
+  joined: null,
+} satisfies ProfileFace as ProfileFace;
+
 export const mockApi = {
   list: async () => downloads,
   items: async (id: number) => {
     await new Promise((r) => setTimeout(r, 600));
     const d = downloads.find((x) => x.id === id);
     const at = d?.current?.index;
+    // A saved profile: what is in its folder. A plain browser cannot show a
+    // file from this computer, so these stand in with a sign of their kind.
+    if (d?.profile && !at && d.status === "completed") {
+      return Array.from({ length: d.items }, (_, i) => {
+        const name = `17220073210254257${10 + i}_1.${i % 3 === 2 ? "mp4" : "jpg"}`;
+        return {
+          title: name,
+          // one of them has been deleted from the folder since
+          state: i === 3 ? ("deleted" as const) : ("done" as const),
+          size: (150 + i * 73) * 1024,
+          file: name,
+          path: null,
+          thumbnail: null,
+          duration: null,
+          channel: null,
+          url: null,
+        };
+      });
+    }
     if (!d?.profile || !at) return [];
     return Array.from({ length: d.current?.count ?? 0 }, (_, i) => ({
       title: i + 1 === at ? d.current!.name : `Lecture ${i + 1}: ${["an introduction", "the long middle part with a title that runs on and on", "wrapping up"][i % 3]}`,
       state: i + 1 < at ? (i === 1 ? ("missed" as const) : ("done" as const)) : i + 1 === at ? ("downloading" as const) : ("waiting" as const),
       size: i + 1 < at && i !== 1 ? (120 + i * 17) * MB : i + 1 === at ? d.current!.downloaded : null,
       file: i + 1 < at && i !== 1 ? `00${i + 1} - Lecture ${i + 1} [abc${i}].mp4` : null,
+      // a plain browser cannot show a file from this computer
+      path: null,
       // every third one has no picture, to show the stand-in
       thumbnail:
         i % 3 === 2
@@ -248,13 +328,35 @@ export const mockApi = {
     signedIn = [...new Set([...signedIn, "google.com", "youtube.com"])].sort();
     return signedIn;
   },
+  importBrowserSignIn: async (browser: string) => {
+    await new Promise((r) => setTimeout(r, 1200));
+    // The browsers built on Chrome keep their sign-ins locked on Windows.
+    if (browser !== "firefox") {
+      throw `${browser[0].toUpperCase()}${browser.slice(1)} locks its sign-ins so that other apps cannot read them. Sign in on this page instead, or import a cookies file.`;
+    }
+    signedIn = [...new Set([...signedIn, "instagram.com", "x.com", "youtube.com"])].sort();
+    return signedIn;
+  },
   forgetSignIns: async () => {
     signedIn = [];
   },
   playlistInfo: async (url: string) => {
     await new Promise((r) => setTimeout(r, 900));
     if (!/playlist\?list=/.test(url)) {
-      return { title: "sample", count: 38, photos: 214, more: false, duration: null, thumbnail: null, channel: null, samples: [] };
+      // "locked" in the link stands for a site that lists a profile's posts
+      // only for signed-in visitors, and tells the downloader it is not there.
+      if (/locked/.test(url)) throw "This profile was not found";
+      // A profile's posts, counted. Whose it is comes from `profileFace`.
+      return {
+        title: /([\w.]+)\/?$/.exec(url)?.[1] ?? "sample",
+        count: 38,
+        photos: 214,
+        more: false,
+        duration: null,
+        thumbnail: null,
+        channel: null,
+        samples: [],
+      };
     }
     return {
       title: "Weekend projects, start to finish",
@@ -267,6 +369,45 @@ export const mockApi = {
       channel: "Sample channel",
     };
   },
+  profileFace: async (url: string) => {
+    await new Promise((r) => setTimeout(r, 300));
+    // "plain" in the link stands for a site that says nothing about whose it is.
+    if (/plain/.test(url) || /playlist\?list=/.test(url)) return NOBODY;
+    return {
+      ...NOBODY,
+      name: "Sample Studio",
+      picture:
+        "data:image/svg+xml," +
+        encodeURIComponent(
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#3b6fd4"/>' +
+            '<circle cx="32" cy="25" r="11" fill="#fff"/><path d="M10 64c2-16 12-22 22-22s20 6 22 22z" fill="#fff"/></svg>',
+        ),
+      about: "Short films and behind-the-scenes photos from a two-person studio. New work every Friday.",
+    };
+  },
+  profileStats: async (url: string) => {
+    await new Promise((r) => setTimeout(r, 700));
+    // Only some sites tell a visitor a profile's numbers: "plain" and "bare" stand for the others.
+    if (/plain|bare/.test(url) || /playlist\?list=/.test(url)) return NOBODY;
+    return {
+      ...NOBODY,
+      name: "Sample Studio",
+      about: "Short films and behind-the-scenes photos from a two-person studio. New work every Friday.",
+      banner:
+        "data:image/svg+xml," +
+        encodeURIComponent(
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200" preserveAspectRatio="none"><defs>' +
+            '<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#274b9f"/>' +
+            '<stop offset="1" stop-color="#7a4fd0"/></linearGradient></defs><rect width="600" height="200" fill="url(#g)"/>' +
+            '<circle cx="470" cy="60" r="90" fill="#fff" opacity=".12"/><circle cx="120" cy="190" r="120" fill="#fff" opacity=".08"/></svg>',
+        ),
+      posts: 4678,
+      media: 988,
+      followers: 94442,
+      following: 166,
+      joined: "2017-12-14",
+    };
+  },
   profileOf: async (url: string) => {
     if (/playlist\?list=/.test(url)) return { site: "YouTube playlist", name: "PLsample" };
     const match = /^https?:\/\/[^/]+\/@?([\w.]+)\/?$/.exec(url.trim());
@@ -275,6 +416,10 @@ export const mockApi = {
   mediaInfo: async (url: string) => {
     await new Promise((r) => setTimeout(r, 900));
     if (/nothing/i.test(url)) throw "no video was found on this page";
+    // A private post: it shows only once a sign-in has been made.
+    if (/private|members/i.test(url) && signedIn.length === 0) {
+      throw "ERROR: [Instagram] sample: You need to log in to access this content. Use --cookies-from-browser or --cookies for the authentication";
+    }
     const picture =
       "data:image/svg+xml," +
       encodeURIComponent(

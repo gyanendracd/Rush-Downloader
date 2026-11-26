@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import {
   Archive,
   ArrowLeft,
@@ -11,8 +12,12 @@ import {
   Film,
   Folder,
   FolderOpen,
+  Gauge,
+  Globe,
   Image as ImageGlyph,
   Info,
+  KeyRound,
+  LayoutGrid,
   ListFilter,
   Music,
   Package,
@@ -22,10 +27,12 @@ import {
   RotateCw,
   Search,
   Settings as SettingsGlyph,
+  ShieldCheck,
   Users,
   Wifi,
   Wrench,
   X,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -34,31 +41,39 @@ import {
   canResume,
   categoryOf,
   COOKIE_BROWSERS,
+  displayName,
   formatBytes,
   formatDuration,
   formatSpeed,
+  isDeleted,
   isRunning,
   loadPref,
+  needsSignIn,
+  onDownloadsPage,
+  percentOf,
   looksLikePage,
   looksLikeUrl,
   QUALITIES,
   qualityOptions,
   savePref,
   SIGN_IN_SITES,
+  signInSiteOf,
   type Category,
   type Download,
   type CaughtMedia,
   type MediaInfo,
   type MediaOptions,
   type PlaylistInfo,
+  type ProfileFace,
   type ProfileRef,
   type Settings,
   type ToolStatus,
 } from "./api";
-import { DownloadRow, Dropdown, IconBtn, Modal, useApp, type ProgressStyle } from "./ui";
+import { SITE_LOGOS } from "./siteLogos";
+import { DownloadRow, Dropdown, FileIcon, IconBtn, Modal, useApp, type ProgressStyle } from "./ui";
 
-export type Nav = "home" | "downloads" | "browser" | "signin" | "settings";
-export const NAVS: readonly Nav[] = ["home", "downloads", "browser", "signin", "settings"];
+export type Nav = "home" | "downloads" | "history" | "browser" | "signin" | "settings";
+export const NAVS: readonly Nav[] = ["home", "downloads", "history", "browser", "signin", "settings"];
 
 export interface RowHandlers {
   selection: Set<number>;
@@ -535,6 +550,55 @@ export function BrowserView(props: {
 
 /* ---------- sign in ---------- */
 
+/** The mark of a site that can be signed in to, drawn in its own colours. */
+function SiteIcon({ site }: { site: string }) {
+  const gradient = useId().replace(/[^a-zA-Z0-9]/g, "");
+  const common = { className: "site-icon", width: 22, height: 22, viewBox: "0 0 24 24", "aria-hidden": true } as const;
+  const logo = SITE_LOGOS[site];
+  if (!logo) {
+    // Streamable has no mark in the set the others come from: its colour, with its initial.
+    if (site === "Streamable") {
+      return (
+        <svg {...common}>
+          <rect x="1" y="1" width="22" height="22" rx="6" fill="#0F90FA" />
+          <text x="12" y="12.6" fill="#fff" fontSize="14" fontWeight="800" textAnchor="middle" dominantBaseline="central">
+            S
+          </text>
+        </svg>
+      );
+    }
+    return <Globe className="site-icon" size={22} strokeWidth={1.75} aria-hidden="true" />;
+  }
+  // A mark too pale to stand on glass is drawn dark, on a tile of its colour.
+  if (logo.color.startsWith("badge:")) {
+    return (
+      <svg {...common}>
+        <rect width="24" height="24" rx="6" fill={logo.color.slice(6)} />
+        <path d={logo.path} fill="#111" transform="translate(4.2 4.2) scale(0.65)" />
+      </svg>
+    );
+  }
+  if (logo.color === "gradient") {
+    return (
+      <svg {...common}>
+        <defs>
+          <linearGradient id={gradient} x1="2" y1="22" x2="22" y2="2" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stopColor="#FEC43B" />
+            <stop offset="0.5" stopColor="#EE2A7B" />
+            <stop offset="1" stopColor="#6228D7" />
+          </linearGradient>
+        </defs>
+        <path d={logo.path} fill={`url(#${gradient})`} />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common}>
+      <path d={logo.path} fill={logo.color === "text" ? "currentColor" : logo.color} />
+    </svg>
+  );
+}
+
 /**
  * Sign in to a site without leaving the app. The site's own page is shown
  * inside this page; the sign-in made there is kept for downloads.
@@ -623,6 +687,29 @@ export function SignInView() {
     }
   }
 
+  /** The browser whose sign-ins are being read right now, if any. */
+  const [reading, setReading] = useState<string | null>(null);
+
+  async function importBrowser(browser: { value: string; label: string }) {
+    if (reading) return;
+    setReading(browser.value);
+    try {
+      const before = new Set(signedIn);
+      const sites = await api.importBrowserSignIn(browser.value);
+      setSignedIn(sites);
+      const fresh = sites.filter((site) => !before.has(site)).length;
+      actions.toast(
+        fresh > 0
+          ? `Brought over ${fresh} sign-in${fresh === 1 ? "" : "s"} from ${browser.label}`
+          : `Sign-ins from ${browser.label} are up to date`,
+      );
+    } catch (e) {
+      actions.toast(String(e), "error");
+    } finally {
+      setReading(null);
+    }
+  }
+
   async function forget() {
     try {
       await api.forgetSignIns();
@@ -664,16 +751,44 @@ export function SignInView() {
             on its own page right here, then save. RushDownload keeps that sign-in on this
             computer and downloads as you.
           </p>
-          <div className="signin-sites">
+          <div className="signin-sites site-grid">
             {SIGN_IN_SITES.map((site) => (
-              <button key={site.label} type="button" className="btn" onClick={() => openSite(site)}>
+              <button key={site.label} type="button" className="btn site-btn" onClick={() => openSite(site)}>
+                <SiteIcon site={site.label} />
                 {site.label}
               </button>
             ))}
-            <button type="button" className="btn" onClick={importFile}>
-              <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> Import a cookies file
-            </button>
           </div>
+          <section className="signin-browsers" aria-label="Bring sign-ins over from a browser">
+            <h2>Already signed in somewhere else?</h2>
+            <p>
+              Bring the sign-ins over from a browser on this computer, with nothing to type and no
+              file to export. Close that browser first. Every sign-in it holds is copied, not only
+              the ones for video sites.
+            </p>
+            <div className="signin-sites">
+              {COOKIE_BROWSERS.map((browser) => (
+                <button
+                  key={browser.value}
+                  type="button"
+                  className={`btn${reading === browser.value ? " is-busy" : ""}`}
+                  disabled={reading != null}
+                  aria-busy={reading === browser.value}
+                  onClick={() => importBrowser(browser)}
+                >
+                  <Globe size={16} strokeWidth={2} aria-hidden="true" />
+                  {reading === browser.value ? `Reading ${browser.label}` : browser.label}
+                </button>
+              ))}
+              <button type="button" className="btn" disabled={reading != null} onClick={importFile}>
+                <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> Import a cookies file
+              </button>
+            </div>
+            <small className="form-note">
+              Firefox works best. Chrome, Edge, Brave, Opera and Vivaldi lock their sign-ins on
+              Windows, and often refuse.
+            </small>
+          </section>
           <p className="signin-status">
             {signedIn.length > 0 ? (
               <>
@@ -707,6 +822,28 @@ export function SignInView() {
 
 /* ---------- home ---------- */
 
+/** What the app is good at, in four marks along the foot of the Home page. */
+/** A profile's numbers: every digit for posts, "94.4K" for a following. */
+const WHOLE = new Intl.NumberFormat("en");
+const SHORT = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+
+/** "Dec 2017", from the day a profile joined ("2017-12-14"). */
+function joinedIn(day: string): string {
+  const at = new Date(`${day}T00:00:00`);
+  return Number.isNaN(at.getTime()) ? day : at.toLocaleDateString("en", { month: "short", year: "numeric" });
+}
+
+const FEATURES: { icon: LucideIcon; title: string; detail: string }[] = [
+  { icon: Zap, title: "Ultra Fast", detail: "Multi-connection" },
+  { icon: ShieldCheck, title: "Safe & Secure", detail: "Encrypted DNS" },
+  { icon: Globe, title: "Built-in", detail: "Browser" },
+  { icon: LayoutGrid, title: "Smart", detail: "Queue & resume" },
+];
+
+/** The link in the Home box, kept while the app is open: a visit to another
+ *  page (to sign in, say) finds it still there on the way back. */
+let keptLink = "";
+
 export function HomeView(props: {
   quality: string;
   go: (nav: Nav) => void;
@@ -714,7 +851,10 @@ export function HomeView(props: {
   copied?: { text: string; n: number } | null;
 }) {
   const { downloads, actions } = useApp();
-  const [url, setUrl] = useState(props.copied?.text ?? "");
+  const [url, setUrl] = useState(props.copied?.text ?? keptLink);
+  keptLink = url;
+  /** The link's site will not show this to a visitor who is not signed in. */
+  const [locked, setLocked] = useState(false);
   useEffect(() => {
     if (props.copied) setUrl(props.copied.text);
   }, [props.copied]);
@@ -730,6 +870,13 @@ export function HomeView(props: {
   /** What the playlist or profile holds (name, picture, videos, photos, length), once looked up. */
   const [playlist, setPlaylist] = useState<PlaylistInfo | null>(null);
   const [counting, setCounting] = useState(false);
+  /** Whose profile it is: the name it shows, its picture and its line about itself. */
+  const [face, setFace] = useState<ProfileFace | null>(null);
+  /** The same, with its numbers, as the site itself answers a visitor who is not signed in. */
+  const [stats, setStats] = useState<ProfileFace | null>(null);
+  const [bannerFailed, setBannerFailed] = useState<string | null>(null);
+  /** A picture the site would not hand over; the card falls back to its plain badge. */
+  const [pictureFailed, setPictureFailed] = useState<string | null>(null);
   /** The resolutions the playlist's videos really have; null while unknown. */
   const [listHeights, setListHeights] = useState<number[] | null>(null);
   const [sizing, setSizing] = useState(false);
@@ -750,11 +897,14 @@ export function HomeView(props: {
     setVideo(null);
     setProfile(null);
     setPlaylist(null);
+    setFace(null);
+    setStats(null);
     setListHeights(null);
     setSizing(false);
     setCounting(false);
     setLooking(false);
     setCatchLink(null);
+    setLocked(false);
     // A profile's name may end like a file's ("john.doe"), so any web link is asked about.
     if (!looksLikeUrl(link) || !link.toLowerCase().startsWith("http")) return;
     let stale = false;
@@ -767,11 +917,32 @@ export function HomeView(props: {
         // Start from the usual quality.
         setChoice(QUALITIES.some((q) => q.value === props.quality) ? props.quality : "best");
         setCounting(true);
+        // Whose profile it is comes first and on its own: it takes a second,
+        // and the site gives it even where it will not list the posts.
+        const seen = who.site.endsWith("playlist")
+          ? Promise.resolve(null)
+          : api.profileFace(link).catch(() => null);
+        seen.then((found) => !stale && setFace(found));
+        // Its numbers (posts, followers, when it joined) take a moment longer,
+        // and are asked for as a visitor who is not signed in.
+        if (!who.site.endsWith("playlist")) {
+          api
+            .profileStats(link)
+            .then((found) => !stale && setStats(found))
+            .catch(() => {});
+        }
         api
           .playlistInfo(link)
           .then((found) => !stale && setPlaylist(found))
-          .catch(() => {
-            // The card still says what Download will do.
+          .catch(async (e) => {
+            if (stale) return;
+            // The card still says what Download will do. A profile the site
+            // shows to everyone but "cannot find" for the downloader is one
+            // it only lists for signed-in visitors.
+            const there = await seen;
+            if (stale) return;
+            const hidden = !!(there?.name || there?.picture) && /not found|could not be found/i.test(String(e));
+            if (needsSignIn(String(e)) || hidden) setLocked(true);
           })
           .finally(() => !stale && setCounting(false));
         return;
@@ -792,11 +963,18 @@ export function HomeView(props: {
             setChoice(fits ? String(fits) : "best");
           }
         })
-        .catch(() => {
+        .catch((e) => {
+          if (stale) return;
+          // The site wants a signed-in visitor: looking again would find the
+          // same closed door, so the user is told where to sign in.
+          if (needsSignIn(String(e))) {
+            setLocked(true);
+            return;
+          }
           // The site downloader cannot read this page. The page itself is
           // opened out of sight and its video is caught as it plays, so the
           // same card can be shown.
-          if (!stale) setCatchLink(link);
+          setCatchLink(link);
         })
         .finally(() => {
           if (!stale) setLooking(false);
@@ -871,9 +1049,58 @@ export function HomeView(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catching, caught, caughtSizes]);
 
+  const lockedSite = locked ? signInSiteOf(link) : null;
   const isPlaylist = !!profile && profile.site.endsWith("playlist");
   // Sites whose profiles are videos, where a resolution can be picked.
-  const picksQuality = !!profile && (isPlaylist || profile.site === "YouTube" || profile.site === "TikTok");
+  const picksQuality =
+    !!profile && (isPlaylist || ["YouTube", "TikTok", "Pornhub"].includes(profile.site));
+  /** The name the profile shows, once looked up; until then the one in its link. */
+  const listedName = playlist?.title.trim() || "";
+  /** Whose profile it is, from both places that say: the site's own answer first, its page otherwise. */
+  const who: ProfileFace | null =
+    face || stats
+      ? {
+          name: stats?.name ?? face?.name ?? null,
+          // The page's picture is the small one, which is all a card needs.
+          picture: face?.picture ?? stats?.picture ?? null,
+          about: stats?.about ?? face?.about ?? null,
+          banner: stats?.banner ?? null,
+          posts: stats?.posts ?? null,
+          media: stats?.media ?? null,
+          followers: stats?.followers ?? null,
+          following: stats?.following ?? null,
+          joined: stats?.joined ?? null,
+        }
+      : null;
+  const shownName =
+    // The listing's own name, unless it only repeats the one in the link.
+    (profile && listedName.toLowerCase() !== profile.name.toLowerCase() ? listedName : "") ||
+    who?.name ||
+    listedName ||
+    profile?.name ||
+    "";
+  /** The profile's picture: its own from the page, else what the listing has (a channel's own on YouTube). */
+  const cardPicture = isPlaylist
+    ? (playlist?.thumbnail ?? null)
+    : profile?.site === "YouTube"
+      ? (playlist?.thumbnail ?? who?.picture ?? null)
+      : (who?.picture ?? playlist?.thumbnail ?? null);
+  const cardBanner = !isPlaylist && who?.banner && bannerFailed !== who.banner ? who.banner : null;
+  /** "4,678 posts", "94.4K followers", "Joined Dec 2017": each only where the site says. */
+  const numbers: [string, string][] = who
+    ? ([
+        who.posts != null ? [WHOLE.format(who.posts), who.posts === 1 ? "post" : "posts"] : null,
+        who.media != null ? [WHOLE.format(who.media), "with photos or videos"] : null,
+        who.followers != null ? [SHORT.format(who.followers), who.followers === 1 ? "follower" : "followers"] : null,
+        who.following != null ? [SHORT.format(who.following), "following"] : null,
+        who.joined ? ["", `Joined ${joinedIn(who.joined)}`] : null,
+      ].filter(Boolean) as [string, string][])
+    : [];
+  /** The site shows this profile to anyone; only the list of its posts is kept for signed-in visitors. */
+  const profileShown = !!profile && !isPlaylist && !!(who?.name || who?.picture);
+  /** The name in the link, when the card is titled with the shown name instead. */
+  const handle =
+    profile && shownName.toLowerCase() !== profile.name.toLowerCase() ? `@${profile.name}` : null;
   const plus = playlist?.more ? "+" : "";
   /** "27 videos", "214 photos", "5:39:18 total": what was counted. */
   const holds = playlist
@@ -1002,6 +1229,27 @@ export function HomeView(props: {
           <button type="submit" className="btn btn-primary" disabled={!valid}>Download</button>
         </form>
 
+        {locked && (
+          <div className="signin-needed" role="status">
+            <KeyRound size={18} strokeWidth={2} aria-hidden="true" />
+            <p>
+              <strong>
+                {profileShown
+                  ? `${lockedSite ?? "This site"} shows this profile to everyone, but lists its posts only for signed-in visitors.`
+                  : lockedSite
+                    ? `${lockedSite} only shows this to signed-in visitors.`
+                    : "This site only shows this to signed-in visitors."}
+              </strong>{" "}
+              {lockedSite === "YouTube"
+                ? "Go to the Sign in page and bring your sign-in over from a browser (YouTube does not allow signing in inside other apps). "
+                : `Go to the Sign in page and sign in${lockedSite ? ` to ${lockedSite}` : ""}. `}
+              Then come back: your link stays here, ready to download.
+            </p>
+            <button type="button" className="btn btn-small btn-primary" onClick={() => props.go("signin")}>
+              Go to Sign in
+            </button>
+          </div>
+        )}
         {((looking && !video) || (catchLink && catching && caughtOffers.length === 0)) && (
           <p className="video-looking" role="status">
             <span className="live-dot" aria-hidden="true" />{" "}
@@ -1048,9 +1296,30 @@ export function HomeView(props: {
           </section>
         )}
         {profile && (
-          <section className="video-card profile-card" aria-label="Profile found at this link">
-            {playlist?.thumbnail ? (
-              <img className="video-thumb" src={playlist.thumbnail} alt="" referrerPolicy="no-referrer" />
+          <section
+            className={`video-card profile-card${cardBanner ? " has-banner" : ""}`}
+            aria-label="Profile found at this link"
+          >
+            {cardBanner && (
+              <img
+                className="profile-banner"
+                src={cardBanner}
+                alt=""
+                referrerPolicy="no-referrer"
+                onError={() => setBannerFailed(cardBanner)}
+              />
+            )}
+            {cardPicture && pictureFailed !== cardPicture ? (
+              <img
+                // A playlist shows a video's picture; a profile shows whose it is.
+                className={isPlaylist ? "video-thumb" : "profile-face"}
+                src={cardPicture}
+                alt=""
+                referrerPolicy="no-referrer"
+                onError={() => setPictureFailed(cardPicture)}
+              />
+            ) : !isPlaylist && !playlist && !who && counting ? (
+              <span className="profile-face shimmer" aria-hidden="true" />
             ) : (
               <span className="profile-badge" aria-hidden="true">
                 <Users size={22} strokeWidth={2} />
@@ -1077,14 +1346,28 @@ export function HomeView(props: {
                 </>
               ) : (
                 <>
-                  <h2 className="video-title">{profile.name}</h2>
-                  {!playlist && counting ? (
+                  <h2 className="video-title" title={shownName}>{shownName}</h2>
+                  {/* Who it is shows as soon as it is known; the counts join the line when they are in. */}
+                  {!playlist && !who && counting ? (
                     <div className="shimmer-lines" aria-hidden="true">
                       <span className="shimmer shimmer-meta" />
                     </div>
                   ) : (
                     <p className="video-meta">
-                      {playlist ? [...holds, `${profile.site} profile`].join(" · ") : `${profile.site} profile`}
+                      {[handle, ...holds, `${profile.site} profile`].filter(Boolean).join(" · ")}
+                    </p>
+                  )}
+                  {who?.about && (
+                    <p className="profile-about" title={who.about}>{who.about}</p>
+                  )}
+                  {/* What the profile shows any visitor: its numbers, and when it joined. */}
+                  {numbers.length > 0 && (
+                    <p className="profile-numbers">
+                      {numbers.map(([figure, what]) => (
+                        <span key={what}>
+                          {figure && <strong>{figure}</strong>} {what}
+                        </span>
+                      ))}
                     </p>
                   )}
                 </>
@@ -1204,20 +1487,54 @@ export function HomeView(props: {
         </div>
 
         {running.length > 0 && (
-          <button type="button" className="live" onClick={() => props.go("downloads")}>
-            <span className="live-dot" aria-hidden="true" />
-            {running.length} downloading · {formatSpeed(speed)}
-            <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
-          </button>
+          <section className="glance" aria-label="Downloading now">
+            <button type="button" className="live" onClick={() => props.go("downloads")}>
+              <span className="live-dot" aria-hidden="true" />
+              {running.length} downloading · {formatSpeed(speed)}
+              <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
+            </button>
+            {/* The first few, each with how far along it is; the rest are on the Downloads page. */}
+            <ul className="glance-list">
+              {running.slice(0, 3).map((d) => {
+                const percent = percentOf(d);
+                return (
+                  <li key={d.id}>
+                    <FileIcon d={d} />
+                    <span className="glance-name" title={displayName(d)}>{displayName(d)}</span>
+                    <span className="glance-figure">
+                      {percent != null
+                        ? `${percent}%`
+                        : d.status === "connecting"
+                          ? "Connecting"
+                          : formatBytes(d.downloaded)}
+                    </span>
+                    <span className={`glance-bar${percent == null ? " is-open" : ""}`} aria-hidden="true">
+                      <span style={{ width: `${percent ?? 100}%` }} />
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
         )}
       </div>
+
+      <ul className="features" aria-label="What RushDownload does">
+        {FEATURES.map((feature) => (
+          <li key={feature.title}>
+            <feature.icon size={24} strokeWidth={2} aria-hidden="true" />
+            <strong>{feature.title}</strong>
+            <span>{feature.detail}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
 
 /* ---------- downloads ---------- */
 
-type Chip = "all" | "running" | "completed" | "paused" | "failed" | "queued";
+type Chip = "all" | "running" | "completed" | "paused" | "failed" | "queued" | "deleted";
 type Sort = "newest" | "oldest" | "name" | "largest" | "smallest" | "fastest";
 type TypeFilter = "all" | Category;
 type DateFilter = "any" | "today" | "week" | "month";
@@ -1226,10 +1543,12 @@ type SizeFilter = "any" | "small" | "medium" | "large";
 const CHIPS: { id: Chip; label: string; match: (d: Download) => boolean }[] = [
   { id: "all", label: "All", match: () => true },
   { id: "running", label: "Downloading", match: isRunning },
-  { id: "completed", label: "Completed", match: (d) => d.status === "completed" },
+  // Completed means the file is there; one deleted since has a chip of its own.
+  { id: "completed", label: "Completed", match: (d) => d.status === "completed" && !isDeleted(d) },
   { id: "paused", label: "Paused", match: (d) => d.status === "paused" },
   { id: "failed", label: "Failed", match: (d) => d.status === "failed" },
   { id: "queued", label: "Queued", match: (d) => d.status === "queued" },
+  { id: "deleted", label: "Deleted", match: isDeleted },
 ];
 
 const SORTS: { value: Sort; label: string }[] = [
@@ -1303,8 +1622,123 @@ function sortDownloads(list: Download[], sort: Sort): Download[] {
   }
 }
 
+/* ---------- transfer summary ---------- */
+
+/** Total download speed, read once a second. Kept for as long as the app is
+ *  open, so the graph is still there after a visit to another page. */
+const speedLog: { at: number; speed: number }[] = [];
+const SPEED_LOG_LENGTH = 60;
+const SPEED_LOG_MAX_AGE = 90_000;
+
+/** A small filled line of recent readings; flat when there is nothing to show. */
+function MiniGraph({ values }: { values: number[] }) {
+  const fade = useId().replace(/[^a-zA-Z0-9]/g, "");
+  const w = 240;
+  const h = 40;
+  const top = 4;
+  const bottom = h - 2;
+  const shown = values.length > 1 ? values : [0, 0];
+  // Headroom above the fastest reading, so a steady speed is a line, not a full block.
+  const high = Math.max(...shown, 1) * 1.4;
+  const pts = shown.map(
+    (v, i) => [(i / (shown.length - 1)) * w, bottom - (v / high) * (bottom - top)] as const,
+  );
+  // A soft curve: each reading is a control point, the line passes midway between them.
+  let line = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const midX = (pts[i][0] + pts[i + 1][0]) / 2;
+    const midY = (pts[i][1] + pts[i + 1][1]) / 2;
+    line += ` Q${pts[i][0].toFixed(1)},${pts[i][1].toFixed(1)} ${midX.toFixed(1)},${midY.toFixed(1)}`;
+  }
+  const last = pts[pts.length - 1];
+  line += ` L${last[0].toFixed(1)},${last[1].toFixed(1)}`;
+  return (
+    <svg className="stat-graph" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <linearGradient id={fade} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="currentColor" stopOpacity="0.22" />
+          <stop offset="1" stopColor="currentColor" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={`${line} L${w},${h} L0,${h} Z`} fill={`url(#${fade})`} />
+      <path d={line} className="stat-line" />
+    </svg>
+  );
+}
+
+/** Speed now, as a graph of the last minute, and how much has been downloaded.
+ *  Shown at the foot of the sidebar, so it is in view on every page. */
+export function TransferSummary() {
+  const { downloads } = useApp();
+  const latest = useRef(downloads);
+  latest.current = downloads;
+  const [, redraw] = useState(0);
+
+  useEffect(() => {
+    const read = () => {
+      const now = Date.now();
+      while (speedLog.length > 0 && now - speedLog[0].at > SPEED_LOG_MAX_AGE) speedLog.shift();
+      speedLog.push({ at: now, speed: latest.current.filter(isRunning).reduce((sum, d) => sum + d.speed, 0) });
+      if (speedLog.length > SPEED_LOG_LENGTH) speedLog.shift();
+      redraw((n) => n + 1);
+    };
+    read();
+    const timer = window.setInterval(read, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // What is in hand: downloading, connecting, waiting for a slot, or paused.
+  // With nothing in hand there is nothing to read here, and the sidebar is
+  // left clear. (The speed log above keeps running, so the graph has its
+  // last minute ready the moment something starts.)
+  const inHand = downloads.filter((d) => isRunning(d) || d.status === "queued" || d.status === "paused");
+  if (inHand.length === 0) return null;
+
+  const speed = inHand.filter(isRunning).reduce((sum, d) => sum + d.speed, 0);
+  const done = inHand.reduce((sum, d) => sum + d.downloaded, 0);
+  // Everything in hand will have downloaded once it is finished. A download
+  // whose size is not known yet counts for what it has so far. What is
+  // already finished is History's business, not this meter's.
+  const total = inHand.reduce((sum, d) => sum + Math.max(d.total ?? 0, d.downloaded), 0);
+  const share = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+
+  return (
+    <section className="stats" aria-label="Transfer summary">
+      <div className="stat" title="Download speed">
+        {/* The icon stands in for the word, and moves while anything is coming down. */}
+        <div className="stat-trace">
+          <MiniGraph values={speedLog.map((s) => s.speed)} />
+          <DownloadGlyph
+            className={`stat-icon${speed > 0 ? " is-active" : ""}`}
+            size={16}
+            strokeWidth={2.25}
+            aria-hidden="true"
+          />
+        </div>
+        <strong aria-label={`Download speed ${formatSpeed(speed)}`}>{formatSpeed(speed)}</strong>
+      </div>
+      <div className="stat" title="Downloaded so far, of everything downloading, waiting or paused">
+        <span className="stat-graph stat-meter" aria-hidden="true">
+          <span className="bar bar-tall">
+            <span className="fill" style={{ width: `${share}%` }} />
+          </span>
+          <small>{Math.floor(share)}%</small>
+        </span>
+        <strong>
+          {formatBytes(done)} <span className="stat-of">/ {formatBytes(total)}</span>
+        </strong>
+        <span>Total</span>
+      </div>
+    </section>
+  );
+}
+
 export function DownloadsView(props: RowHandlers & { clearSelection: () => void; go: (nav: Nav) => void }) {
-  const { downloads, actions } = useApp();
+  const { downloads: everything, actions } = useApp();
+  // This page is for what can be used or is on its way: everything running,
+  // waiting, failed or still on disk, and what was deleted in the last few
+  // days. Older deleted downloads are in History.
+  const downloads = useMemo(() => everything.filter((d) => onDownloadsPage(d)), [everything]);
   const [chip, setChip] = useState<Chip>(() => loadPref<Chip>("chip", "all", CHIPS.map((c) => c.id)));
   const [sort, setSort] = useState<Sort>(() => loadPref<Sort>("sort", "newest", SORTS.map((s) => s.value)));
   const [type, setType] = useState<TypeFilter>("all");
@@ -1350,6 +1784,12 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
         <span className="spacer" />
         <IconBtn
           outlined
+          icon={FolderOpen}
+          label="Open download folder"
+          onClick={() => api.openDownloadDir().catch((e) => actions.toast(String(e), "error"))}
+        />
+        <IconBtn
+          outlined
           icon={Search}
           label="Search downloads"
           active={filtersOpen && query !== ""}
@@ -1379,8 +1819,9 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
       <div className="chips" role="tablist" aria-label="Filter by status">
         {CHIPS.map((c) => {
           const count = downloads.filter(c.match).length;
-          // Queued only earns a chip while something is actually waiting.
-          if (c.id === "queued" && count === 0 && chip !== "queued") return null;
+          // Queued only earns a chip while something is actually waiting, and
+          // Deleted only while a deleted download is still shown here.
+          if ((c.id === "queued" || c.id === "deleted") && count === 0 && chip !== c.id) return null;
           return (
             <button
               key={c.id}
@@ -1491,17 +1932,33 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
 export type Theme = "system" | "light" | "dark";
 export type Density = "comfortable" | "compact";
 
-type Section = "general" | "downloads" | "network" | "scheduler" | "appearance" | "advanced";
-const SECTIONS: { id: Section; label: string; icon: LucideIcon }[] = [
+type Section = "general" | "downloads" | "network" | "performance" | "scheduler" | "appearance" | "advanced";
+export type SettingsSection = Section;
+/** The sections of Settings, in order: one tab each. */
+export const SETTINGS_SECTIONS: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", icon: SettingsGlyph },
   { id: "downloads", label: "Downloads", icon: DownloadGlyph },
   { id: "network", label: "Network", icon: Wifi },
+  { id: "performance", label: "Performance", icon: Gauge },
   { id: "scheduler", label: "Scheduler", icon: CalendarClock },
   { id: "appearance", label: "Appearance", icon: Brush },
   { id: "advanced", label: "Advanced", icon: Wrench },
 ];
 
-const SPEED_PRESETS = [0, 1, 5, 10, 20].map((mb) => mb * MB);
+/** The stops of the speed slider, 100 KB/s to 100 MB/s: fine at the slow end, coarse at the fast end. */
+const SPEED_STOPS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 7.5, 10, 15, 20, 30, 40, 50, 75, 100].map((mb) =>
+  Math.round(mb * MB),
+);
+const DEFAULT_SPEED_LIMIT = 5 * MB;
+
+/** The slider stop nearest to a limit, so a limit set elsewhere still has a place on it. */
+function speedStopOf(limit: number): number {
+  let best = 0;
+  for (let i = 1; i < SPEED_STOPS.length; i++) {
+    if (Math.abs(SPEED_STOPS[i] - limit) < Math.abs(SPEED_STOPS[best] - limit)) best = i;
+  }
+  return best;
+}
 
 export const SHORTCUTS: [string, string][] = [
   ["Ctrl N", "Add a download"],
@@ -1518,13 +1975,37 @@ export const SHORTCUTS: [string, string][] = [
 ];
 
 /** A setting shown for a feature the app cannot do yet: visible, switched off, labelled. */
-function SoonToggle({ label }: { label: string }) {
+/** One setting on a line: what it is, and a word about it, on the left; its control on the right. */
+function SettingRow(props: { label: string; id?: string; hint?: ReactNode; wide?: boolean; children: ReactNode }) {
   return (
-    <label className="toggle is-disabled">
-      <input type="checkbox" disabled />
+    <div className={`setting-row${props.wide ? " is-wide" : ""}`}>
+      <div className="setting-text">
+        <span id={props.id}>{props.label}</span>
+        {props.hint && <small>{props.hint}</small>}
+      </div>
+      <div className="setting-control">{props.children}</div>
+    </div>
+  );
+}
+
+/** A setting that is on or off: the whole line is the switch. Without `onChange` it is not built yet. */
+function SettingToggle(props: { label: string; checked?: boolean; onChange?: (on: boolean) => void }) {
+  const soon = !props.onChange;
+  return (
+    <label className={`setting-row toggle${soon ? " is-disabled" : ""}`}>
+      <span className="setting-text">
+        <span>
+          {props.label}
+          {soon && <span className="soon">Soon</span>}
+        </span>
+      </span>
+      <input
+        type="checkbox"
+        disabled={soon}
+        checked={!soon && !!props.checked}
+        onChange={(e) => props.onChange?.(e.target.checked)}
+      />
       <span className="toggle-dot" aria-hidden="true" />
-      <span>{label}</span>
-      <span className="soon">Soon</span>
     </label>
   );
 }
@@ -1567,11 +2048,43 @@ export function SettingsView(props: {
   quality: string;
   onQuality: (q: string) => void;
   onSettings: (s: Settings) => void;
+  /** Which tab is in front, and what picks another. */
+  section: Section;
+  onSection: (section: Section) => void;
 }) {
   const { settings, actions } = useApp();
-  const [section, setSection] = useState<Section>("general");
+  const section = props.section;
+  /** The turn from one tab to another that is on its way, to know which one ends last. */
+  const turning = useRef<object | null>(null);
+
+  /** Brings another tab to the front. Where the webview can, the old panel
+   *  and the new one are shown as one move: what is leaving slides off the
+   *  way the tabs run, what is arriving follows it in, and the panel's
+   *  height glides to fit. Anywhere else the tab simply changes. */
+  function turnTo(next: Section) {
+    if (next === section) return;
+    const order = SETTINGS_SECTIONS.map((s) => s.id);
+    const root = document.documentElement;
+    const start = (
+      document as Document & { startViewTransition?: (change: () => void) => { finished: Promise<unknown> } }
+    ).startViewTransition;
+    if (!start || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      props.onSection(next);
+      return;
+    }
+    // Which way the tabs run from here: the content travels the same way.
+    root.dataset.settingsTurn = order.indexOf(next) > order.indexOf(section) ? "forward" : "back";
+    const turn = start.call(document, () => flushSync(() => props.onSection(next)));
+    turning.current = turn;
+    const settle = () => {
+      // A newer turn has taken over: it clears up after itself.
+      if (turning.current === turn) delete root.dataset.settingsTurn;
+    };
+    turn.finished.then(settle, settle);
+  }
   const [tools, setTools] = useState<ToolStatus | null>(null);
-  const [customLimit, setCustomLimit] = useState(false);
+  /** The limit last set by hand, to come back to after a spell of Unlimited. */
+  const lastLimit = useRef(DEFAULT_SPEED_LIMIT);
   useEffect(() => {
     api.tools().then(setTools).catch(() => setTools(null));
   }, []);
@@ -1583,23 +2096,24 @@ export function SettingsView(props: {
     const n = Math.round(Number(value));
     return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : min;
   };
-  const presetLimit = SPEED_PRESETS.includes(settings.speed_limit) && !customLimit;
+  const limited = settings.speed_limit > 0;
+  if (limited) lastLimit.current = settings.speed_limit;
+  const speedStop = speedStopOf(settings.speed_limit);
 
   async function browse() {
     const dir = await api.pickFolder(settings!.download_dir);
     if (dir) update({ download_dir: dir });
   }
 
-  const folderField = (
-    <div className="field">
-      <span id="set-dir">Default Download Location</span>
+  const folderRow = (
+    <SettingRow label="Default Download Location" id="set-dir" wide>
       <div className="input-with-button">
         <input type="text" readOnly aria-labelledby="set-dir" value={settings.download_dir} />
         <button type="button" title="Choose folder" aria-label="Choose folder" onClick={browse}>
           <Folder size={17} strokeWidth={2} aria-hidden="true" />
         </button>
       </div>
-    </div>
+    </SettingRow>
   );
 
   return (
@@ -1607,182 +2121,219 @@ export function SettingsView(props: {
       <div className="settings">
         <div className="settings-side">
           <h1>Settings</h1>
-          <nav className="settings-nav" aria-label="Settings sections">
-            {SECTIONS.map((s) => (
+        </div>
+
+        {/* Tabs as a browser has them: the one in front is part of the panel under it. */}
+        <div className="settings-main">
+          <div className="settings-nav settings-tabs" role="tablist" aria-label="Settings sections">
+            {SETTINGS_SECTIONS.map((s) => (
               <button
                 key={s.id}
                 type="button"
-                aria-current={section === s.id ? "page" : undefined}
+                role="tab"
+                id={`settings-tab-${s.id}`}
+                aria-selected={section === s.id}
+                aria-controls="settings-panel"
                 className={section === s.id ? "is-active" : undefined}
-                onClick={() => setSection(s.id)}
+                // In a narrow window only the mark shows; its name is still here.
+                title={s.label}
+                onClick={() => turnTo(s.id)}
               >
-                <s.icon size={17} strokeWidth={2} aria-hidden="true" />
-                {s.label}
+                <s.icon size={15} strokeWidth={2} aria-hidden="true" />
+                <span>{s.label}</span>
               </button>
             ))}
-          </nav>
-        </div>
-
-        <div className="settings-body">
+          </div>
+          <div
+            className="settings-panel"
+            id="settings-panel"
+            role="tabpanel"
+            aria-labelledby={`settings-tab-${section}`}
+          >
+        <div className="settings-body" key={section}>
           {section === "general" && (
             <>
-              <h2>General Settings</h2>
-              <div className="toggles">
-                <label className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={props.clipWatch}
-                    onChange={(e) => props.onClipWatch(e.target.checked)}
-                  />
-                  <span className="toggle-dot" aria-hidden="true" />
-                  <span>Put links I copy into the Home box</span>
-                </label>
-                <label className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={props.askFolder}
-                    onChange={(e) => props.onAskFolder(e.target.checked)}
-                  />
-                  <span className="toggle-dot" aria-hidden="true" />
-                  <span>Ask where to save each profile or playlist</span>
-                </label>
-                <SoonToggle label="Launch on system startup" />
-                <SoonToggle label="Minimize to tray" />
-                <SoonToggle label="Show download notifications" />
-                <SoonToggle label="Enable hardware acceleration" />
+              <h2>General</h2>
+              <div className="setting-card">
+                <SettingToggle
+                  label="Put links I copy into the Home box"
+                  checked={props.clipWatch}
+                  onChange={props.onClipWatch}
+                />
+                <SettingToggle
+                  label="Ask where to save each profile or playlist"
+                  checked={props.askFolder}
+                  onChange={props.onAskFolder}
+                />
               </div>
-              {folderField}
-              <label className="field">
-                <span>Language</span>
-                <select disabled value="en" onChange={() => {}}>
-                  <option value="en">English</option>
-                </select>
-                <small>More languages are not available yet.</small>
-              </label>
+              <div className="setting-card">
+                {folderRow}
+                <SettingRow label="Language" id="set-language" hint="More languages are not available yet.">
+                  <select disabled aria-labelledby="set-language" value="en" onChange={() => {}}>
+                    <option value="en">English</option>
+                  </select>
+                </SettingRow>
+              </div>
+              <h3>Not built yet</h3>
+              <div className="setting-card">
+                <SettingToggle label="Launch on system startup" />
+                <SettingToggle label="Minimize to tray" />
+                <SettingToggle label="Show download notifications" />
+                <SettingToggle label="Enable hardware acceleration" />
+              </div>
             </>
           )}
 
           {section === "downloads" && (
             <>
               <h2>Downloads</h2>
-              {folderField}
-              <div>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => api.openDownloadDir().catch((e) => actions.toast(String(e), "error"))}
-                >
-                  <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> Open download folder
-                </button>
+              <div className="setting-card">
+                {folderRow}
+                <SettingRow label="Download folder" hint="Where finished files are, in Explorer.">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => api.openDownloadDir().catch((e) => actions.toast(String(e), "error"))}
+                  >
+                    <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> Open download folder
+                  </button>
+                </SettingRow>
               </div>
-              <label className="field">
-                <span>Default quality for video pages</span>
-                <select value={props.quality} onChange={(e) => props.onQuality(e.target.value)}>
-                  {QUALITIES.map((q) => (
-                    <option key={q.value} value={q.value}>{q.label}</option>
-                  ))}
-                </select>
-                <small>Used for links such as YouTube. Direct file links ignore it.</small>
-              </label>
-              <label className="field">
-                <span>Use a browser's sign-in</span>
-                <select
-                  value={settings.cookies_browser ?? ""}
-                  onChange={(e) => update({ cookies_browser: e.target.value || null })}
+              <div className="setting-card">
+                <SettingRow
+                  label="Default quality for video pages"
+                  id="set-quality"
+                  hint="Used for links such as YouTube. Direct file links ignore it."
                 >
-                  <option value="">Off</option>
-                  {COOKIE_BROWSERS.map((b) => (
-                    <option key={b.value} value={b.value}>Use my {b.label} sign-in</option>
-                  ))}
-                </select>
-                <small>
-                  Reads a browser's saved sign-in. Chrome, Edge and Brave lock their sign-ins
-                  on Windows, so this usually only works with Firefox. The Sign in page in the
-                  sidebar is the reliable way.
-                </small>
-              </label>
+                  <select
+                    aria-labelledby="set-quality"
+                    value={props.quality}
+                    onChange={(e) => props.onQuality(e.target.value)}
+                  >
+                    {QUALITIES.map((q) => (
+                      <option key={q.value} value={q.value}>{q.label}</option>
+                    ))}
+                  </select>
+                </SettingRow>
+                <SettingRow
+                  label="Use a browser's sign-in"
+                  id="set-cookies"
+                  hint={
+                    <>
+                      Reads a browser's saved sign-in. Chrome, Edge and Brave lock their sign-ins
+                      on Windows, so this usually only works with Firefox. The Sign in page in the
+                      sidebar is the reliable way.
+                    </>
+                  }
+                >
+                  <select
+                    aria-labelledby="set-cookies"
+                    value={settings.cookies_browser ?? ""}
+                    onChange={(e) => update({ cookies_browser: e.target.value || null })}
+                  >
+                    <option value="">Off</option>
+                    {COOKIE_BROWSERS.map((b) => (
+                      <option key={b.value} value={b.value}>Use my {b.label} sign-in</option>
+                    ))}
+                  </select>
+                </SettingRow>
+              </div>
             </>
           )}
 
           {section === "network" && (
             <>
               <h2>Network</h2>
-              <label className="field">
-                <span>Secure DNS</span>
-                <select
-                  value={settings.secure_dns ? "cloudflare" : "off"}
-                  onChange={(e) => update({ secure_dns: e.target.value === "cloudflare" })}
-                >
-                  <option value="cloudflare">Cloudflare (1.1.1.1)</option>
-                  <option value="off">Off (use this network's own)</option>
-                </select>
-                <small>
-                  On by default. Site names are looked up at Cloudflare over an encrypted
-                  connection, the way a browser's secure DNS setting does, so a network's own
-                  DNS cannot send a site to a dead address. A change applies to downloads at
-                  once, and to the Browser and Sign in pages after the app is restarted.
-                </small>
-              </label>
-              <label className="field">
-                <span>Connections per download</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={32}
-                  value={settings.connections}
-                  onChange={(e) => update({ connections: clamp(e.target.value, 1, 32) })}
-                />
-                <small>
-                  Each file is split across this many connections. Servers that refuse extra
-                  connections are detected and fewer are used.
-                </small>
-              </label>
-              <label className="field">
-                <span>Downloads at once</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={settings.max_concurrent}
-                  onChange={(e) => update({ max_concurrent: clamp(e.target.value, 1, 10) })}
-                />
-                <small>The rest wait in the queue.</small>
-              </label>
-              <div className="field">
-                <span id="set-limit">Speed limit</span>
-                <div className="field-row">
-                  <select
-                    aria-labelledby="set-limit"
-                    value={presetLimit ? String(settings.speed_limit) : "custom"}
-                    onChange={(e) => {
-                      if (e.target.value === "custom") {
-                        setCustomLimit(true);
-                      } else {
-                        setCustomLimit(false);
-                        update({ speed_limit: Number(e.target.value) });
-                      }
-                    }}
-                  >
-                    <option value="0">Unlimited</option>
-                    {SPEED_PRESETS.slice(1).map((v) => (
-                      <option key={v} value={v}>{formatSpeed(v)}</option>
-                    ))}
-                    <option value="custom">Custom</option>
-                  </select>
-                  {!presetLimit && (
+              <div className="setting-card">
+                <SettingRow
+                  label="Secure DNS"
+                  id="set-dns"
+                  hint={
                     <>
-                      <input
-                        type="number"
-                        min={1}
-                        aria-label="Custom speed limit in KB per second"
-                        value={Math.max(1, Math.round(settings.speed_limit / 1024))}
-                        onChange={(e) => update({ speed_limit: clamp(e.target.value, 1, 10_000_000) * 1024 })}
-                      />
-                      <span className="unit">KB/s</span>
+                      On by default. Site names are looked up at Cloudflare over an encrypted
+                      connection, the way a browser's secure DNS setting does, so a network's own
+                      DNS cannot send a site to a dead address. A change applies to downloads at
+                      once, and to the Browser and Sign in pages after the app is restarted.
                     </>
-                  )}
-                </div>
-                <small>Shared by every download.</small>
+                  }
+                >
+                  <select
+                    aria-labelledby="set-dns"
+                    value={settings.secure_dns ? "cloudflare" : "off"}
+                    onChange={(e) => update({ secure_dns: e.target.value === "cloudflare" })}
+                  >
+                    <option value="cloudflare">Cloudflare (1.1.1.1)</option>
+                    <option value="off">Off (use this network's own)</option>
+                  </select>
+                </SettingRow>
+              </div>
+              <div className="setting-card">
+                <SettingRow
+                  label="Connections per download"
+                  id="set-connections"
+                  hint="Each file is split across this many connections. Servers that refuse extra connections are detected and fewer are used."
+                >
+                  <input
+                    type="number"
+                    aria-labelledby="set-connections"
+                    min={1}
+                    max={32}
+                    value={settings.connections}
+                    onChange={(e) => update({ connections: clamp(e.target.value, 1, 32) })}
+                  />
+                </SettingRow>
+                <SettingRow label="Downloads at once" id="set-concurrent" hint="The rest wait in the queue.">
+                  <input
+                    type="number"
+                    aria-labelledby="set-concurrent"
+                    min={1}
+                    max={10}
+                    value={settings.max_concurrent}
+                    onChange={(e) => update({ max_concurrent: clamp(e.target.value, 1, 10) })}
+                  />
+                </SettingRow>
+              </div>
+            </>
+          )}
+
+          {section === "performance" && (
+            <>
+              <h2>Performance</h2>
+              <div className="setting-card">
+                <SettingRow
+                  label="Max download speed"
+                  id="set-speed"
+                  hint={
+                    limited
+                      ? "Shared by every download: together they stay under this speed."
+                      : "Downloads run as fast as the connection and the server allow."
+                  }
+                >
+                  <select
+                    aria-labelledby="set-speed"
+                    value={limited ? "manual" : "unlimited"}
+                    onChange={(e) => update({ speed_limit: e.target.value === "manual" ? lastLimit.current : 0 })}
+                  >
+                    <option value="unlimited">Unlimited</option>
+                    <option value="manual">Set manually</option>
+                  </select>
+                </SettingRow>
+                {limited && (
+                  <div className="setting-row setting-slider">
+                    <input
+                      type="range"
+                      min={0}
+                      max={SPEED_STOPS.length - 1}
+                      step={1}
+                      value={speedStop}
+                      aria-label="Max download speed"
+                      aria-valuetext={formatSpeed(settings.speed_limit)}
+                      style={{ "--fill": `${(speedStop / (SPEED_STOPS.length - 1)) * 100}%` } as React.CSSProperties}
+                      onChange={(e) => update({ speed_limit: SPEED_STOPS[Number(e.target.value)] })}
+                    />
+                    <output>{formatSpeed(settings.speed_limit)}</output>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -1790,66 +2341,73 @@ export function SettingsView(props: {
           {section === "scheduler" && (
             <>
               <h2>Scheduler</h2>
-              <p className="note">
-                Scheduling downloads for a set time is not built yet. Until then, downloads start
-                as soon as a slot is free, and you can pause or resume all of them at once
-                with <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd> and <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>R</kbd>.
-              </p>
+              <div className="setting-card setting-note">
+                <p className="note">
+                  Scheduling downloads for a set time is not built yet. Until then, downloads start
+                  as soon as a slot is free, and you can pause or resume all of them at once
+                  with <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd> and <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>R</kbd>.
+                </p>
+              </div>
             </>
           )}
 
           {section === "appearance" && (
             <>
               <h2>Appearance</h2>
-              <div className="field">
-                <span>Theme</span>
-                <Segmented
-                  label="Theme"
-                  value={props.theme}
-                  onChange={props.onTheme}
-                  options={[
-                    { value: "system", label: "Match Windows" },
-                    { value: "light", label: "Light" },
-                    { value: "dark", label: "Dark" },
-                  ]}
-                />
+              <div className="setting-card">
+                <SettingRow label="Theme">
+                  <Segmented
+                    label="Theme"
+                    value={props.theme}
+                    onChange={props.onTheme}
+                    options={[
+                      { value: "system", label: "Match Windows" },
+                      { value: "light", label: "Light" },
+                      { value: "dark", label: "Dark" },
+                    ]}
+                  />
+                </SettingRow>
+                <SettingRow label="List density">
+                  <Segmented
+                    label="List density"
+                    value={props.density}
+                    onChange={props.onDensity}
+                    options={[
+                      { value: "comfortable", label: "Comfortable" },
+                      { value: "compact", label: "Compact" },
+                    ]}
+                  />
+                </SettingRow>
               </div>
-              <div className="field">
-                <span>List density</span>
-                <Segmented
-                  label="List density"
-                  value={props.density}
-                  onChange={props.onDensity}
-                  options={[
-                    { value: "comfortable", label: "Comfortable" },
-                    { value: "compact", label: "Compact" },
-                  ]}
-                />
-              </div>
-              <div className="field">
-                <span>Progress bar</span>
-                <Segmented
+              <div className="setting-card">
+                <SettingRow
                   label="Progress bar"
-                  value={props.progressStyle}
-                  onChange={props.onProgressStyle}
-                  options={[
-                    { value: "single", label: "Single bar" },
-                    { value: "threads", label: "One bar per connection" },
-                  ]}
-                />
+                  hint={
+                    <>
+                      One bar per connection shows every part of a file filling up on its own. Site
+                      videos and torrents are fetched in order from the start, so their bars fill
+                      one after another.
+                    </>
+                  }
+                >
+                  <Segmented
+                    label="Progress bar"
+                    value={props.progressStyle}
+                    onChange={props.onProgressStyle}
+                    options={[
+                      { value: "single", label: "Single bar" },
+                      { value: "threads", label: "One per connection" },
+                    ]}
+                  />
+                </SettingRow>
               </div>
-              <p className="note">
-                One bar per connection shows every part of a file filling up on its own. Site
-                videos and torrents are fetched in order from the start, so their bars fill
-                one after another.
-              </p>
             </>
           )}
 
           {section === "advanced" && (
             <>
               <h2>Advanced</h2>
-              <dl className="facts">
+              <dl className="facts setting-card">
                 <div className="fact">
                   <dt>Site downloads</dt>
                   <dd>
@@ -1874,7 +2432,7 @@ export function SettingsView(props: {
                 </div>
               </dl>
               <h3>Keyboard shortcuts</h3>
-              <dl className="shortcuts">
+              <dl className="shortcuts setting-card">
                 {SHORTCUTS.map(([keys, what]) => (
                   <div key={keys}>
                     <dt>{what}</dt>
@@ -1888,6 +2446,8 @@ export function SettingsView(props: {
               </dl>
             </>
           )}
+        </div>
+          </div>
         </div>
       </div>
     </div>

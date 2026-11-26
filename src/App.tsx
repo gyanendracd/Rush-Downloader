@@ -3,6 +3,7 @@ import {
   Download as DownloadGlyph,
   FolderOpen,
   Globe,
+  History as HistoryGlyph,
   House,
   Info,
   KeyRound,
@@ -72,16 +73,22 @@ import {
   NAVS,
   SettingsView,
   SignInView,
+  TransferSummary,
   type Density,
   type Nav,
+  type SettingsSection,
   type Theme,
 } from "./views";
+import { HistoryView } from "./History";
 import "./styles.css";
 
 const HISTORY_LENGTH = 60;
+/** How long a page takes to fade out before the next one is shown; the stylesheet uses the same time. */
+const PAGE_FADE_OUT = 170;
 const MAIN_NAV: { nav: Nav; label: string; icon: LucideIcon }[] = [
   { nav: "home", label: "Home", icon: House },
   { nav: "downloads", label: "Downloads", icon: DownloadGlyph },
+  { nav: "history", label: "History", icon: HistoryGlyph },
   { nav: "browser", label: "Browser", icon: Globe },
   { nav: "signin", label: "Sign in", icon: KeyRound },
   { nav: "settings", label: "Settings", icon: SettingsGlyph },
@@ -96,6 +103,19 @@ export default function App() {
   const [downloads, setDownloads] = useState<Download[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [nav, setNavState] = useState<Nav>(() => loadPref<Nav>("nav", "home", NAVS));
+  /** The page on screen. It trails `nav` by a moment: the old page fades
+   *  out first, then this changes and the new page fades in. */
+  const [shownNav, setShownNav] = useState<Nav>(nav);
+  /** The tab of Settings that shows; kept here so it is still open on the way back. */
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const leaving = nav !== shownNav;
+  useEffect(() => {
+    if (nav === shownNav) return;
+    // With reduced motion there is no fade to wait for.
+    const wait = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : PAGE_FADE_OUT;
+    const timer = window.setTimeout(() => setShownNav(nav), wait);
+    return () => window.clearTimeout(timer);
+  }, [nav, shownNav]);
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const [inspected, setInspected] = useState<number | null>(null);
   const [menu, setMenu] = useState<{ items: MenuItem[]; x: number; y: number } | null>(null);
@@ -285,7 +305,7 @@ export default function App() {
     const openTorrent = async (source: string) => {
       if ((await checkDuplicate(source)) === "go") setTorrentSource(source.trim());
     };
-    return {
+    const all: Actions = {
       toast,
       checkDuplicate,
       pause: (ids) => ids.forEach((id) => api.pause(id).catch(fail)),
@@ -373,7 +393,13 @@ export default function App() {
           return false;
         }
       },
+      // A download whose file has been deleted is fetched afresh from its
+      // link, as a new download; the old line stays in History as it was.
+      again: (d) => {
+        void all.submitLink(d.url);
+      },
     };
+    return all;
   }, [toast, ask]);
 
   // Some sites cannot be downloaded from the link alone: the video has to be
@@ -629,6 +655,8 @@ export default function App() {
             ))}
           </div>
 
+          <TransferSummary />
+
           <div className="nav-group nav-bottom">
             <button
               type="button"
@@ -656,7 +684,7 @@ export default function App() {
           </div>
         </nav>
 
-        <main className="workspace">
+        <main className={`workspace${leaving ? " is-leaving" : ""}`}>
           <div className="titlebar" data-tauri-drag-region>
             {isTauri && (
               <div className="window-controls">
@@ -673,15 +701,16 @@ export default function App() {
             )}
           </div>
 
-          {nav === "home" && <HomeView quality={quality} go={setNav} copied={copied} />}
-          {nav === "downloads" && (
+          {shownNav === "home" && <HomeView quality={quality} go={setNav} copied={copied} />}
+          {shownNav === "downloads" && (
             <DownloadsView {...rowHandlers} clearSelection={() => setSelection(new Set())} go={setNav} />
           )}
-          {nav === "browser" && (
+          {shownNav === "history" && <HistoryView onMenu={onMenu} />}
+          {shownNav === "browser" && (
             <BrowserView quality={quality} go={setNav} start={browseStart} onStarted={() => setBrowseStart(null)} />
           )}
-          {nav === "signin" && <SignInView />}
-          {nav === "settings" && (
+          {shownNav === "signin" && <SignInView />}
+          {shownNav === "settings" && (
             <SettingsView
               theme={theme}
               onTheme={chooseTheme}
@@ -707,6 +736,8 @@ export default function App() {
               }}
               quality={quality}
               onQuality={setQuality}
+              section={settingsSection}
+              onSection={setSettingsSection}
               onSettings={(s) => {
                 setSettings(s);
                 api.setSettings(s).catch((e) => toast(String(e), "error"));

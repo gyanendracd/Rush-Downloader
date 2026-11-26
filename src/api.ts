@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -6,6 +6,22 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 /** False when the interface is opened in a plain browser for development. */
 export const isTauri = "__TAURI_INTERNALS__" in window;
+
+/** An address the window can show a downloaded file from, or null where it
+ *  cannot (a plain browser). Only files of a download whose list has been
+ *  asked for are let through. */
+export function fileSrc(path: string): string | null {
+  return isTauri ? convertFileSrc(path) : null;
+}
+
+const VIDEO_FILE = /\.(mp4|m4v|mov|webm|mkv)$/i;
+const PICTURE_FILE = /\.(jpe?g|jfif|png|gif|webp|bmp|avif|svg)$/i;
+
+/** What kind of picture a downloaded file can give of itself: a photo is
+ *  shown as it is, a video by its first frame, anything else by neither. */
+export function pictureKind(name: string): "photo" | "video" | null {
+  return PICTURE_FILE.test(name) ? "photo" : VIDEO_FILE.test(name) ? "video" : null;
+}
 
 export type Status =
   | "queued"
@@ -40,6 +56,11 @@ export interface Download {
   items: number;
   /** The file a running profile or playlist download is fetching right now. */
   current: CurrentFile | null;
+  /** The picture the site shows for a video or playlist, once it is known. */
+  thumbnail: string | null;
+  /** When a finished download's file was found to be gone (deleted or moved
+   *  away outside the app), in seconds since 1970; null while it is there. */
+  deleted_at: number | null;
   created_at: number;
   /** [start, position, end] per segment */
   segments: [number, number, number][];
@@ -60,12 +81,15 @@ export interface CurrentFile {
 /** One video or file of a profile or playlist download. */
 export interface DownloadItem {
   title: string;
-  /** "missed": the download finished without it. */
-  state: "done" | "downloading" | "waiting" | "missed";
+  /** "missed": the download finished without it. "deleted": it was fetched,
+   *  and its file has since been deleted or moved away. */
+  state: "done" | "downloading" | "waiting" | "missed" | "deleted";
   /** Its size on disk, once it is there. */
   size: number | null;
   /** The name of its file, once it is there. */
   file: string | null;
+  /** Where that file is on this computer, so that it can be shown. */
+  path: string | null;
   /** Its picture on the site. */
   thumbnail: string | null;
   /** How long a video runs, in seconds. */
@@ -174,13 +198,81 @@ export interface Area {
 }
 
 /** Sites with a sign-in page that can be opened inside the app. */
+/** The sites offered on the Sign in page, the most used first. */
 export const SIGN_IN_SITES: { label: string; url: string }[] = [
-  { label: "X", url: "https://x.com/login" },
+  { label: "YouTube", url: "https://www.youtube.com/signin" },
   { label: "Instagram", url: "https://www.instagram.com/accounts/login/" },
-  { label: "Facebook", url: "https://www.facebook.com/login" },
   { label: "TikTok", url: "https://www.tiktok.com/login" },
+  { label: "Facebook", url: "https://www.facebook.com/login" },
+  { label: "X", url: "https://x.com/login" },
+  { label: "Vimeo", url: "https://vimeo.com/log_in" },
+  { label: "Dailymotion", url: "https://www.dailymotion.com/signin" },
   { label: "Reddit", url: "https://www.reddit.com/login" },
+  { label: "VK", url: "https://vk.com/login" },
+  { label: "Pinterest", url: "https://www.pinterest.com/login/" },
+  { label: "Twitch", url: "https://www.twitch.tv/login" },
+  { label: "Bilibili", url: "https://passport.bilibili.com/login" },
+  { label: "Snapchat", url: "https://accounts.snapchat.com/accounts/login" },
+  { label: "Rumble", url: "https://rumble.com/login.php" },
+  // Kick signs in from a panel on its front page; it has no address of its own.
+  { label: "Kick", url: "https://kick.com/" },
+  { label: "Streamable", url: "https://streamable.com/login" },
+  { label: "Odysee", url: "https://odysee.com/$/signin" },
+  { label: "Tumblr", url: "https://www.tumblr.com/login" },
+  { label: "LinkedIn", url: "https://www.linkedin.com/login" },
+  { label: "Threads", url: "https://www.threads.com/login" },
 ];
+
+/** Other addresses the same sites answer to. */
+const SITE_ALIASES: Record<string, string> = {
+  "youtu.be": "YouTube",
+  "twitter.com": "X",
+  "fb.watch": "Facebook",
+  "threads.net": "Threads",
+  "b23.tv": "Bilibili",
+  "vk.ru": "VK",
+  "pin.it": "Pinterest",
+};
+
+/** The site on the Sign in page a link belongs to ("Instagram"), if it is one of them. */
+export function signInSiteOf(link: string): string | null {
+  try {
+    const host = new URL(link.trim()).hostname.toLowerCase();
+    const under = (base: string) => host === base || host.endsWith(`.${base}`);
+    for (const [base, label] of Object.entries(SITE_ALIASES)) if (under(base)) return label;
+    for (const site of SIGN_IN_SITES) {
+      if (under(new URL(site.url).hostname.split(".").slice(-2).join("."))) return site.label;
+    }
+  } catch {
+    // not a web address
+  }
+  return null;
+}
+
+/**
+ * Whether a failed lookup or download failed because the site wants a
+ * signed-in visitor: a private or members-only post, an age check, or a site
+ * that shows nothing to visitors who are not signed in.
+ */
+export function needsSignIn(error: string): boolean {
+  const said = error.toLowerCase();
+  return [
+    "sign in",
+    "log in",
+    "login",
+    "logged in",
+    "logged-in",
+    "private",
+    "--cookies",
+    "authentication",
+    "members-only",
+    "members only",
+    "registered users",
+    "confirm your age",
+    "age-restricted",
+    "age restricted",
+  ].some((sign) => said.includes(sign));
+}
 
 export interface ToolStatus {
   yt_dlp: boolean;
@@ -205,6 +297,24 @@ export interface PlaylistInfo {
   channel: string | null;
 }
 
+/** Whose profile it is, as its page says: each part only where the site gives it. */
+export interface ProfileFace {
+  /** The name the profile shows, which is not always the one in its link. */
+  name: string | null;
+  picture: string | null;
+  /** The profile's own line about itself, or the site's line about it. */
+  about: string | null;
+  /** The wide picture across the top of the profile. */
+  banner: string | null;
+  /** How many posts it has made, and how many of them carry a photo or video. */
+  posts: number | null;
+  media: number | null;
+  followers: number | null;
+  following: number | null;
+  /** The day it joined the site, as YYYY-MM-DD. */
+  joined: string | null;
+}
+
 /** A social media profile recognised in a link. */
 export interface ProfileRef {
   site: string;
@@ -223,6 +333,10 @@ export const api = {
   profileOf: (url: string) => invoke<ProfileRef | null>("profile_of", { url }),
   /** A playlist's name, picture and number of videos. Nothing is downloaded. */
   playlistInfo: (url: string) => invoke<PlaylistInfo>("playlist_info", { url }),
+  /** Whose profile a link points at. Quick, and works without being signed in. */
+  profileFace: (url: string) => invoke<ProfileFace>("profile_face", { url }),
+  /** The same with its numbers (posts, followers, joined), asked as a visitor who is not signed in. */
+  profileStats: (url: string) => invoke<ProfileFace>("profile_stats", { url }),
   /** Calls back with the paths of files dropped onto the window. */
   onFileDrop: (cb: (paths: string[]) => void) =>
     getCurrentWebview().onDragDropEvent((e) => {
@@ -283,6 +397,8 @@ export const api = {
   },
   /** Adds the sign-ins in a cookies file; resolves with every saved site. */
   importSignIn: (path: string) => invoke<string[]>("import_sign_in", { path }),
+  /** Brings over the sign-ins a browser on this computer keeps; resolves with every saved site. */
+  importBrowserSignIn: (browser: string) => invoke<string[]>("import_browser_sign_in", { browser }),
   onChange: (cb: (downloads: Download[]) => void) =>
     listen<Download[]>("downloads", (e) => cb(e.payload)),
   /** Picks a .torrent file or a text file holding a list of links; null when cancelled. */
@@ -374,6 +490,26 @@ export const STATUS_LABEL: Record<Status, string> = {
   completed: "Completed",
   failed: "Failed",
 };
+
+/** A finished download whose file is no longer where it was saved. */
+export const isDeleted = (d: Download) => d.status === "completed" && d.deleted_at != null;
+
+/** How long a deleted download stays on the Downloads page before it is
+ *  only to be found in History. */
+export const DELETED_SHOWN_DAYS = 10;
+
+/** Whether a download belongs on the Downloads page: everything that is
+ *  running, waiting, failed or still on disk, and what was deleted lately. */
+export function onDownloadsPage(d: Download, now = Date.now()): boolean {
+  if (!isDeleted(d)) return true;
+  return now / 1000 - d.deleted_at! <= DELETED_SHOWN_DAYS * 86400;
+}
+
+/** "today", "yesterday", "3 days ago": how long ago a file was found deleted. */
+export function deletedAgo(d: Download, now = Date.now()): string {
+  const days = Math.floor((now / 1000 - (d.deleted_at ?? 0)) / 86400);
+  return days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+}
 
 export const isRunning = (d: Download) =>
   d.status === "downloading" || d.status === "connecting";

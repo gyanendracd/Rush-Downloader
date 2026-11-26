@@ -61,6 +61,116 @@ pub(crate) fn command(program: &Path) -> Command {
     cmd
 }
 
+/// The browsers a sign-in can be brought over from: the names yt-dlp knows.
+pub const COOKIE_BROWSERS: [&str; 6] = ["firefox", "chrome", "edge", "brave", "opera", "vivaldi"];
+
+/// Reads the sign-ins a browser on this computer keeps, as lines of a cookie
+/// file. yt-dlp does the reading: given a browser and a file to keep cookies
+/// in, it writes the browser's cookies to that file when it finishes. The
+/// address it is sent to cannot exist, so nothing is fetched or downloaded.
+pub(crate) async fn browser_cookies(browser: &str) -> Result<Vec<String>, String> {
+    if !COOKIE_BROWSERS.contains(&browser) {
+        return Err(format!("Sign-ins cannot be read from \"{browser}\""));
+    }
+    let program = find_tool("yt-dlp").ok_or("Reading a browser's sign-ins needs yt-dlp, which was not found")?;
+    let dir = std::env::temp_dir().join(format!("rush-browser-cookies-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make room to read the sign-ins: {e}"))?;
+    let file = dir.join("cookies.txt");
+    let _ = std::fs::remove_file(&file);
+
+    let run = command(&program)
+        .arg("--cookies-from-browser")
+        .arg(browser)
+        .arg("--cookies")
+        .arg(&file)
+        .args(["--skip-download", "--no-warnings", "--no-playlist", "--retries", "0", "--socket-timeout", "5"])
+        .arg("https://rushdownload.invalid/")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(60), run).await;
+
+    // The cookies are in the file whether or not the made-up address "failed".
+    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    // They are sign-ins: nothing of them is left lying in the temp folder.
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .filter(|l| l.split('\t').count() >= 7)
+        .collect();
+    if !lines.is_empty() {
+        return Ok(lines);
+    }
+    let output = match output {
+        Err(_) => return Err("Reading the browser's sign-ins took too long and was stopped".into()),
+        Ok(Err(e)) => return Err(format!("Could not start yt-dlp: {e}")),
+        Ok(Ok(output)) => output,
+    };
+    let said = String::from_utf8_lossy(&output.stderr);
+    let lower = said.to_lowercase();
+    // "firefox" is the name yt-dlp wants; the user is told "Firefox".
+    let mut browser = browser.to_string();
+    if let Some(first) = browser.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    // Chrome and the browsers built on it lock their sign-ins on Windows; the
+    // lock is theirs, and no other program is let through it.
+    if lower.contains("dpapi") || lower.contains("decrypt") || lower.contains("app-bound") {
+        return Err(format!(
+            "{browser} locks its sign-ins so that other apps cannot read them. Sign in on this page instead, or import a cookies file."
+        ));
+    }
+    if lower.contains("could not copy") || lower.contains("permission denied") || lower.contains("database is locked") {
+        return Err(format!("{browser} is using its sign-ins right now. Close {browser} completely and try again."));
+    }
+    if lower.contains("could not find") || lower.contains("no such file") {
+        return Err(format!("{browser} was not found on this computer, or it has no sign-ins yet."));
+    }
+    // Anything else: what yt-dlp itself said about the cookies, not about the made-up address.
+    let reason = said
+        .lines()
+        .filter(|l| l.contains("ERROR") && !l.contains("rushdownload.invalid"))
+        .last()
+        .map(|l| l.trim_start_matches("ERROR:").trim().to_string());
+    Err(match reason {
+        Some(reason) => format!("Could not read {browser}'s sign-ins: {reason}"),
+        None => format!("No sign-ins were found in {browser}."),
+    })
+}
+
+/// The lines a helper program prints, whatever they are encoded in. On
+/// Windows yt-dlp writes its progress lines in the system's code page even
+/// when asked for UTF-8, so a title with a dash or an emoji in it is not
+/// valid UTF-8. A reader that gives up on such a line stops reading, the
+/// program's output backs up, and the program waits forever to write more.
+pub(crate) struct OutputLines<R> {
+    reader: BufReader<R>,
+    /// Kept between calls, so a read that was interrupted loses nothing.
+    line: Vec<u8>,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> OutputLines<R> {
+    pub(crate) fn new(output: R) -> Self {
+        OutputLines { reader: BufReader::new(output), line: Vec::new() }
+    }
+
+    /// The next line, or `None` once the program has closed its output.
+    /// Bytes that are not UTF-8 are replaced, never an error.
+    pub(crate) async fn next_line(&mut self) -> Option<String> {
+        let read = self.reader.read_until(b'\n', &mut self.line).await;
+        if self.line.is_empty() {
+            return None;
+        }
+        // A broken pipe still hands over what arrived before it.
+        let _ = read;
+        let line = String::from_utf8_lossy(&self.line).trim_end_matches(['\r', '\n']).to_string();
+        self.line.clear();
+        Some(line)
+    }
+}
+
 /// Stops yt-dlp together with the processes it started (its own worker
 /// process and ffmpeg); killing only the parent leaves them running.
 pub(crate) async fn kill_tree(child: &mut Child) {
@@ -510,6 +620,15 @@ async fn plan_once(
                     info.as_ref().and_then(|i| i.get("protocol")).and_then(|p| p.as_str())
                 )
             });
+            // The video's own picture is kept with the download, to show beside it.
+            let picture = info
+                .as_ref()
+                .and_then(|i| i.get("thumbnail")?.as_str())
+                .filter(|t| t.starts_with("http"))
+                .map(str::to_string);
+            if picture.is_some() && picture != rec.thumbnail {
+                inner.update(rec.id, |r| r.thumbnail = picture);
+            }
             streams = info.as_ref().and_then(direct_streams);
             if std::env::var_os("RUSHDOWNLOAD_DEBUG").is_some() {
                 for (i, s) in streams.iter().flatten().enumerate() {
@@ -861,8 +980,8 @@ pub(crate) async fn run(
     if let Some(stderr) = child.stderr.take() {
         let last_error = last_error.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut lines = OutputLines::new(stderr);
+            while let Some(line) = lines.next_line().await {
                 if line.starts_with("ERROR:") {
                     *last_error.lock().unwrap() = Some(line);
                 }
@@ -879,7 +998,7 @@ pub(crate) async fn run(
     let mut planned_name: Option<String> = None;
 
     let stdout = child.stdout.take().expect("stdout is piped");
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = OutputLines::new(stdout);
     loop {
         let line = tokio::select! {
             _ = live.cancel.cancelled() => {
@@ -888,7 +1007,7 @@ pub(crate) async fn run(
             }
             l = lines.next_line() => l,
         };
-        let Ok(Some(line)) = line else { break };
+        let Some(line) = line else { break };
 
         if let Some(rest) = line.strip_prefix("OMNI|") {
             let mut fields = rest.split('|');
@@ -988,6 +1107,17 @@ pub(crate) fn cleanup(dir: &Path, filename: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn output_that_is_not_utf8_is_still_read_to_its_end() {
+        // "\x96" is a dash in the Windows code page and not valid UTF-8.
+        let output: &[u8] = b"RUSH|1|abc|Part 3 \x96 Realm\r\nRUSH|2|abc|next\nlast";
+        let mut lines = OutputLines::new(output);
+        assert_eq!(lines.next_line().await.as_deref(), Some("RUSH|1|abc|Part 3 \u{fffd} Realm"));
+        assert_eq!(lines.next_line().await.as_deref(), Some("RUSH|2|abc|next"));
+        assert_eq!(lines.next_line().await.as_deref(), Some("last"));
+        assert_eq!(lines.next_line().await, None);
+    }
 
     #[test]
     fn only_plain_file_streams_are_fetched_directly() {

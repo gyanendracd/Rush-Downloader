@@ -231,6 +231,7 @@ const SITE_ALIASES: Record<string, string> = {
   "threads.net": "Threads",
   "b23.tv": "Bilibili",
   "vk.ru": "VK",
+  "vkvideo.ru": "VK",
   "pin.it": "Pinterest",
 };
 
@@ -319,6 +320,9 @@ export interface ProfileFace {
 export interface ProfileRef {
   site: string;
   name: string;
+  /** Which program fetches it, for a collection found by asking the
+   *  programs (any site they know); absent for the sites the app reads itself. */
+  by?: "ytdlp" | "gallerydl";
 }
 
 export const api = {
@@ -331,6 +335,9 @@ export const api = {
   mediaInfo: (url: string) => invoke<MediaInfo>("media_info", { url }),
   /** The profile a link points at, or null for any other link. */
   profileOf: (url: string) => invoke<ProfileRef | null>("profile_of", { url }),
+  /** Whether a page is a whole collection (someone's videos, photos or tracks)
+   *  on any site the downloading programs know. A few seconds the first time. */
+  collectionOf: (url: string) => invoke<ProfileRef | null>("collection_of", { url }),
   /** A playlist's name, picture and number of videos. Nothing is downloaded. */
   playlistInfo: (url: string) => invoke<PlaylistInfo>("playlist_info", { url }),
   /** Whose profile a link points at. Quick, and works without being signed in. */

@@ -623,8 +623,16 @@ async fn profile_stats(state: State<'_, AppState>, url: String) -> Result<Profil
 }
 
 #[tauri::command]
-fn profile_of(url: String) -> Option<ProfileRef> {
-    Engine::profile_of(&url)
+fn profile_of(state: State<AppState>, url: String) -> Option<ProfileRef> {
+    state.0.profile_of(&url)
+}
+
+/// Whether a link is a whole collection on any site the downloading programs
+/// know. Takes a few seconds the first time a link is asked about.
+#[tauri::command]
+async fn collection_of(state: State<'_, AppState>, url: String) -> Result<Option<ProfileRef>, String> {
+    let engine = state.0.clone();
+    Ok(engine.collection_of(&url).await)
 }
 
 #[tauri::command]
@@ -779,6 +787,7 @@ pub fn run() {
             media_info,
             link_size,
             profile_of,
+            collection_of,
             profile_face,
             profile_stats,
             playlist_info,

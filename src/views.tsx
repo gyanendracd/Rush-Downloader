@@ -910,9 +910,8 @@ export function HomeView(props: {
     let stale = false;
     // Wait for typing to stop before asking the site.
     const timer = window.setTimeout(async () => {
-      const who = await api.profileOf(link).catch(() => null);
-      if (stale) return;
-      if (who) {
+      // Everything a profile card shows: whose it is, its numbers, what it holds.
+      const showProfile = (who: ProfileRef) => {
         setProfile(who);
         // Start from the usual quality.
         setChoice(QUALITIES.some((q) => q.value === props.quality) ? props.quality : "best");
@@ -945,12 +944,29 @@ export function HomeView(props: {
             if (needsSignIn(String(e)) || hidden) setLocked(true);
           })
           .finally(() => !stale && setCounting(false));
+      };
+      const who = await api.profileOf(link).catch(() => null);
+      if (stale) return;
+      if (who) {
+        showProfile(who);
         return;
       }
       if (!looksLikePage(link)) return;
       setLooking(true);
-      api
-        .mediaInfo(link)
+      // A page on any other site may still be someone's whole collection:
+      // the downloading programs are asked, side by side with the usual
+      // look for a single video. Their answer decides which card shows.
+      const collection = api.collectionOf(link).catch(() => null);
+      const media = api.mediaInfo(link);
+      media.catch(() => {});
+      const found = await collection;
+      if (stale) return;
+      if (found) {
+        setLooking(false);
+        showProfile(found);
+        return;
+      }
+      media
         .then((found) => {
           if (stale) return;
           setVideo(found);
@@ -1053,7 +1069,7 @@ export function HomeView(props: {
   const isPlaylist = !!profile && profile.site.endsWith("playlist");
   // Sites whose profiles are videos, where a resolution can be picked.
   const picksQuality =
-    !!profile && (isPlaylist || ["YouTube", "TikTok", "Pornhub"].includes(profile.site));
+    !!profile && (isPlaylist || profile.by === "ytdlp" || ["YouTube", "TikTok", "Pornhub"].includes(profile.site));
   /** The name the profile shows, once looked up; until then the one in its link. */
   const listedName = playlist?.title.trim() || "";
   /** Whose profile it is, from both places that say: the site's own answer first, its page otherwise. */
@@ -1253,7 +1269,7 @@ export function HomeView(props: {
         {((looking && !video) || (catchLink && catching && caughtOffers.length === 0)) && (
           <p className="video-looking" role="status">
             <span className="live-dot" aria-hidden="true" />{" "}
-            {catchLink ? "Finding the video on this page" : "Looking up the video"}
+            {catchLink ? "Finding the video on this page" : "Looking at what this page holds"}
           </p>
         )}
         {catchLink && !catching && caughtOffers.length === 0 && (

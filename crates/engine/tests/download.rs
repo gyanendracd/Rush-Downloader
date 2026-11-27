@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rushdownload_engine::{Engine, MediaOptions, NewDownload, Settings, Status, TaskInfo};
+use rushdownload_engine::{Engine, Fetcher, MediaOptions, NewDownload, Settings, Status, TaskInfo};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -1265,4 +1265,64 @@ async fn profile_card_has_the_profiles_name_and_picture() {
     println!("channel: {} | {:?} | {} videos", found.title, found.thumbnail, found.count);
     assert!(!found.title.is_empty());
     assert!(found.thumbnail.is_some());
+}
+
+/// Needs internet, yt-dlp and gallery-dl. Downloads two files from each of
+/// two collections:
+/// `RUSHDOWNLOAD_PROFILE_LIMIT=2 cargo test --release -p rushdownload-engine -- --ignored any_site --nocapture`
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn a_collection_on_any_site_is_found_and_downloaded() {
+    let dir = temp_dir("anysite");
+    let engine = engine(&dir);
+    // What the programs say each link holds.
+    let cases = [
+        ("https://www.dailymotion.com/france24", Some(Fetcher::Ytdlp)),
+        ("https://soundcloud.com/forss", Some(Fetcher::Ytdlp)),
+        ("https://www.artstation.com/sungchoi", Some(Fetcher::Gallerydl)),
+        // a channel VK would not list without a sign-in: still a collection, so the user is told
+        ("https://vkvideo.ru/@shishonin_official", Some(Fetcher::Ytdlp)),
+        // one video, also opened from inside a playlist, stays one video
+        ("https://www.youtube.com/watch?v=mbM45GyHhhk", None),
+        ("https://www.youtube.com/watch?v=mbM45GyHhhk&list=PLSqWva9Yx97U", None),
+        // a page that is nobody's collection, and a plain file
+        ("https://www.rust-lang.org/learn", None),
+        ("https://www.cloudflare.com/robots.txt", None),
+    ];
+    for (link, expected) in cases {
+        let began = std::time::Instant::now();
+        let found = engine.collection_of(link).await;
+        println!("{link}: {found:?} in {:.1}s", began.elapsed().as_secs_f64());
+        assert_eq!(found.as_ref().and_then(|f| f.by), expected, "{link}");
+        // a found collection gets the profile card's details too
+        if found.is_some() {
+            let face = engine.profile_face(link).await;
+            println!("  card: {:?} | picture {}", face.name, face.picture.is_some());
+            assert!(face.name.is_some() || face.picture.is_some(), "{link}: nothing for the card");
+        }
+        // asked once: the second time is answered from what was said
+        let again = std::time::Instant::now();
+        assert_eq!(engine.collection_of(link).await, found);
+        assert!(again.elapsed() < Duration::from_millis(50));
+    }
+    // A sound collection and a picture collection, each downloaded into a folder of its own.
+    for link in ["https://soundcloud.com/forss", "https://www.artstation.com/sungchoi"] {
+        let id = engine.add(new(link)).unwrap();
+        let began = std::time::Instant::now();
+        let done = loop {
+            let t = engine.list().into_iter().find(|t| t.id == id).unwrap();
+            if matches!(t.status, Status::Completed | Status::Failed) || began.elapsed() > Duration::from_secs(240) {
+                break t;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        println!(
+            "{link}: {:?} {:?} | folder {} | {} files, {} bytes | picture {:?}",
+            done.status, done.error, done.filename, done.items, done.downloaded, done.thumbnail.as_deref().map(|p| &p[..p.len().min(40)])
+        );
+        assert_eq!(done.status, Status::Completed, "{:?}", done.error);
+        assert!(done.profile && done.items >= 1);
+        assert!(done.path.is_dir());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

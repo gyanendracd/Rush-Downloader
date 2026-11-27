@@ -408,6 +408,14 @@ export const mockApi = {
       joined: "2017-12-14",
     };
   },
+  // "gallery" in a page's link stands for a site the app has no rules for,
+  // whose page the downloading programs find to be a whole collection.
+  collectionOf: async (url: string) => {
+    await new Promise((r) => setTimeout(r, 1200));
+    const match = /^https?:\/\/(?:www\.)?([^./]+)[^/]*\/(?:gallery\/)?([\w.-]+)/.exec(url.trim());
+    if (!/gallery/.test(url) || !match) return null;
+    return { site: match[1][0].toUpperCase() + match[1].slice(1), name: match[2], by: "gallerydl" as const };
+  },
   profileOf: async (url: string) => {
     if (/playlist\?list=/.test(url)) return { site: "YouTube playlist", name: "PLsample" };
     const match = /^https?:\/\/[^/]+\/@?([\w.]+)\/?$/.exec(url.trim());

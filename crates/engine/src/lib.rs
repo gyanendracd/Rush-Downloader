@@ -23,7 +23,7 @@ use tokio::runtime::Handle;
 use tokio::sync::watch;
 
 pub use media::MediaInfo;
-pub use profile::{PlaylistInfo, ProfileFace, ProfileRef};
+pub use profile::{Fetcher, PlaylistInfo, ProfileFace, ProfileRef};
 pub use scan::{Found, FoundKind};
 pub use torrent::{TorrentFile, TorrentPreview};
 
@@ -279,6 +279,11 @@ pub(crate) struct Record {
     /// file comes back.
     #[serde(default)]
     pub deleted_at: Option<u64>,
+    /// A collection the downloading programs found at a link the app does
+    /// not read itself (someone's page on any site they know), and which
+    /// program fetches it. Kept, so a resumed download fetches it the same way.
+    #[serde(default)]
+    pub collection: Option<profile::ProfileRef>,
 }
 
 struct Entry {
@@ -359,6 +364,9 @@ pub(crate) struct Inner {
     /// What each playlist or channel download lists, by download id. Kept
     /// in memory only; asked from the site again when a download resumes.
     pub(crate) lists: Mutex<std::collections::HashMap<u64, profile::Listed>>,
+    /// What the downloading programs said each link holds, asked once per
+    /// link: a collection, or `None` for a single item (or nothing they know).
+    collections: Mutex<std::collections::HashMap<String, Option<ProfileRef>>>,
     state: Mutex<State>,
     state_file: PathBuf,
     save_lock: Mutex<()>,
@@ -429,6 +437,7 @@ impl Engine {
             limiter: Arc::new(Limiter::new(settings.speed_limit)),
             torrents: tokio::sync::OnceCell::new(),
             lists: Mutex::new(Default::default()),
+            collections: Mutex::new(Default::default()),
             state: Mutex::new(State {
                 entries,
                 next_id,
@@ -494,10 +503,27 @@ impl Engine {
         self.inner.cookies_file()
     }
 
-    /// The profile a link points at, if it is a social media profile. Such a
-    /// link downloads everything the profile has posted.
-    pub fn profile_of(url: &str) -> Option<ProfileRef> {
-        profile::detect(url)
+    /// The profile a link points at: one the app reads from the link itself,
+    /// or one the downloading programs have already said is a collection.
+    /// Such a link downloads everything on it.
+    pub fn profile_of(&self, url: &str) -> Option<ProfileRef> {
+        self.inner.resolve(url)
+    }
+
+    /// Asks the downloading programs whether a link is a whole collection
+    /// (someone's videos, photos or tracks) on any site they know. Asked once
+    /// per link; a link the app already reads itself is answered at once.
+    /// Takes a few seconds the first time.
+    pub async fn collection_of(&self, url: &str) -> Option<ProfileRef> {
+        if let Some(known) = self.inner.resolve(url) {
+            return Some(known);
+        }
+        if let Some(answer) = self.inner.collections.lock().unwrap().get(url) {
+            return answer.clone();
+        }
+        let found = profile::find_collection(&self.inner, url).await;
+        self.inner.collections.lock().unwrap().insert(url.to_string(), found.clone());
+        found
     }
 
     /// A playlist's name, picture and number of videos, before downloading.
@@ -582,7 +608,7 @@ impl Engine {
         let profile = if is_torrent || new.via_site {
             None
         } else {
-            profile::detect(&url)
+            self.inner.resolve(&url)
         };
         let default_name = match &profile {
             Some(p) => profile::folder_name(p),
@@ -649,6 +675,7 @@ impl Engine {
                 items: 0,
                 thumbnail: None,
                 deleted_at: None,
+                collection: profile.clone().filter(|p| p.by.is_some()),
             };
             st.entries.push(Entry {
                 rec,
@@ -959,6 +986,19 @@ impl Inner {
     fn changed(&self) {
         self.save();
         self.notify();
+    }
+
+    /// The profile a link points at: read from the link, or found earlier by
+    /// asking the downloading programs (this run, or kept with a download).
+    pub(crate) fn resolve(&self, url: &str) -> Option<ProfileRef> {
+        if let Some(known) = profile::detect(url) {
+            return Some(known);
+        }
+        let asked = self.collections.lock().unwrap().get(url).cloned().flatten();
+        asked.or_else(|| {
+            let st = self.state.lock().unwrap();
+            st.entries.iter().find(|e| e.rec.url == url).and_then(|e| e.rec.collection.clone())
+        })
     }
 
     /// The videos or files of a profile or playlist download, each with how

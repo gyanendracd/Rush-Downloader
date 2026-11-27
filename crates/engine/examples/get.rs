@@ -17,6 +17,10 @@ async fn main() -> Result<(), String> {
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join(format!("rushdownload-cli-{}", std::process::id())));
     let engine = Engine::new(&state, Settings::new(dir))?;
+    // As the app's Home page does before Download: is the link a whole collection?
+    if let Some(found) = engine.collection_of(&url).await {
+        println!("a collection: {} on {}", found.name, found.site);
+    }
     let id = engine.add(NewDownload {
         url,
         connections,
@@ -47,6 +51,9 @@ async fn main() -> Result<(), String> {
                     secs,
                     t.downloaded as f64 / secs / 1_048_576.0
                 );
+                if let Some(picture) = &t.thumbnail {
+                    println!("picture: {picture}");
+                }
                 let _ = std::fs::remove_dir_all(&state);
                 return Ok(());
             }

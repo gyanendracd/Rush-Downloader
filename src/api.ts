@@ -67,6 +67,9 @@ export interface Download {
   /** While what is already on disk is being checked before the download
    *  carries on (a resumed torrent): bytes of `total` checked so far. */
   checking?: number | null;
+  /** Files picked from a site link (a release, a shared folder), saved
+   *  together in `path`; each is listed with how far it is. */
+  bundle?: boolean;
   /** [start, position, end] per segment */
   segments: [number, number, number][];
 }
@@ -152,6 +155,34 @@ export interface TorrentPreview {
   name: string;
   total: number;
   files: TorrentFile[];
+}
+
+/** One file a site link holds (a release's asset, a file in a shared folder). */
+export interface SiteFile {
+  /** Folders, then the file name. */
+  path: string[];
+  url: string;
+  size: number | null;
+  headers: [string, string][];
+  late: string | null;
+  meta: string | null;
+}
+
+/** What a site link holds, to pick from. */
+export interface SiteFiles {
+  site: string;
+  title: string;
+  files: SiteFile[];
+  /** More files than could be listed. */
+  partial: boolean;
+}
+
+/** How the app handles a link of a site it knows. */
+export interface SiteKind {
+  site: string;
+  /** "files": the user picks files from the list; "blocked": it cannot be downloaded. */
+  support: "files" | "blocked";
+  why: "store" | "paid" | "encrypted" | "search" | "site_only" | null;
 }
 
 /** What a video page offers, shown before the download starts. */
@@ -367,6 +398,13 @@ export const api = {
   add: (request: NewDownload) => invoke<number>("add_download", { request }),
   scan: (url: string) => invoke<Found[]>("scan_page", { url }),
   torrentPreview: (source: string) => invoke<TorrentPreview>("torrent_preview", { source }),
+  /** Whether a link is one of a site the app reads files from, or one it cannot download from. */
+  siteKind: (url: string) => invoke<SiteKind | null>("site_kind", { url }),
+  /** The files a site link holds (a release, a shared folder, a data set). */
+  siteFiles: (url: string) => invoke<SiteFiles>("site_files", { url }),
+  /** Downloads files picked from a site link, together in a folder named `title`. */
+  addSiteFiles: (url: string, title: string, files: SiteFile[], dir?: string) =>
+    invoke<number>("add_site_files", { url, title, files, dir: dir ?? null }),
   mediaInfo: (url: string) => invoke<MediaInfo>("media_info", { url }),
   /** The profile a link points at, or null for any other link. */
   profileOf: (url: string) => invoke<ProfileRef | null>("profile_of", { url }),
@@ -441,6 +479,9 @@ export const api = {
   setClipboardWatch: (on: boolean) => invoke<void>("set_clipboard_watch", { on }),
   /** Calls back with a page link sent from the browser extension, for the app to look up. */
   onExtensionLink: (cb: (link: string) => void) => listen<string>("extension-link", (e) => cb(e.payload)),
+  /** Calls back when a page on the Browser page starts a file download, which the app takes over. */
+  onBrowserDownload: (cb: (url: string) => void) => listen<string>("browser-download", (e) => cb(e.payload)),
+  onBrowserDownloadFailed: (cb: (why: string) => void) => listen<string>("browser-download-failed", (e) => cb(e.payload)),
   /** Calls back with how many downloads the browser extension just started. */
   onExtensionAdded: (cb: (count: number) => void) => listen<number>("extension-added", (e) => cb(e.payload)),
   /** Picks a cookies file exported from a browser; null when cancelled. */
@@ -657,7 +698,7 @@ for (const [cat, exts] of Object.entries(EXTENSIONS)) {
 }
 
 export function categoryOf(d: Download): Category {
-  if (d.torrent || d.profile) return "other";
+  if (d.torrent || d.profile || d.bundle) return "other";
   const dot = d.filename.lastIndexOf(".");
   const ext = dot >= 0 ? d.filename.slice(dot + 1).toLowerCase() : "";
   return BY_EXT.get(ext) ?? (d.media ? "video" : "other");

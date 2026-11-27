@@ -139,6 +139,7 @@ const dict: Dict = {
       extensionLink: "ブラウザーからのリンクをホームに用意しました",
       extensionAdded: (n: number) => plural(n, { other: "ブラウザーから # 件のダウンロードを開始しました" }),
       onlyTorrents: "ここにドロップできるのは .torrent ファイルだけです",
+      browserDownload: `ページのダウンロードをダウンロード一覧に追加しました`,
     },
     menu: {
       pause: (n: number) => plural(n, { other: "# 件のダウンロードを一時停止" }),
@@ -249,6 +250,7 @@ const dict: Dict = {
       },
       featuresRegion: "RushDownload でできること",
       welcome: "RushDownload へようこそ",
+      siteFiles: (site: string) => `${site} のリンク：ダウンロードを押してファイルを選びます。`,
       subtitle: "リンクを貼り付けるか、新しいダウンロードを開始してください。",
       placeholder: "ファイル、動画ページ、トレントのリンクを貼り付け",
       linkLabel: "ダウンロードするリンク",
@@ -626,6 +628,7 @@ const dict: Dict = {
       source: "ソース",
       sourceProfile: "プロフィールまたはプレイリスト",
       sourceTorrent: "トレント",
+      sourceSite: `サイトのリンクのファイル`,
       sourceMedia: "動画ページ",
       sourceDirect: "ファイルへの直接リンク",
       pauseResume: "一時停止と再開",
@@ -798,6 +801,24 @@ const dict: Dict = {
       chooseOne: "ファイルを 1 つ以上選んでください。",
       showMore: (batch: number, rest: number) =>
         plural(rest, { other: `さらに ${num(batch)} 件を表示 · 未表示 # 件` }),
+    },
+
+    site: {
+      title: `ファイルを選択`,
+      reading: `ファイル一覧を読み込んでいます…`,
+      readingLabel: `ファイル一覧を読み込み中`,
+      folderNote: (name: string) => `複数のファイルはその中の「${name}」フォルダーに保存されます。`,
+      partial: `このリンクには表示できる数より多くのファイルがあります。最初の分だけを表示しています。`,
+      filesLabel: `このリンクのファイル`,
+      added: (n: number) => plural(n, { one: `ダウンロードを開始しました`, other: `# 個のファイルをダウンロード中` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `${site} のゲームは ${site} 専用アプリでのみ、コピー保護付きでダウンロードされます。RushDownload ではダウンロードできません。`,
+        paid: (site: string) => `${site} の講座はサインインした有料受講者専用です。RushDownload ではダウンロードできません。`,
+        encrypted: (site: string) => `${site} はブラウザーだけが受け取る鍵でファイルを暗号化します。RushDownload では開けません。`,
+        search: (site: string) => `${site} は他のサイトを案内するだけです。結果を開いて、そのサイトからダウンロードしてください。`,
+        siteOnly: (site: string) => `${site} は自社のウェブページでしかファイルを渡しません。ブラウザーでリンクを開き、そこでダウンロードしてください。`,
+      },
     },
 
     palette: {

@@ -140,6 +140,7 @@ const dict: Dict = {
       extensionAdded: (n: number) =>
         plural(n, { one: "Unduhan dimulai dari browser Anda", other: "# unduhan dimulai dari browser Anda" }),
       onlyTorrents: "Hanya file .torrent yang bisa dilepas di sini",
+      browserDownload: `Unduhan dari halaman sekarang ada di daftar unduhan Anda`,
     },
     menu: {
       pause: (n: number) => plural(n, { other: "Jeda # unduhan" }),
@@ -249,6 +250,7 @@ const dict: Dict = {
       },
       featuresRegion: "Apa yang dilakukan RushDownload",
       welcome: "Selamat datang di RushDownload",
+      siteFiles: (site: string) => `Tautan ${site}: tekan Unduh untuk memilih filenya.`,
       subtitle: "Tempel tautan, atau mulai unduhan baru.",
       placeholder: "Tempel tautan apa saja: file, halaman video, atau torrent",
       linkLabel: "Tautan untuk diunduh",
@@ -627,6 +629,7 @@ const dict: Dict = {
       source: "Sumber",
       sourceProfile: "Profil atau playlist",
       sourceTorrent: "Torrent",
+      sourceSite: `File dari tautan situs`,
       sourceMedia: "Halaman video",
       sourceDirect: "Tautan file langsung",
       pauseResume: "Jeda dan Lanjutkan",
@@ -799,6 +802,24 @@ const dict: Dict = {
       chooseOne: "Pilih setidaknya satu file.",
       showMore: (batch: number, rest: number) =>
         plural(rest, { other: `Tampilkan ${num(batch)} lagi · # file belum ditampilkan` }),
+    },
+
+    site: {
+      title: `Pilih file`,
+      reading: `Membaca daftar file…`,
+      readingLabel: `Membaca daftar file`,
+      folderNote: (name: string) => `Beberapa file masuk ke folder bernama "${name}" di dalamnya.`,
+      partial: `Tautan ini berisi lebih banyak file daripada yang bisa ditampilkan; hanya file pertama yang terlihat.`,
+      filesLabel: `File di tautan ini`,
+      added: (n: number) => plural(n, { one: `Unduhan dimulai`, other: `# file sedang diunduh` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `Game ${site} hanya bisa diunduh lewat aplikasi ${site} sendiri, dengan perlindungan salinannya. RushDownload tidak bisa mengunduhnya.`,
+        paid: (site: string) => `Kursus ${site} hanya untuk pelajar berbayar yang sudah masuk. RushDownload tidak bisa mengunduhnya.`,
+        encrypted: (site: string) => `${site} mengunci file dengan kunci yang hanya diterima browser Anda. RushDownload tidak bisa membukanya.`,
+        search: (site: string) => `${site} hanya menunjuk ke situs lain. Buka salah satu hasil dan unduh dari situs itu.`,
+        siteOnly: (site: string) => `${site} hanya memberikan file lewat halaman webnya sendiri. Buka tautan di browser Anda dan unduh di sana.`,
+      },
     },
 
     palette: {

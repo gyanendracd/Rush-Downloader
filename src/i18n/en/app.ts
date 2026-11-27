@@ -83,6 +83,7 @@ export const app = {
     extensionAdded: (n: number) =>
       plural(n, { one: "Download started from your browser", other: "# downloads started from your browser" }),
     onlyTorrents: "Only .torrent files can be dropped here",
+    browserDownload: `The page's download is now in your downloads`,
   },
   /** Right-click menu for several selected downloads. */
   menu: {

@@ -142,6 +142,7 @@ const dict: Dict = {
       extensionAdded: (n: number) =>
         plural(n, { one: "Download aus Ihrem Browser gestartet", other: "# Downloads aus Ihrem Browser gestartet" }),
       onlyTorrents: "Hier können nur .torrent-Dateien abgelegt werden",
+      browserDownload: `Der Download der Seite ist jetzt in deinen Downloads`,
     },
     menu: {
       pause: (n: number) => plural(n, { one: "# Download pausieren", other: "# Downloads pausieren" }),
@@ -259,6 +260,7 @@ const dict: Dict = {
       },
       featuresRegion: "Was RushDownload kann",
       welcome: "Willkommen bei RushDownload",
+      siteFiles: (site: string) => `${site}-Link: Klicke auf Herunterladen, um Dateien auszuwählen.`,
       subtitle: "Fügen Sie einen Link ein oder starten Sie einen neuen Download.",
       placeholder: "Beliebigen Link einfügen: Datei, Videoseite oder Torrent",
       linkLabel: "Link zum Herunterladen",
@@ -640,6 +642,7 @@ const dict: Dict = {
       source: "Quelle",
       sourceProfile: "Profil oder Playlist",
       sourceTorrent: "Torrent",
+      sourceSite: `Dateien von einem Website-Link`,
       sourceMedia: "Videoseite",
       sourceDirect: "Direkter Dateilink",
       pauseResume: "Pausieren und Fortsetzen",
@@ -820,6 +823,24 @@ const dict: Dict = {
           one: `${num(batch)} weitere anzeigen · # Datei ausgeblendet`,
           other: `${num(batch)} weitere anzeigen · # Dateien ausgeblendet`,
         }),
+    },
+
+    site: {
+      title: `Dateien auswählen`,
+      reading: `Die Dateiliste wird gelesen…`,
+      readingLabel: `Die Dateiliste wird gelesen`,
+      folderNote: (name: string) => `Mehrere Dateien kommen darin in einen Ordner namens „${name}“.`,
+      partial: `Dieser Link enthält mehr Dateien, als angezeigt werden können; nur die ersten sind aufgeführt.`,
+      filesLabel: `Dateien unter diesem Link`,
+      added: (n: number) => plural(n, { one: `Download gestartet`, other: `# Dateien werden heruntergeladen` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `${site}-Spiele werden nur in der eigenen App von ${site} mit Kopierschutz geladen. RushDownload kann sie nicht herunterladen.`,
+        paid: (site: string) => `${site}-Kurse gibt es nur für angemeldete, zahlende Teilnehmer. RushDownload kann sie nicht herunterladen.`,
+        encrypted: (site: string) => `${site} verschlüsselt Dateien mit einem Schlüssel, den nur dein Browser erhält. RushDownload kann sie nicht öffnen.`,
+        search: (site: string) => `${site} verweist nur auf andere Seiten. Öffne ein Ergebnis und lade es von dort herunter.`,
+        siteOnly: (site: string) => `${site} gibt Dateien nur über die eigene Webseite heraus. Öffne den Link im Browser und lade dort herunter.`,
+      },
     },
 
     palette: {

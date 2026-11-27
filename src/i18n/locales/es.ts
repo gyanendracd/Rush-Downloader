@@ -140,6 +140,7 @@ const dict: Dict = {
       extensionAdded: (n: number) =>
         plural(n, { one: "Se inició una descarga desde tu navegador", other: "Se iniciaron # descargas desde tu navegador" }),
       onlyTorrents: "Aquí solo se pueden soltar archivos .torrent",
+      browserDownload: `La descarga de la página ya está en tus descargas`,
     },
     menu: {
       pause: (n: number) => plural(n, { one: "Pausar # descarga", other: "Pausar # descargas" }),
@@ -253,6 +254,7 @@ const dict: Dict = {
       },
       featuresRegion: "Lo que hace RushDownload",
       welcome: "Te damos la bienvenida a RushDownload",
+      siteFiles: (site: string) => `Enlace de ${site}: pulsa Descargar para elegir sus archivos.`,
       subtitle: "Pega un enlace o inicia una nueva descarga.",
       placeholder: "Pega cualquier enlace: archivo, página de video o torrent",
       linkLabel: "Enlace para descargar",
@@ -634,6 +636,7 @@ const dict: Dict = {
       source: "Origen",
       sourceProfile: "Perfil o lista de reproducción",
       sourceTorrent: "Torrent",
+      sourceSite: `Archivos de un enlace de sitio`,
       sourceMedia: "Página de video",
       sourceDirect: "Enlace directo al archivo",
       pauseResume: "Pausar y reanudar",
@@ -814,6 +817,24 @@ const dict: Dict = {
           one: `Mostrar ${num(batch)} más · # archivo sin mostrar`,
           other: `Mostrar ${num(batch)} más · # archivos sin mostrar`,
         }),
+    },
+
+    site: {
+      title: `Elegir archivos`,
+      reading: `Leyendo la lista de archivos…`,
+      readingLabel: `Leyendo la lista de archivos`,
+      folderNote: (name: string) => `Si son varios archivos, van a una carpeta llamada "${name}" dentro de ella.`,
+      partial: `Este enlace tiene más archivos de los que se pueden mostrar; solo se ven los primeros.`,
+      filesLabel: `Archivos de este enlace`,
+      added: (n: number) => plural(n, { one: `Descarga iniciada`, other: `Descargando # archivos` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `Los juegos de ${site} solo se descargan en la app de ${site}, con su protección anticopia. RushDownload no puede descargarlos.`,
+        paid: (site: string) => `Los cursos de ${site} son solo para alumnos que pagan y han iniciado sesión. RushDownload no puede descargarlos.`,
+        encrypted: (site: string) => `${site} cifra los archivos con una clave que solo recibe tu navegador. RushDownload no puede abrirlos.`,
+        search: (site: string) => `${site} solo enlaza a otros sitios. Abre un resultado y descarga desde ese sitio.`,
+        siteOnly: (site: string) => `${site} solo entrega los archivos en su propia web. Abre el enlace en tu navegador y descarga allí.`,
+      },
     },
 
     palette: {

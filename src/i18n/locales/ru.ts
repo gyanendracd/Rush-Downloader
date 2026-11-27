@@ -151,6 +151,7 @@ const dict: Dict = {
           other: "Из браузера запущено # загрузки",
         }),
       onlyTorrents: "Сюда можно перетащить только файлы .torrent",
+      browserDownload: `Загрузка со страницы теперь в списке загрузок`,
     },
     menu: {
       pause: (n: number) =>
@@ -285,6 +286,7 @@ const dict: Dict = {
       },
       featuresRegion: "Что умеет RushDownload",
       welcome: "Добро пожаловать в RushDownload",
+      siteFiles: (site: string) => `Ссылка ${site}: нажмите «Скачать», чтобы выбрать файлы.`,
       subtitle: "Вставьте ссылку или начните новую загрузку.",
       placeholder: "Вставьте любую ссылку: на файл, страницу с видео или торрент",
       linkLabel: "Ссылка для загрузки",
@@ -690,6 +692,7 @@ const dict: Dict = {
       source: "Источник",
       sourceProfile: "Профиль или плейлист",
       sourceTorrent: "Торрент",
+      sourceSite: `Файлы по ссылке на сайт`,
       sourceMedia: "Страница с видео",
       sourceDirect: "Прямая ссылка на файл",
       pauseResume: "Приостановка и возобновление",
@@ -879,6 +882,24 @@ const dict: Dict = {
           many: `Показать ещё ${num(batch)} · # файлов не показано`,
           other: `Показать ещё ${num(batch)} · # файла не показано`,
         }),
+    },
+
+    site: {
+      title: `Выбор файлов`,
+      reading: `Читаем список файлов…`,
+      readingLabel: `Читаем список файлов`,
+      folderNote: (name: string) => `Если файлов несколько, они попадут в папку «${name}» внутри неё.`,
+      partial: `По этой ссылке файлов больше, чем можно показать; видны только первые.`,
+      filesLabel: `Файлы по этой ссылке`,
+      added: (n: number) => plural(n, { one: `Загрузка началась`, other: `Загружается файлов: #` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `Игры ${site} скачиваются только в собственном приложении ${site}, с защитой от копирования. RushDownload не может их скачать.`,
+        paid: (site: string) => `Курсы ${site} доступны только вошедшим платным слушателям. RushDownload не может их скачать.`,
+        encrypted: (site: string) => `${site} шифрует файлы ключом, который получает только ваш браузер. RushDownload не может их открыть.`,
+        search: (site: string) => `${site} лишь ссылается на другие сайты. Откройте результат и скачайте с того сайта.`,
+        siteOnly: (site: string) => `${site} отдаёт файлы только на своей веб-странице. Откройте ссылку в браузере и скачайте там.`,
+      },
     },
 
     palette: {

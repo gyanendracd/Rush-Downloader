@@ -1,0 +1,86 @@
+# id	site	mode	url  (see crates/engine/examples/sitecheck.rs)
+v01	YouTube	media+dl	https://www.youtube.com/watch?v=jNQXAC9IVRw
+v02	Vimeo	media	https://vimeo.com/76979871
+v03	Dailymotion	media	https://www.dailymotion.com/video/x5kesuj
+v04	Twitch	list	https://www.twitch.tv/twitch/videos
+v05	TikTok	media	https://www.tiktok.com/@scout2015/video/6718335390845095173
+v06	Instagram	media	https://www.instagram.com/reel/Chunk8-jurw/
+v07	Facebook	media	https://www.facebook.com/facebook/videos/10153231379946729/
+v08	X	media	https://twitter.com/freethenipple/status/643211948184596480
+v09	Reddit	media	https://www.reddit.com/r/videos/comments/6rrwyj/that_small_heart_attack/
+v10	Bilibili	media	https://www.bilibili.com/video/BV13x41117TL
+a01	SoundCloud	media+dl	https://soundcloud.com/ethmusic/lostin-powers-she-so-heavy
+a02	Bandcamp	media	https://youtube-dl.bandcamp.com/track/youtube-dl-test-song
+a03	Mixcloud	media	https://www.mixcloud.com/dholbach/cryptkeeper/
+a04	Audiomack	media	https://audiomack.com/song/roosh-williams/extraordinary
+a05	Internet Archive audio	files+dl	https://archive.org/details/gd1977-05-08.shure57.stevenson.29303.flac16
+a06	Jamendo	media	https://www.jamendo.com/track/196219/stories-from-emona-i
+a07	Free Music Archive	scan	https://freemusicarchive.org/music/Kai_Engel/Satin/
+a08	Pixabay Music	scan	https://pixabay.com/music/beats-lofi-study-112191/
+a09	Freesound	media	https://freesound.org/people/miklovan/sounds/194503/
+a10	BBC Sounds	media	https://www.bbc.co.uk/sounds/play/m001hpn3
+s01	GitHub	files+dl	https://github.com/BurntSushi/ripgrep
+s02	GitLab	files+dl	https://gitlab.com/gitlab-org/cli
+s03	Bitbucket	files+dl	https://bitbucket.org/tildeslash/monit
+s04	SourceForge	files+dl	https://sourceforge.net/projects/sevenzip/files/7-Zip/23.01/7z2301-x64.exe/download
+s05	FossHub	scan	https://www.fosshub.com/Audacity.html
+s06	FileHippo	scan	https://filehippo.com/download_7zip/
+s07	Softpedia	scan	https://www.softpedia.com/get/Compression-tools/7-Zip.shtml
+s08	MajorGeeks	scan	https://www.majorgeeks.com/files/details/7_zip.html
+s09	Ninite	files+dl	https://ninite.com/7zip/
+s10	Chocolatey	files+dl	https://community.chocolatey.org/packages/7zip
+g01	Steam	blocked	https://store.steampowered.com/app/570/Dota_2/
+g02	Epic Games	blocked	https://store.epicgames.com/en-US/p/fortnite
+g03	GOG	scan	https://www.gog.com/en/game/the_witcher
+g04	itch.io	files+dl	https://ncase.itch.io/wbwwb
+g05	Battle.net	blocked	https://shop.battle.net/en-us
+g06	EA app	blocked	https://www.ea.com/games
+g07	Ubisoft Connect	blocked	https://store.ubisoft.com/us/home
+g08	Rockstar	blocked	https://www.rockstargames.com/games
+g09	Xbox	blocked	https://www.xbox.com/en-US/games
+g10	PlayStation Store	blocked	https://store.playstation.com/en-us/pages/latest
+i01	Unsplash	files+dl	https://unsplash.com/photos/eOLpJytrbsQ
+i02	Pexels	files+dl	https://www.pexels.com/photo/photo-of-person-holding-cup-2014422/
+i03	Pixabay	scan	https://pixabay.com/photos/tree-sunset-clouds-sky-silhouette-736885/
+i04	Wikimedia Commons	files+dl	https://commons.wikimedia.org/wiki/File:Example.jpg
+i05	Flickr	collection	https://www.flickr.com/photos/nasahqphoto/
+i06	DeviantArt	collection	https://www.deviantart.com/spyed/gallery
+i07	ArtStation	collection	https://www.artstation.com/artwork/0XQ6m
+i08	Sketchfab	media	https://sketchfab.com/3d-models/the-great-drawing-room-feb9ad17e042418c8e759b81e3b2e5d7
+i09	Poly Haven	files+dl	https://polyhaven.com/a/rock_wall_08
+i10	Blender Studio	scan	https://studio.blender.org/films/sprite-fright/
+d01	Internet Archive	files+dl	https://archive.org/details/Sita_Sings_the_Blues
+d02	Project Gutenberg	files+dl	https://www.gutenberg.org/ebooks/11
+d03	Google Books	scan	https://books.google.com/books?id=jUX8N9kiCiQC
+d04	Open Library	files	https://openlibrary.org/works/OL138052W
+d05	arXiv	files+dl	https://arxiv.org/abs/1706.03762
+d06	Zenodo	files+dl	https://zenodo.org/records/24592092
+d07	Figshare	files+dl	https://figshare.com/articles/presentation/Using_APIs_to_customise_repositories_and_engage_audiences/5616445
+d08	Dryad	scan	https://datadryad.org/stash/dataset/doi:10.5061/dryad.2bvq83bkp
+d09	Kaggle	files+dl	https://www.kaggle.com/datasets/uciml/iris
+d10	Hugging Face	files+dl	https://huggingface.co/openai-community/gpt2
+e01	Coursera	blocked	https://www.coursera.org/learn/machine-learning
+e02	edX	media	https://www.edx.org/learn/computer-science/harvard-university-cs50-s-introduction-to-computer-science
+e03	Udemy	blocked	https://www.udemy.com/course/the-complete-web-development-bootcamp/
+e04	Khan Academy	media	https://www.khanacademy.org/math/algebra/x2f8bb11595b61c86:solve-equations-inequalities/x2f8bb11595b61c86:linear-equations-variables-both-sides/v/solving-equations-with-the-variable-on-both-sides
+e05	MIT OpenCourseWare	files	https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/
+e06	Stanford Online	scan	https://online.stanford.edu/free-courses
+e07	OpenLearn	scan	https://www.open.edu/openlearn/money-business/introducing-the-business-environment/content-section-0
+e08	FutureLearn	blocked	https://www.futurelearn.com/courses/
+e09	Skillshare	blocked	https://www.skillshare.com/en/browse
+e10	LinkedIn Learning	blocked	https://www.linkedin.com/learning/
+o01	OpenStreetMap	files+dl	https://www.openstreetmap.org/way/5013364
+o02	NASA data	files+dl	https://data.giss.nasa.gov/gistemp/tabledata_v4/
+o03	NOAA	files+dl	https://www.ncei.noaa.gov/data/global-hourly/access/1901/
+o04	USGS	direct	https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.csv
+o05	Data.gov	files+dl	https://catalog.data.gov/dataset/electric-vehicle-population-data
+o06	World Bank	files+dl	https://data.worldbank.org/indicator/SP.POP.TOTL
+o07	UN Data	direct	https://data.un.org/_Docs/SYB/CSV/SYB66_1_202310_Population,%20Surface%20Area%20and%20Density.csv
+o08	European Data Portal	files+dl	https://data.europa.eu/data/datasets/994221aa-93d1-4e20-8a39-66f80db0e1a5
+o09	AWS Open Data	files+dl	https://registry.opendata.aws/noaa-ghcn/
+o10	Google Dataset Search	blocked	https://datasetsearch.research.google.com/search?query=climate
+x01	BitTorrent	torrent	https://archive.org/download/Sita_Sings_the_Blues/Sita_Sings_the_Blues_archive.torrent
+x02	Plain HTTP (segmented)	direct	https://proof.ovh.net/files/10Mb.dat
+c09	Sync.com	blocked	https://ln5.sync.com/dl/abcd1234#key
+c10	Proton Drive	blocked	https://drive.proton.me/urls/ABCDEF#key
+h06	Wormhole	blocked	https://wormhole.app/abcd#key

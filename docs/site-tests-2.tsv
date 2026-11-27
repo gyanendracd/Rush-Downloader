@@ -1,0 +1,39 @@
+# Second batch: share links found for the cloud and file hosts, and corrected links.
+c01	Google Drive (file)	files+dl	https://drive.google.com/file/d/13AhW1Z1GYGaiTpJ0Pr2TTXoQivb6jx-a/view
+c01b	Google Drive (folder)	files+dl	https://drive.google.com/drive/folders/15uNXeRBIhVvZJIhL4yTw4IsStMhUaaxl
+c02	Dropbox	files	https://www.dropbox.com/scl/fi/r2kd2skcy5ylbbta5y1pz/DJI_0003.MP4?dl=0&rlkey=wcdgqangn7t3lnmmv6li9mu9h
+c02b	Dropbox (old link)	files+dl	https://www.dropbox.com/s/nelirfsxnmcfbfh/youtube-dl%20test%20video%20%27%C3%A4%22BaW_jenozKc.mp4?dl=0
+c04	Box	files+dl	https://mlssoccer.app.box.com/s/0evd2o3e08l60lr4ygukepvnkord1o1x/file/510727257538
+c05	MEGA (file)	files+dl	https://mega.nz/file/hYVmXKqL#r0d0-WRnFwulR_shhuEDwrY1Vo103-am1MyUy8oV6Ps
+c05b	MEGA (folder)	files+dl	https://mega.nz/folder/rdpkjZzC#eUXPed_vntJKLrB0wpeJ-w
+c06	MediaFire (file)	files+dl	https://www.mediafire.com/file/g5mzgr1izm2/baltools-1.0.zip
+c06b	MediaFire (folder)	files	https://www.mediafire.com/folder/xb49obyqfut8d
+c08	pCloud	files+dl	https://u.pcloud.link/publink/show?code=XZ1DY7ZtLhSRDVroqb5LV6jWpaWoyUlCh7y
+h01	GoFile	blocked	https://gofile.io/d/k6BomI
+h02	1fichier	blocked	https://1fichier.com/?0d4a5lbk385zevg023mt
+v02	Vimeo	media	https://player.vimeo.com/video/76979871
+a04	Audiomack	media	https://www.audiomack.com/song/roosh-williams/extraordinary
+a07	Free Music Archive	media	https://freemusicarchive.org/music/Kevin_MacLeod/Best_of_2014_1461/Crossing_the_Divide/
+a10	BBC Sounds	media	https://www.bbc.co.uk/programmes/b039g8p7
+g04	itch.io	files+dl	https://baku.itch.io/spearmint-mountain
+i06	DeviantArt	collection	https://www.deviantart.com/jordangrimmer/art/Landscape-Digital-Painting-Tutorial-854840766
+i07	ArtStation	files	https://www.artstation.com/artwork/lD5L4
+i08	Sketchfab	media	https://sketchfab.com/3d-models/scifi-girl-v01-96340701c2ed4d37851c7d9109eee9c0
+d02	Project Gutenberg	files+dl	https://www.gutenberg.org/ebooks/11
+d03	Google Books	scan	https://books.google.com/books?id=buc0AAAAMAAJ
+d04	Open Library	files	https://openlibrary.org/works/OL138052W
+d06	Zenodo	files+dl	https://zenodo.org/records/10396807
+d07b	Figshare (dataset)	files+dl	https://figshare.com/articles/dataset/Supplementary_data_for_Genome_Assembly_and_Evolutionary_Analysis_of_i_Megabeleses_liriodendrovorax_i_Hymenoptera_Tenthredinidae_/32385219
+d08	Dryad	files+dl	https://datadryad.org/stash/dataset/doi:10.5061/dryad.c866t1g4c
+e04	Khan Academy	media	https://www.khanacademy.org/computing/computer-science/cryptography/crypt/v/one-time-pad
+e06	Stanford Online	scan	https://online.stanford.edu/courses/soe-ycscs1-compilers
+e07	OpenLearn	scan	https://www.open.edu/openlearn/science-maths-technology/introduction-cyber-security-stay-safe-online/content-section-overview-0
+o02	NASA (image library)	files+dl	https://images.nasa.gov/details/as11-40-5874
+o02b	NASA (GISS data)	get	https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv
+o03	NOAA	files+dl	https://www.ncei.noaa.gov/pub/data/ghcn/daily/
+o04	USGS	get	https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.csv
+o05	Data.gov	files	https://catalog.data.gov/dataset/electric-vehicle-population-data
+o08	European Data Portal	files	https://data.europa.eu/data/datasets/994221aa-93d1-4e20-8a39-66f80db0e1a5
+x02	Plain HTTP (segmented)	get	https://proof.ovh.net/files/10Mb.dat
+x03	Telegram (video)	media+dl	https://t.me/europa_press/613
+x04	Telegram (file)	media	https://t.me/LSPosedArchives/4210

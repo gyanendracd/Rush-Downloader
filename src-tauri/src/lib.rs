@@ -1,5 +1,6 @@
 use rushdownload_engine::{
-    Engine, Found, ItemInfo, MediaInfo, NewDownload, PlaylistInfo, ProfileFace, ProfileRef, Settings, Status, TaskInfo, ToolStatus, TorrentPreview,
+    Engine, Found, ItemInfo, MediaInfo, NewDownload, PlaylistInfo, ProfileFace, ProfileRef, Settings, SiteFile, SiteFiles, SiteKind, Status, TaskInfo, ToolStatus,
+    TorrentPreview,
 };
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl};
 use tauri_plugin_opener::OpenerExt;
@@ -407,6 +408,7 @@ async fn signin_open(
     let notify = app.clone();
     let on_title = app.clone();
     let on_move = app.clone();
+    let on_file = app.clone();
     let mut page = tauri::webview::WebviewBuilder::new(SIGN_IN_VIEW, WebviewUrl::External(url)).data_directory(data);
     // The embedded browser keeps the switches it first started with until the
     // app is restarted; asking for others would fail. Without secure DNS it
@@ -447,6 +449,43 @@ async fn signin_open(
                 .on_navigation(move |target| {
                     let _ = on_move.emit("browser-nav", target.as_str().to_string());
                     true
+                })
+                // A file the page starts downloading (a site's own Download
+                // button, often after a wait or a check made by script) goes
+                // to the app instead, with the page's sign-in, like any other.
+                .on_download(move |view, event| {
+                    let tauri::webview::DownloadEvent::Requested { url, .. } = event else {
+                        return true;
+                    };
+                    if !matches!(url.scheme(), "http" | "https") {
+                        return true;
+                    }
+                    let app = on_file.clone();
+                    let page = view.url().ok().map(|u| u.to_string());
+                    // Asking the page for its cookies waits on the window, so
+                    // it is done away from it.
+                    tauri::async_runtime::spawn(async move {
+                        let mut headers = Vec::new();
+                        if let Ok(cookies) = view.cookies_for_url(url.clone()) {
+                            let line = cookies.iter().map(|c| format!("{}={}", c.name(), c.value())).collect::<Vec<_>>().join("; ");
+                            if !line.is_empty() {
+                                headers.push(("Cookie".to_string(), line));
+                            }
+                        }
+                        if let Some(page) = page.filter(|p| p.starts_with("http")) {
+                            headers.push(("Referer".to_string(), page));
+                        }
+                        let engine = app.state::<AppState>().0.clone();
+                        match engine.add(NewDownload { url: url.to_string(), headers, ..Default::default() }) {
+                            Ok(_) => {
+                                let _ = app.emit("browser-download", url.to_string());
+                            }
+                            Err(why) => {
+                                let _ = app.emit("browser-download-failed", why);
+                            }
+                        }
+                    });
+                    false
                 })
                 // "Continue with Google" and the like open the other site's
                 // sign-in in a window of their own and wait for its answer.
@@ -644,6 +683,32 @@ async fn torrent_preview(state: State<'_, AppState>, source: String) -> Result<T
     engine.torrent_preview(&source).await
 }
 
+/// Whether a link is one of a site the app reads files from (or one it
+/// cannot download from, and why). Answered from the link alone.
+#[tauri::command]
+fn site_kind(url: String) -> Option<SiteKind> {
+    Engine::site_kind(&url)
+}
+
+/// The files a site link holds, to pick from.
+#[tauri::command]
+async fn site_files(state: State<'_, AppState>, url: String) -> Result<SiteFiles, String> {
+    let engine = state.0.clone();
+    engine.site_files(&url).await
+}
+
+/// Downloads the files picked from a site link.
+#[tauri::command]
+fn add_site_files(
+    state: State<AppState>,
+    url: String,
+    title: String,
+    files: Vec<SiteFile>,
+    dir: Option<String>,
+) -> Result<u64, String> {
+    state.0.add_files(&url, &title, files, dir.filter(|d| !d.is_empty()).map(Into::into))
+}
+
 #[tauri::command]
 fn pause_download(state: State<AppState>, id: u64) {
     state.0.pause(id);
@@ -811,6 +876,9 @@ pub fn run() {
             add_download,
             scan_page,
             torrent_preview,
+            site_kind,
+            site_files,
+            add_site_files,
             media_info,
             link_size,
             profile_of,

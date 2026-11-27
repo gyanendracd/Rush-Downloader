@@ -73,6 +73,24 @@ export const dialogs = {
       }),
   },
 
+  site: {
+    title: `Choose files`,
+    reading: `Reading the list of files…`,
+    readingLabel: `Reading the list of files`,
+    folderNote: (name: string) => `Several files go into a folder named "${name}" inside it.`,
+    partial: `This link holds more files than can be listed; only the first ones are shown.`,
+    filesLabel: `Files at this link`,
+    added: (n: number) => plural(n, { one: `Download started`, other: `# files are downloading` }),
+    /** Why a site's links cannot be downloaded. */
+    blocked: {
+      store: (site: string) => `${site} games only download in ${site}'s own app, with its copy protection. RushDownload can't download them.`,
+      paid: (site: string) => `${site} courses are only for signed-in, paying students. RushDownload can't download them.`,
+      encrypted: (site: string) => `${site} locks files with a key only your browser gets. RushDownload can't open them.`,
+      search: (site: string) => `${site} only points to other sites. Open a result and download from that site.`,
+      siteOnly: (site: string) => `${site} only hands files to its own web page. Open the link in your browser and download it there.`,
+    },
+  },
+
   palette: {
     label: "Search commands and downloads",
     pressEnter: "Press Enter to download this link.",

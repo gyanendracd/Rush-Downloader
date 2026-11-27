@@ -65,6 +65,7 @@ import {
   type Download,
   type CaughtMedia,
   type MediaInfo,
+  type SiteKind,
   type MediaOptions,
   type PlaylistInfo,
   type ProfileFace,
@@ -72,6 +73,7 @@ import {
   type Settings,
   type ToolStatus,
 } from "./api";
+import { siteBlockedText } from "./dialogs";
 import { SITE_LOGOS } from "./siteLogos";
 import { DownloadRow, Dropdown, FileIcon, IconBtn, Modal, useApp, type ProgressStyle, Select } from "./ui";
 import { changeLanguageLabel, dateText, ENGLISH_CHANGE_LANGUAGE, formatLocale, languageOptionLabel, listText, type Locale, locale, LOCALES, num, pct, setLocale, t } from "./i18n";
@@ -926,8 +928,11 @@ export function HomeView(props: {
   const [caughtPick, setCaughtPick] = useState("");
   const [pageTitle, setPageTitle] = useState("");
   const [picture, setPicture] = useState<string | null>(null);
+  /** A share link or project page the app lists files from, or a site it cannot download from. */
+  const [site, setSite] = useState<SiteKind | null>(null);
   const link = url.trim();
   useEffect(() => {
+    setSite(null);
     setVideo(null);
     setProfile(null);
     setPlaylist(null);
@@ -946,6 +951,14 @@ export function HomeView(props: {
     let stale = false;
     // Wait for typing to stop before asking the site.
     const timer = window.setTimeout(async () => {
+      // A site the app reads files from (or cannot download from) needs no
+      // look for videos: Download lists its files, or says why not.
+      const known = await api.siteKind(link).catch(() => null);
+      if (stale) return;
+      if (known) {
+        setSite(known);
+        return;
+      }
       // Everything a profile card shows: whose it is, its numbers, what it holds.
       const showProfile = (who: ProfileRef) => {
         setProfile(who);
@@ -1164,9 +1177,24 @@ export function HomeView(props: {
    *  steady, for as long as the link is the same. */
   const [pointedAt, setPointedAt] = useState(false);
   useEffect(() => setPointedAt(false), [url]);
+  /** Download was pressed with no usable link in the box: the message shows
+   *  for three seconds and fades out, or goes when the link changes. Counts the presses, so a
+   *  press while it shows starts it again from the beginning. */
+  const [linkMissing, setLinkMissing] = useState(0);
+  useEffect(() => setLinkMissing(0), [url]);
+  useEffect(() => {
+    if (!linkMissing) return;
+    // Three seconds shown, then 1.2 s to fade out (`hint-life` in styles.css).
+    const timer = window.setTimeout(() => setLinkMissing(0), 4200);
+    return () => window.clearTimeout(timer);
+  }, [linkMissing]);
   /** Shakes the Download button and lights up the note about signing in. */
   function nudge() {
     setPointedAt(true);
+    shake();
+  }
+  /** Shakes the Download button, from the start on every click. */
+  function shake() {
     const el = downloadButton.current;
     if (!el) return;
     el.classList.remove("is-shaking");
@@ -1250,7 +1278,11 @@ export function HomeView(props: {
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!valid) return;
+    if (!valid) {
+      setLinkMissing((n) => n + 1);
+      shake();
+      return;
+    }
     if (gated) {
       nudge();
       return;
@@ -1342,58 +1374,19 @@ export function HomeView(props: {
             ref={downloadButton}
             type="submit"
             className="btn btn-primary"
-            disabled={!valid}
-            // Still takes the click, to point at what is missing; see `gated`.
-            aria-disabled={gated || undefined}
+            // Always takes the click: with no usable link, or a profile that
+            // needs a sign-in (`gated`), it shakes and points at what is missing.
+            aria-disabled={!valid || gated || undefined}
             onAnimationEnd={(e) => e.currentTarget.classList.remove("is-shaking")}
           >
             {t.views.home.download}
           </button>
         </form>
 
-        {locked && (
-          <div className={`signin-needed${pointedAt ? " is-glowing" : ""}`} role="status">
-            <KeyRound size={18} strokeWidth={2} aria-hidden="true" />
-            <p>
-              <strong>
-                {profileShown
-                  ? lockedSite
-                    ? t.views.home.locked.profileShown(lockedSite)
-                    : t.views.home.locked.profileShownThisSite
-                  : lockedSite
-                    ? t.views.home.locked.site(lockedSite)
-                    : t.views.home.locked.thisSite}
-              </strong>{" "}
-              {lockedSite === "YouTube"
-                ? t.views.home.locked.goYouTube
-                : lockedSite
-                  ? t.views.home.locked.goSite(lockedSite)
-                  : t.views.home.locked.go}{" "}
-              {t.views.home.locked.comeBack}
-            </p>
-            <button
-              type="button"
-              className="btn btn-small btn-primary"
-              // Straight to the site's own sign-in where the app knows it;
-              // otherwise the Sign in page, to pick the site there.
-              onClick={() => (lockedSite ? props.signIn(lockedSite) : props.go("signin"))}
-            >
-              {t.views.home.locked.button}
-            </button>
-          </div>
-        )}
         {((looking && !video) || (catchLink && catching && caughtOffers.length === 0)) && (
           <p className="video-looking" role="status">
             <span className="live-dot" aria-hidden="true" />{" "}
             {catchLink ? t.views.home.findingVideo : t.views.home.lookingPage}
-          </p>
-        )}
-        {catchLink && !catching && caughtOffers.length === 0 && (
-          <p className="video-looking" role="status">
-            {t.views.home.noVideo}
-            <button type="button" className="btn btn-small" onClick={() => actions.browse(catchLink)}>
-              {t.views.home.openInBrowser}
-            </button>
           </p>
         )}
         {catchLink && caughtChosen && (
@@ -1633,6 +1626,7 @@ export function HomeView(props: {
           </button>
         </div>
 
+
         {running.length > 0 && (
           <section className="glance" aria-label={t.views.home.downloadingRegion}>
             <button type="button" className="live" onClick={() => props.go("downloads")}>
@@ -1667,6 +1661,63 @@ export function HomeView(props: {
             </ul>
           </section>
         )}
+      </div>
+
+      {/* Alerts and warnings about the link, all in one place just above the
+          strip at the foot of the page. The layer takes no room of its own, so
+          the welcome above does not move when one appears. */}
+      <div className="home-alerts">
+        <div className="home-alerts-stack">
+          {linkMissing > 0 && (
+            <p key={linkMissing} className="note note-error paste-hint" role="alert">
+              {t.dialogs.add.invalidLink}
+            </p>
+          )}
+          {site && (
+            <p className={`note${site.support === "blocked" ? " note-error" : ""}`} role="status">
+              {site.support === "blocked" ? siteBlockedText(site) : t.views.home.siteFiles(site.site)}
+            </p>
+          )}
+          {locked && (
+            <div className={`signin-needed${pointedAt ? " is-glowing" : ""}`} role="status">
+              <KeyRound size={18} strokeWidth={2} aria-hidden="true" />
+              <p>
+                <strong>
+                  {profileShown
+                    ? lockedSite
+                      ? t.views.home.locked.profileShown(lockedSite)
+                      : t.views.home.locked.profileShownThisSite
+                    : lockedSite
+                      ? t.views.home.locked.site(lockedSite)
+                      : t.views.home.locked.thisSite}
+                </strong>{" "}
+                {lockedSite === "YouTube"
+                  ? t.views.home.locked.goYouTube
+                  : lockedSite
+                    ? t.views.home.locked.goSite(lockedSite)
+                    : t.views.home.locked.go}{" "}
+                {t.views.home.locked.comeBack}
+              </p>
+              <button
+                type="button"
+                className="btn btn-small btn-primary"
+                // Straight to the site's own sign-in where the app knows it;
+                // otherwise the Sign in page, to pick the site there.
+                onClick={() => (lockedSite ? props.signIn(lockedSite) : props.go("signin"))}
+              >
+                {t.views.home.locked.button}
+              </button>
+            </div>
+          )}
+          {catchLink && !catching && caughtOffers.length === 0 && (
+            <p className="video-looking" role="status">
+              {t.views.home.noVideo}
+              <button type="button" className="btn btn-small" onClick={() => actions.browse(catchLink)}>
+                {t.views.home.openInBrowser}
+              </button>
+            </p>
+          )}
+        </div>
       </div>
 
       <ul className="features" aria-label={t.views.home.featuresRegion}>

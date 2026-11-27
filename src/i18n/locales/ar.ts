@@ -162,6 +162,7 @@ const dict: Dict = {
           other: "بدأ # تنزيل من متصفحك",
         }),
       onlyTorrents: "يمكن إفلات ملفات .torrent فقط هنا",
+      browserDownload: `أصبح تنزيل الصفحة الآن ضمن تنزيلاتك`,
     },
     menu: {
       pause: (n: number) =>
@@ -304,6 +305,7 @@ const dict: Dict = {
       },
       featuresRegion: "ما يقدمه RushDownload",
       welcome: "مرحبًا بك في RushDownload",
+      siteFiles: (site: string) => `رابط ${site}: اضغط تنزيل لاختيار ملفاته.`,
       subtitle: "الصق رابطًا، أو ابدأ تنزيلًا جديدًا.",
       placeholder: "الصق أي رابط: ملف أو صفحة فيديو أو تورنت",
       linkLabel: "رابط التنزيل",
@@ -777,6 +779,7 @@ const dict: Dict = {
       source: "المصدر",
       sourceProfile: "حساب أو قائمة تشغيل",
       sourceTorrent: "تورنت",
+      sourceSite: `ملفات من رابط موقع`,
       sourceMedia: "صفحة فيديو",
       sourceDirect: "رابط ملف مباشر",
       pauseResume: "الإيقاف المؤقت والاستئناف",
@@ -1002,6 +1005,24 @@ const dict: Dict = {
           many: `عرض ${num(batch)} أخرى · # ملفًا غير معروض`,
           other: `عرض ${num(batch)} أخرى · # ملف غير معروض`,
         }),
+    },
+
+    site: {
+      title: `اختيار الملفات`,
+      reading: `تجري قراءة قائمة الملفات…`,
+      readingLabel: `تجري قراءة قائمة الملفات`,
+      folderNote: (name: string) => `توضع الملفات المتعددة داخله في مجلد باسم "${name}".`,
+      partial: `يحوي هذا الرابط ملفات أكثر مما يمكن عرضه؛ تظهر الملفات الأولى فقط.`,
+      filesLabel: `الملفات في هذا الرابط`,
+      added: (n: number) => plural(n, { one: `بدأ التنزيل`, other: `يجري تنزيل # ملفات` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `ألعاب ${site} لا تُنزَّل إلا في تطبيق ${site} نفسه مع حماية النسخ. لا يستطيع RushDownload تنزيلها.`,
+        paid: (site: string) => `دورات ${site} متاحة فقط للطلاب المشتركين بعد تسجيل الدخول. لا يستطيع RushDownload تنزيلها.`,
+        encrypted: (site: string) => `يقفل ${site} الملفات بمفتاح لا يصل إلا إلى متصفحك. لا يستطيع RushDownload فتحها.`,
+        search: (site: string) => `${site} يشير إلى مواقع أخرى فقط. افتح نتيجة ونزّل من ذلك الموقع.`,
+        siteOnly: (site: string) => `لا يسلّم ${site} الملفات إلا عبر صفحته الخاصة. افتح الرابط في متصفحك ونزّل من هناك.`,
+      },
     },
 
     palette: {

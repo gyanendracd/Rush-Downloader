@@ -140,6 +140,7 @@ const dict: Dict = {
       extensionAdded: (n: number) =>
         plural(n, { one: "आपके ब्राउज़र से डाउनलोड शुरू हुआ", other: "आपके ब्राउज़र से # डाउनलोड शुरू हुए" }),
       onlyTorrents: "यहाँ सिर्फ़ .torrent फ़ाइलें छोड़ी जा सकती हैं",
+      browserDownload: `पेज का डाउनलोड अब आपके डाउनलोड में है`,
     },
     menu: {
       pause: (n: number) => plural(n, { one: "# डाउनलोड रोकें", other: "# डाउनलोड रोकें" }),
@@ -250,6 +251,7 @@ const dict: Dict = {
       },
       featuresRegion: "RushDownload क्या करता है",
       welcome: "RushDownload में आपका स्वागत है",
+      siteFiles: (site: string) => `${site} लिंक: फ़ाइलें चुनने के लिए डाउनलोड दबाएँ।`,
       subtitle: "कोई लिंक पेस्ट करें, या नया डाउनलोड शुरू करें।",
       placeholder: "कोई भी लिंक पेस्ट करें: फ़ाइल, वीडियो पेज या टॉरेंट",
       linkLabel: "डाउनलोड करने का लिंक",
@@ -630,6 +632,7 @@ const dict: Dict = {
       source: "स्रोत",
       sourceProfile: "प्रोफ़ाइल या प्लेलिस्ट",
       sourceTorrent: "टॉरेंट",
+      sourceSite: `साइट लिंक की फ़ाइलें`,
       sourceMedia: "वीडियो पेज",
       sourceDirect: "सीधा फ़ाइल लिंक",
       pauseResume: "रोकना और फिर से शुरू करना",
@@ -810,6 +813,24 @@ const dict: Dict = {
           one: `${num(batch)} और दिखाएँ · # फ़ाइल नहीं दिखाई गई`,
           other: `${num(batch)} और दिखाएँ · # फ़ाइलें नहीं दिखाई गईं`,
         }),
+    },
+
+    site: {
+      title: `फ़ाइलें चुनें`,
+      reading: `फ़ाइलों की सूची पढ़ी जा रही है…`,
+      readingLabel: `फ़ाइलों की सूची पढ़ी जा रही है`,
+      folderNote: (name: string) => `कई फ़ाइलें इसके अंदर "${name}" नाम के फ़ोल्डर में जाती हैं।`,
+      partial: `इस लिंक में दिखाई जा सकने से ज़्यादा फ़ाइलें हैं; सिर्फ़ शुरू की फ़ाइलें दिख रही हैं।`,
+      filesLabel: `इस लिंक की फ़ाइलें`,
+      added: (n: number) => plural(n, { one: `डाउनलोड शुरू हुआ`, other: `# फ़ाइलें डाउनलोड हो रही हैं` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `${site} के गेम सिर्फ़ ${site} के अपने ऐप में, कॉपी सुरक्षा के साथ डाउनलोड होते हैं। RushDownload इन्हें डाउनलोड नहीं कर सकता।`,
+        paid: (site: string) => `${site} के कोर्स सिर्फ़ साइन इन किए हुए, पैसे देने वाले छात्रों के लिए हैं। RushDownload इन्हें डाउनलोड नहीं कर सकता।`,
+        encrypted: (site: string) => `${site} फ़ाइलों को ऐसी चाबी से लॉक करता है जो सिर्फ़ आपके ब्राउज़र को मिलती है। RushDownload इन्हें नहीं खोल सकता।`,
+        search: (site: string) => `${site} सिर्फ़ दूसरी साइटों की ओर इशारा करता है। कोई नतीजा खोलें और उसी साइट से डाउनलोड करें।`,
+        siteOnly: (site: string) => `${site} फ़ाइलें सिर्फ़ अपने वेब पेज पर देता है। लिंक को अपने ब्राउज़र में खोलें और वहीं से डाउनलोड करें।`,
+      },
     },
 
     palette: {

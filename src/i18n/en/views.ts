@@ -96,6 +96,8 @@ export const views = {
     },
     featuresRegion: "What RushDownload does",
     welcome: "Welcome to RushDownload",
+    /** Under the box, for a link whose files are listed to pick from. */
+    siteFiles: (site: string) => `${site} link: press Download to choose its files.`,
     subtitle: "Paste a link, or start a new download.",
     placeholder: "Paste any link: file, video page or torrent",
     linkLabel: "Link to download",

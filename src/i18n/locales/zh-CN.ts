@@ -138,6 +138,7 @@ const dict: Dict = {
       extensionLink: "来自浏览器的链接已放到主页",
       extensionAdded: (n: number) => plural(n, { other: "已从浏览器开始 # 个下载" }),
       onlyTorrents: "只能拖放 .torrent 文件到这里",
+      browserDownload: `页面的下载已加入你的下载列表`,
     },
     menu: {
       pause: (n: number) => plural(n, { other: "暂停 # 个下载" }),
@@ -246,6 +247,7 @@ const dict: Dict = {
       },
       featuresRegion: "RushDownload 的功能",
       welcome: "欢迎使用 RushDownload",
+      siteFiles: (site: string) => `${site} 链接：点击“下载”来选择文件。`,
       subtitle: "粘贴链接，或开始新的下载。",
       placeholder: "粘贴任意链接：文件、视频页面或种子",
       linkLabel: "要下载的链接",
@@ -619,6 +621,7 @@ const dict: Dict = {
       source: "来源",
       sourceProfile: "个人主页或播放列表",
       sourceTorrent: "种子",
+      sourceSite: `来自网站链接的文件`,
       sourceMedia: "视频页面",
       sourceDirect: "直接文件链接",
       pauseResume: "暂停和继续",
@@ -788,6 +791,24 @@ const dict: Dict = {
       chooseOne: "请至少选择一个文件。",
       showMore: (batch: number, rest: number) =>
         plural(rest, { other: `再显示 ${num(batch)} 个 · 还有 # 个未显示` }),
+    },
+
+    site: {
+      title: `选择文件`,
+      reading: `正在读取文件列表…`,
+      readingLabel: `正在读取文件列表`,
+      folderNote: (name: string) => `多个文件会存入其中名为“${name}”的文件夹。`,
+      partial: `此链接中的文件太多，无法全部列出；只显示前面的部分。`,
+      filesLabel: `此链接中的文件`,
+      added: (n: number) => plural(n, { one: `已开始下载`, other: `正在下载 # 个文件` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `${site} 的游戏只能在 ${site} 自己的应用中下载，并带有防复制保护。RushDownload 无法下载。`,
+        paid: (site: string) => `${site} 的课程仅供已登录的付费学员使用。RushDownload 无法下载。`,
+        encrypted: (site: string) => `${site} 用只有你的浏览器才能拿到的密钥加密文件。RushDownload 无法打开。`,
+        search: (site: string) => `${site} 只是指向其他网站。请打开某个结果，从那个网站下载。`,
+        siteOnly: (site: string) => `${site} 只在自己的网页上提供文件。请在浏览器中打开链接并在那里下载。`,
+      },
     },
 
     palette: {

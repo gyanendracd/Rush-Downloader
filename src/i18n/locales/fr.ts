@@ -145,6 +145,7 @@ const dict: Dict = {
           other: "# téléchargements lancés depuis votre navigateur",
         }),
       onlyTorrents: "Seuls les fichiers .torrent peuvent être déposés ici",
+      browserDownload: `Le téléchargement de la page est maintenant dans vos téléchargements`,
     },
     menu: {
       pause: (n: number) =>
@@ -264,6 +265,7 @@ const dict: Dict = {
       },
       featuresRegion: "Ce que fait RushDownload",
       welcome: "Bienvenue dans RushDownload",
+      siteFiles: (site: string) => `Lien ${site} : appuyez sur Télécharger pour choisir ses fichiers.`,
       subtitle: "Collez un lien ou lancez un nouveau téléchargement.",
       placeholder: "Collez n'importe quel lien : fichier, page vidéo ou torrent",
       linkLabel: "Lien à télécharger",
@@ -648,6 +650,7 @@ const dict: Dict = {
       source: "Source",
       sourceProfile: "Profil ou playlist",
       sourceTorrent: "Torrent",
+      sourceSite: `Fichiers d'un lien de site`,
       sourceMedia: "Page vidéo",
       sourceDirect: "Lien direct vers un fichier",
       pauseResume: "Pause et reprise",
@@ -828,6 +831,24 @@ const dict: Dict = {
           one: `Afficher ${num(batch)} de plus · # fichier non affiché`,
           other: `Afficher ${num(batch)} de plus · # fichiers non affichés`,
         }),
+    },
+
+    site: {
+      title: `Choisir les fichiers`,
+      reading: `Lecture de la liste des fichiers…`,
+      readingLabel: `Lecture de la liste des fichiers`,
+      folderNote: (name: string) => `Plusieurs fichiers vont dans un dossier nommé « ${name} » à l'intérieur.`,
+      partial: `Ce lien contient plus de fichiers que l'on peut afficher ; seuls les premiers sont listés.`,
+      filesLabel: `Fichiers de ce lien`,
+      added: (n: number) => plural(n, { one: `Téléchargement lancé`, other: `# fichiers en téléchargement` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `Les jeux ${site} ne se téléchargent que dans l'application de ${site}, avec sa protection anticopie. RushDownload ne peut pas les télécharger.`,
+        paid: (site: string) => `Les cours ${site} sont réservés aux élèves payants et connectés. RushDownload ne peut pas les télécharger.`,
+        encrypted: (site: string) => `${site} chiffre les fichiers avec une clé que seul votre navigateur reçoit. RushDownload ne peut pas les ouvrir.`,
+        search: (site: string) => `${site} renvoie seulement vers d'autres sites. Ouvrez un résultat et téléchargez depuis ce site.`,
+        siteOnly: (site: string) => `${site} ne donne les fichiers que sur sa propre page web. Ouvrez le lien dans votre navigateur et téléchargez-le là.`,
+      },
     },
 
     palette: {

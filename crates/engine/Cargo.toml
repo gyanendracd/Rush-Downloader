@@ -16,3 +16,6 @@ regex = "1"
 librqbit = { version = "9.1.0", default-features = false, features = ["rust-tls"] }
 # Already built for the secure connections; used to check web-seeded torrent pieces.
 ring = "0.17"
+# MEGA encrypts every file with AES; its links carry the key.
+aes = "0.8"
+base64 = "0.22"

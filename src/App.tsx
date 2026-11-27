@@ -37,7 +37,7 @@ import {
   type Settings,
 } from "./api";
 import { DetailDialog } from "./Detail";
-import { AddDialog, Palette, ScanDialog, TorrentDialog, type Command } from "./dialogs";
+import { AddDialog, Palette, ScanDialog, siteBlockedText, TorrentDialog, type Command } from "./dialogs";
 import {
   AppContext,
   downloadMenu,
@@ -135,6 +135,8 @@ export default function App() {
   const [add, setAdd] = useState<{ url: string; mode: "download" | "scan" } | null>(null);
   const [scanUrl, setScanUrl] = useState<string | null>(null);
   const [torrentSource, setTorrentSource] = useState<string | null>(null);
+  /** A share link or project page whose files are being picked. */
+  const [siteSource, setSiteSource] = useState<string | null>(null);
   const qualityRef = useRef("best");
   const [aboutOpen, setAboutOpen] = useState(false);
   const [question, setQuestion] = useState<Question | null>(null);
@@ -157,7 +159,7 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [theme, setTheme] = useState<Theme>(() =>
-    loadPref<Theme>("theme", "light", ["system", "light", "dark"]),
+    loadPref<Theme>("theme", "dark", ["system", "light", "dark"]),
   );
   const [progressStyle, setProgressStyle] = useState<ProgressStyle>(() =>
     loadPref<ProgressStyle>("progress", "single", ["single", "threads"]),
@@ -410,8 +412,19 @@ export default function App() {
           await openTorrent(link);
           return true;
         }
+        // A share link or project page (GitHub, Drive, MEGA...): its files
+        // are listed to pick from. A store or paid course says why not.
+        const site = await api.siteKind(link).catch(() => null);
+        if (site?.support === "blocked") {
+          toast(siteBlockedText(site), "error");
+          return false;
+        }
         const duplicate = await checkDuplicate(link);
         if (duplicate !== "go") return duplicate === "show";
+        if (site?.support === "files") {
+          setSiteSource(link);
+          return true;
+        }
         try {
           // A profile or playlist is a whole folder: the user may want to say where it goes.
           let dir: string | undefined;
@@ -534,6 +547,7 @@ export default function App() {
     add != null ||
     scanUrl != null ||
     torrentSource != null ||
+    siteSource != null ||
     paletteOpen ||
     aboutOpen ||
     menu != null ||
@@ -573,9 +587,14 @@ export default function App() {
     const added = api.onExtensionAdded((count) => {
       toast(t.app.toast.extensionAdded(count));
     });
+    // A page on the Browser page started a file download: the app has it.
+    const caught = api.onBrowserDownload(() => toast(t.app.toast.browserDownload));
+    const refused = api.onBrowserDownloadFailed((why) => toast(why, "error"));
     return () => {
       link.then((f) => f());
       added.then((f) => f());
+      caught.then((f) => f());
+      refused.then((f) => f());
     };
   }, [setNav, toast]);
 
@@ -850,6 +869,14 @@ export default function App() {
           <TorrentDialog
             source={torrentSource}
             onClose={() => setTorrentSource(null)}
+            onAdded={() => setNav("downloads")}
+          />
+        )}
+        {siteSource && (
+          <TorrentDialog
+            site
+            source={siteSource}
+            onClose={() => setSiteSource(null)}
             onAdded={() => setNav("downloads")}
           />
         )}

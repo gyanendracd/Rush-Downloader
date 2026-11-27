@@ -3,7 +3,7 @@
 // from main.tsx only when the app is not running inside Tauri in dev mode and
 // is never part of a production build.
 
-import type { Download, Found, NewDownload, ProfileFace, Settings, ToolStatus, TorrentPreview } from "./api";
+import type { Download, Found, NewDownload, ProfileFace, Settings, SiteFile, SiteFiles, SiteKind, ToolStatus, TorrentPreview } from "./api";
 
 const MB = 1024 * 1024;
 const now = Math.floor(Date.now() / 1000);
@@ -381,6 +381,8 @@ export const mockApi = {
     return Promise.resolve(() => window.removeEventListener("mock-extension-link", hear));
   },
   onExtensionAdded: (_cb: (count: number) => void) => Promise.resolve(() => {}),
+  onBrowserDownload: (_cb: (url: string) => void) => Promise.resolve(() => {}),
+  onBrowserDownloadFailed: (_cb: (why: string) => void) => Promise.resolve(() => {}),
   linkSize: async (url: string, _referer: string) => {
     await new Promise((r) => setTimeout(r, 500));
     return /1080/.test(url) ? 412 * MB : 96 * MB;
@@ -552,6 +554,58 @@ export const mockApi = {
       { path: ["Sample Collection", "Cover.jpg"], size: 2 * MB },
     ].map((f, index) => ({ index, ...f }));
     return { name: "Sample Collection", total: files.reduce((sum, f) => sum + f.size, 0), files };
+  },
+  // A GitHub release stands in for every site whose files are listed;
+  // a store link for the sites the app cannot download from.
+  siteKind: async (url: string): Promise<SiteKind | null> => {
+    if (/store\.steampowered\.com/i.test(url)) return { site: "Steam", support: "blocked", why: "store" };
+    if (/github\.com\/[^/]+\/[^/]+/i.test(url)) return { site: "GitHub", support: "files", why: null };
+    return null;
+  },
+  siteFiles: async (_url: string): Promise<SiteFiles> => {
+    await new Promise((r) => setTimeout(r, 700));
+    const file = (name: string, size: number | null): SiteFile => ({
+      path: [name],
+      url: `https://github.com/example/tool/releases/download/v2.1.0/${name}`,
+      size,
+      headers: [],
+      late: null,
+      meta: null,
+    });
+    return {
+      site: "GitHub",
+      title: "tool v2.1.0",
+      partial: false,
+      files: [
+        file("tool-2.1.0-x86_64-pc-windows-msvc.zip", 6 * MB),
+        file("tool-2.1.0-aarch64-pc-windows-msvc.zip", 5.6 * MB),
+        file("tool-2.1.0-x86_64-unknown-linux-musl.tar.gz", 7.1 * MB),
+        file("tool-2.1.0-aarch64-apple-darwin.tar.gz", 6.4 * MB),
+        file("tool_2.1.0-1_amd64.deb", 7.4 * MB),
+        file("checksums.sha256", 1200),
+        file("tool-2.1.0.zip", null),
+        file("tool-2.1.0.tar.gz", null),
+        file("tool-2.1.0-x86_64-unknown-linux-gnu.tar.gz", 7 * MB),
+        file("tool-2.1.0-i686-pc-windows-msvc.zip", 5.2 * MB),
+        file("tool-2.1.0-x86_64-apple-darwin.tar.gz", 6.6 * MB),
+      ],
+    };
+  },
+  addSiteFiles: async (url: string, title: string, files: SiteFile[], _dir?: string) => {
+    const id = nextId++;
+    downloads = [
+      ...downloads,
+      make({
+        id,
+        url,
+        filename: files.length === 1 ? files[0].path[files[0].path.length - 1] : title,
+        status: "queued",
+        bundle: files.length > 1,
+        total: files.reduce((sum, f) => sum + (f.size ?? 0), 0) || null,
+      }),
+    ];
+    emit();
+    return id;
   },
   onFileDrop: (_cb: (paths: string[]) => void) => Promise.resolve(() => {}),
   pause: async (id: number) => patch(id, { status: "paused", speed: 0, active_connections: 0 }),

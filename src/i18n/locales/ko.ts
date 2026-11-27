@@ -138,6 +138,7 @@ const dict: Dict = {
       extensionLink: "브라우저에서 보낸 링크를 홈에 준비했어요",
       extensionAdded: (n: number) => plural(n, { other: "브라우저에서 다운로드 #개를 시작했어요" }),
       onlyTorrents: ".torrent 파일만 여기에 놓을 수 있어요",
+      browserDownload: `페이지의 다운로드가 다운로드 목록에 추가되었습니다`,
     },
     menu: {
       pause: (n: number) => plural(n, { other: "다운로드 #개 일시 중지" }),
@@ -249,6 +250,7 @@ const dict: Dict = {
       },
       featuresRegion: "RushDownload의 기능",
       welcome: "RushDownload에 오신 것을 환영해요",
+      siteFiles: (site: string) => `${site} 링크: 다운로드를 눌러 파일을 고르세요.`,
       subtitle: "링크를 붙여 넣거나 새 다운로드를 시작하세요.",
       placeholder: "파일, 동영상 페이지, 토렌트 등 아무 링크나 붙여 넣기",
       linkLabel: "다운로드할 링크",
@@ -626,6 +628,7 @@ const dict: Dict = {
       source: "출처",
       sourceProfile: "프로필 또는 재생목록",
       sourceTorrent: "토렌트",
+      sourceSite: `사이트 링크의 파일`,
       sourceMedia: "동영상 페이지",
       sourceDirect: "파일 직접 링크",
       pauseResume: "일시 중지 및 재개",
@@ -797,6 +800,24 @@ const dict: Dict = {
       chooseOne: "파일을 하나 이상 선택하세요.",
       showMore: (batch: number, rest: number) =>
         plural(rest, { other: `${num(batch)}개 더 보기 · #개 표시 안 됨` }),
+    },
+
+    site: {
+      title: `파일 선택`,
+      reading: `파일 목록을 읽는 중…`,
+      readingLabel: `파일 목록을 읽는 중`,
+      folderNote: (name: string) => `여러 파일은 그 안의 "${name}" 폴더에 저장됩니다.`,
+      partial: `이 링크에는 표시할 수 있는 것보다 많은 파일이 있어 처음 일부만 보입니다.`,
+      filesLabel: `이 링크의 파일`,
+      added: (n: number) => plural(n, { one: `다운로드를 시작했습니다`, other: `파일 #개 다운로드 중` }),
+      /** Why a site's links cannot be downloaded. */
+      blocked: {
+        store: (site: string) => `${site} 게임은 ${site} 전용 앱에서 복제 방지와 함께만 다운로드됩니다. RushDownload로는 다운로드할 수 없습니다.`,
+        paid: (site: string) => `${site} 강좌는 로그인한 유료 수강생 전용입니다. RushDownload로는 다운로드할 수 없습니다.`,
+        encrypted: (site: string) => `${site}은(는) 브라우저만 받는 키로 파일을 잠급니다. RushDownload로는 열 수 없습니다.`,
+        search: (site: string) => `${site}은(는) 다른 사이트를 안내할 뿐입니다. 결과를 열어 해당 사이트에서 다운로드하세요.`,
+        siteOnly: (site: string) => `${site}은(는) 자체 웹페이지에서만 파일을 제공합니다. 브라우저에서 링크를 열어 그곳에서 다운로드하세요.`,
+      },
     },
 
     palette: {

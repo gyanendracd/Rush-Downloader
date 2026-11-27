@@ -11,6 +11,8 @@ import {
   type Download,
   type Found,
   type MediaOptions,
+  type SiteFile,
+  type SiteKind,
   type TorrentFile,
   type TorrentPreview,
 } from "./api";
@@ -49,6 +51,12 @@ export function AddDialog(props: {
       // Torrents get their own dialog, with folder and file selection.
       props.onClose();
       actions.openTorrent(url.trim());
+      return;
+    }
+    // A share link or project page lists its files to pick from instead.
+    if (await api.siteKind(url.trim()).catch(() => null)) {
+      props.onClose();
+      void actions.submitLink(url.trim());
       return;
     }
     const duplicate = await actions.checkDuplicate(url);
@@ -305,7 +313,24 @@ export function ScanDialog(props: { url: string; media: MediaOptions; onClose: (
   );
 }
 
-/* ---------- torrent: choose folder and files ---------- */
+/** Why a site's links cannot be downloaded, said plainly. */
+export function siteBlockedText(kind: SiteKind): string {
+  const text = t.dialogs.site.blocked;
+  switch (kind.why) {
+    case "store":
+      return text.store(kind.site);
+    case "paid":
+      return text.paid(kind.site);
+    case "encrypted":
+      return text.encrypted(kind.site);
+    case "site_only":
+      return text.siteOnly(kind.site);
+    default:
+      return text.search(kind.site);
+  }
+}
+
+/* ---------- torrent or site link: choose folder and files ---------- */
 
 interface TreeFolder {
   key: string;
@@ -324,6 +349,8 @@ const MANY_FILES = 200;
  *  up the window (and every click in it) for a long time. */
 const FILES_SHOWN = 200;
 const FILES_STEP = 500;
+/** A site link with up to this many files opens with all of them picked. */
+const SITE_ALL_PICKED = 10;
 
 function buildTree(files: TorrentFile[]): TreeFolder {
   const root: TreeFolder = { key: "", name: "", folders: new Map(), files: [], all: [], size: 0 };
@@ -378,9 +405,17 @@ function Check(props: { state: "all" | "some" | "none"; label: string; onChange:
   );
 }
 
-export function TorrentDialog(props: { source: string; onClose: () => void; onAdded: () => void }) {
+/** Picks the files of a torrent, or with `site` those of a share link or
+ *  project page (a GitHub release, a Drive folder, a data set). */
+export function TorrentDialog(props: { source: string; site?: boolean; onClose: () => void; onAdded: () => void }) {
   const { settings, actions } = useApp();
   const [preview, setPreview] = useState<TorrentPreview | null>(null);
+  /** For a site link: its files as the site gave them, by index, and its name. */
+  const [siteFiles, setSiteFiles] = useState<SiteFile[]>([]);
+  const [siteName, setSiteName] = useState("");
+  const [partial, setPartial] = useState(false);
+  /** Files whose size the site did not say. */
+  const [unsized, setUnsized] = useState<Set<number>>(new Set());
   const [error, setError] = useState("");
   const [dir, setDir] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -391,12 +426,24 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .torrentPreview(props.source)
+    const load: Promise<TorrentPreview> = props.site
+      ? api.siteFiles(props.source).then((found) => {
+          setSiteFiles(found.files);
+          setSiteName(found.site);
+          setPartial(found.partial);
+          setUnsized(new Set(found.files.flatMap((f, i) => (f.size == null ? [i] : []))));
+          const files = found.files.map((f, index) => ({ index, path: f.path, size: f.size ?? 0 }));
+          return { name: found.title, total: files.reduce((sum, f) => sum + f.size, 0), files };
+        })
+      : api.torrentPreview(props.source);
+    load
       .then((p) => {
         if (cancelled) return;
         setPreview(p);
-        setSelected(new Set(p.files.map((f) => f.index)));
+        // A torrent downloads whole; of a site's many files (every build of a
+        // release, every format of a model) the user picks the ones wanted.
+        const pickAll = !props.site || p.files.length <= SITE_ALL_PICKED;
+        setSelected(new Set(pickAll ? p.files.map((f) => f.index) : []));
         // A large torrent opens folded: its folders closed, to be opened one at a time.
         if (p.files.length > MANY_FILES) setCollapsed(new Set(folderKeys(buildTree(p.files))));
       })
@@ -404,7 +451,7 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
     return () => {
       cancelled = true;
     };
-  }, [props.source]);
+  }, [props.source, props.site]);
 
   const tree = useMemo(() => (preview ? buildTree(preview.files) : null), [preview]);
   const chosenSize = preview
@@ -431,6 +478,19 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
   async function download() {
     if (!preview || selected.size === 0 || busy) return;
     setBusy(true);
+    if (props.site) {
+      try {
+        const chosen = siteFiles.filter((_, i) => selected.has(i));
+        await api.addSiteFiles(props.source, preview.name, chosen, dir || undefined);
+        actions.toast(t.dialogs.site.added(chosen.length));
+        props.onClose();
+        props.onAdded();
+      } catch (e) {
+        setError(String(e));
+        setBusy(false);
+      }
+      return;
+    }
     try {
       await api.add({
         url: props.source,
@@ -498,7 +558,7 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
           />
           <FileGlyph size={16} strokeWidth={2} aria-hidden="true" className="tree-icon" />
           <span className="tree-name" title={file.path.join("/")}>{name}</span>
-          <span className="tree-size">{formatBytes(file.size)}</span>
+          <span className="tree-size">{unsized.has(file.index) ? "" : formatBytes(file.size)}</span>
         </li>,
       );
     }
@@ -522,8 +582,8 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
   return (
     <Modal
       wide
-      title={t.dialogs.torrent.title}
-      subtitle={preview ? undefined : props.source}
+      title={props.site ? t.dialogs.site.title : t.dialogs.torrent.title}
+      subtitle={preview ? (props.site ? siteName : undefined) : props.source}
       onClose={props.onClose}
       footer={
         <>
@@ -550,9 +610,9 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
       {!preview && !error && (
         <>
           <p className="note">
-            {t.dialogs.torrent.reading}
+            {props.site ? t.dialogs.site.reading : t.dialogs.torrent.reading}
           </p>
-          <ul className="found" aria-busy="true" aria-label={t.dialogs.torrent.readingLabel}>
+          <ul className="found" aria-busy="true" aria-label={props.site ? t.dialogs.site.readingLabel : t.dialogs.torrent.readingLabel}>
             {[0, 1, 2].map((i) => (
               <li key={i} className="skeleton-row">
                 <span className="skeleton skeleton-chip" />
@@ -571,7 +631,7 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
               <input type="text" readOnly aria-labelledby="torrent-dir" value={saveTo} />
               <button type="button" className="btn" onClick={browse}>{t.dialogs.browse}</button>
             </div>
-            <small>{t.dialogs.torrent.folderNote(preview.name)}</small>
+            <small>{props.site ? t.dialogs.site.folderNote(preview.name) : t.dialogs.torrent.folderNote(preview.name)}</small>
           </div>
           <div className="field">
             <div className="tree-head">
@@ -580,8 +640,10 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
               <button type="button" className="link" onClick={() => setMany(preview.files, true)}>{t.dialogs.torrent.selectAll}</button>
               <button type="button" className="link" onClick={() => setMany(preview.files, false)}>{t.dialogs.torrent.selectNone}</button>
             </div>
-            <ul className="tree" aria-label={t.dialogs.torrent.filesLabel}>{renderFolder(tree, 0)}</ul>
-            {selected.size === 0 && <small className="field-error">{t.dialogs.torrent.chooseOne}</small>}
+            <ul className="tree" aria-label={props.site ? t.dialogs.site.filesLabel : t.dialogs.torrent.filesLabel}>{renderFolder(tree, 0)}</ul>
+            {partial && <small>{t.dialogs.site.partial}</small>}
+            {/* A site's list opens with nothing picked when it is long; Download waits for a pick. */}
+            {selected.size === 0 && !props.site && <small className="field-error">{t.dialogs.torrent.chooseOne}</small>}
           </div>
         </div>
       )}

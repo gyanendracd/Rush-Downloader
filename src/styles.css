@@ -8,9 +8,9 @@
   --bg: #eef1f7;
   /* the colour field behind the glass: four soft lights, like a wallpaper */
   --wall-1: #c6dbff;
-  --wall-2: #e2d3ff;
+  --wall-2: #d5e3ff;
   --wall-3: #c4ecf3;
-  --wall-4: #ffdbe6;
+  --wall-4: #d4f2e5;
 
   /* ---- glass materials, thinnest to thickest ----
      thin:    interactive controls resting on a surface
@@ -59,8 +59,11 @@
   --accent-soft: rgba(11, 99, 246, 0.12);
   --accent-ring: rgba(11, 99, 246, 0.24);
   --on-accent: #ffffff;
-  --ok: #15803d;
-  --ok-solid: #1fa34a;
+  --hl: #0aa5c8;
+  --hl-soft: rgba(10, 165, 200, 0.12);
+  --ok: #047857;
+  --ok-solid: #059669;
+  --ok-soft: rgba(5, 150, 105, 0.12);
   --err: #d0262d;
   --err-solid: #e5343b;
   --err-soft: rgba(229, 52, 59, 0.11);
@@ -78,7 +81,7 @@
   --track-strong: rgba(120, 120, 128, 0.3);
   /* background art: the logo's two blues (#2F7DFC, #0B60FB), kept soft */
   --art-1: rgba(11, 96, 251, 0.12);
-  --art-2: rgba(120, 90, 252, 0.09);
+  --art-2: rgba(30, 150, 230, 0.08);
   --art-3: rgba(11, 160, 220, 0.09);
   --scrim: rgba(20, 24, 40, 0.14);
 
@@ -130,31 +133,36 @@
   text-rendering: optimizeLegibility;
 }
 
+/* Dark grey: the hero of the Liquid Glass look. A neutral graphite ground,
+ * lit by a few faint pools of blue, cyan and green far behind the glass.
+ * Panes are neutral, barely-there tints of white. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  /* A neutral graphite ground. The colour field is kept only as a faint
-   * cool tint, so the glass reads as glass without neon behind it. */
-  --bg: #101114;
-  --wall-1: #172032;
-  --wall-2: #1a1b21;
-  --wall-3: #131a1d;
-  --wall-4: #1a171b;
+  --bg: #161719;
+  --wall-1: #1d2230;
+  --wall-2: #1b1c20;
+  --wall-3: #19222a;
+  --wall-4: #1a211f;
 
-  --glass-thin: rgba(255, 255, 255, 0.09);
-  --glass-thin-hover: rgba(255, 255, 255, 0.17);
-  --glass-regular: rgba(255, 255, 255, 0.065);
-  --glass-chrome: rgba(255, 255, 255, 0.04);
-  --glass-float: rgba(32, 33, 38, 0.8);
-  --glass-sheet: rgba(26, 27, 31, 0.82);
-  --glass-lozenge: rgba(255, 255, 255, 0.17);
-  --glass-stroke: rgba(255, 255, 255, 0.09);
-  --glass-edge: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 0.5px rgba(255, 255, 255, 0.03);
-  --glass-edge-soft: inset 0 1px 0 rgba(255, 255, 255, 0.07);
-  --glass-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 40%);
+  --glass-thin: rgba(255, 255, 255, 0.075);
+  --glass-thin-hover: rgba(255, 255, 255, 0.13);
+  --glass-regular: rgba(255, 255, 255, 0.05);
+  --glass-chrome: rgba(255, 255, 255, 0.045);
+  --glass-float: rgba(36, 37, 41, 0.9);
+  --glass-sheet: rgba(30, 31, 35, 0.88);
+  --glass-lozenge: rgba(110, 165, 255, 0.16);
+  --glass-stroke: rgba(255, 255, 255, 0.1);
+  --glass-edge: inset 0 1px 0 rgba(255, 255, 255, 0.13), inset 0 -1px 0 rgba(0, 0, 0, 0.22),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.025);
+  --glass-edge-soft: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --glass-sheen: linear-gradient(165deg, rgba(255, 255, 255, 0.05), transparent 34%, transparent 78%, rgba(255, 255, 255, 0.02));
+  --blur-chrome: blur(30px) saturate(160%);
+  --blur-float: blur(26px) saturate(170%);
+  --blur-sheet: blur(40px) saturate(170%);
 
-  --surface-solid: #2a2a2e;
-  --inset: rgba(0, 0, 0, 0.24);
-  --hover: rgba(255, 255, 255, 0.075);
+  --surface-solid: #26272b;
+  --inset: rgba(0, 0, 0, 0.26);
+  --hover: rgba(255, 255, 255, 0.07);
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.16);
 
@@ -162,35 +170,38 @@
   --text-2: #b4b4bb;
   --text-3: #8e8e96;
 
-  --accent: #7eaefc;
-  --accent-solid: #2f6fe8;
-  --accent-soft: rgba(126, 174, 252, 0.13);
-  --accent-ring: rgba(126, 174, 252, 0.16);
-  --ok: #4ad38a;
-  --ok-solid: #1f9d57;
+  --accent: #76b0ff;
+  --accent-solid: #2b74f0;
+  --accent-soft: rgba(90, 155, 255, 0.15);
+  --accent-ring: rgba(90, 160, 255, 0.28);
+  --hl: #6fe0f7;
+  --hl-soft: rgba(111, 224, 247, 0.14);
+  --ok: #4ade9b;
+  --ok-solid: #0f9e6e;
+  --ok-soft: rgba(52, 211, 153, 0.14);
   --err: #ff7b82;
   --err-solid: #d93a42;
-  --err-soft: rgba(255, 90, 98, 0.16);
-  /* on the dark ground the fastest shade is the brightest */
+  --err-soft: rgba(255, 90, 98, 0.15);
+  /* on the dark ground the fastest shade is the brightest: deep blue up to cyan */
   --bar: #5a5a62;
-  --speed-min: #1a2f63;
-  --speed-max: #a9d0ff;
-  --speed-fast: #9cc8ff;
+  --speed-min: #15315f;
+  --speed-max: #9fe6ff;
+  --speed-fast: #8fd8ff;
   --speed-good: #4a8dff;
   --speed-slow: #2559bd;
-  --speed-crawl: #1c3672;
+  --speed-crawl: #1a356e;
   --speed-stopped: #2c2c32;
-  --track: rgba(255, 255, 255, 0.12);
+  --track: rgba(255, 255, 255, 0.11);
   --track-strong: rgba(120, 120, 128, 0.44);
-  --art-1: rgba(126, 160, 230, 0.05);
-  --art-2: rgba(255, 255, 255, 0.02);
-  --art-3: rgba(126, 160, 230, 0.03);
+  --art-1: rgba(90, 150, 255, 0.06);
+  --art-2: rgba(80, 200, 240, 0.03);
+  --art-3: rgba(40, 190, 140, 0.025);
   --scrim: rgba(0, 0, 0, 0.5);
 
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.28);
-  --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px -12px rgba(0, 0, 0, 0.5);
-  --shadow-3: 0 0 0 0.5px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3), 0 14px 36px -8px rgba(0, 0, 0, 0.6);
-  --shadow-4: 0 0 0 0.5px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.3), 0 28px 72px -16px rgba(0, 0, 0, 0.7);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 30px -12px rgba(0, 0, 0, 0.55);
+  --shadow-3: 0 0 0 0.5px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3), 0 16px 40px -8px rgba(0, 0, 0, 0.6);
+  --shadow-4: 0 0 0 0.5px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.3), 0 30px 80px -16px rgba(0, 0, 0, 0.7);
 
   --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23b4b4bb' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
 }
@@ -6011,15 +6022,15 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   }
 
   :root[data-theme="dark"] {
-    --glass-thin: #25262b;
-    --glass-thin-hover: #2e2f35;
-    --glass-regular: #1b1c20;
-    --glass-chrome: #16171a;
-    --glass-float: #24252a;
-    --glass-sheet: #1e1f23;
-    --glass-lozenge: #313238;
+    --glass-thin: #2a2b30;
+    --glass-thin-hover: #33343a;
+    --glass-regular: #222327;
+    --glass-chrome: #1c1d20;
+    --glass-float: #28292e;
+    --glass-sheet: #232428;
+    --glass-lozenge: #2f3a50;
     --glass-stroke: rgba(255, 255, 255, 0.2);
-    --inset: #131417;
+    --inset: #18191c;
   }
 }
 
@@ -6231,8 +6242,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   }
 
   :root[data-theme="dark"] {
-    --tab-fill: #1e1f23;
-    --tab-hover: #27282d;
+    --tab-fill: #232428;
+    --tab-hover: #2a2b30;
   }
 
   .settings-panel {
@@ -6807,3 +6818,321 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   }
 }
 
+
+/* ---------- liquid glass: light, reflection and feedback ----------
+ * The last word on materials. The tokens at the top set the colours; this
+ * section adds what makes the glass read as glass: a bright hairline where
+ * light catches the top edge of each large pane, a faint cyan rim when the
+ * pointer is over a control, a press that gives, and bars that glow as they
+ * fill. Blur stays on the few large panes the material layer names. */
+
+:root {
+  /* the light caught along a pane's top edge */
+  --spec: rgba(255, 255, 255, 0.95);
+  /* the rim a glass control takes on under the pointer */
+  --rim-hover: color-mix(in srgb, var(--hl) 30%, var(--glass-stroke));
+  /* the bevel of a solid, coloured button */
+  --glint: inset 0 1px 0 rgba(255, 255, 255, 0.42), inset 0 -1px 0 rgba(0, 0, 0, 0.12);
+  /* a filling bar: the accent, brightening toward cyan at its leading edge */
+  --fill-live: linear-gradient(90deg, var(--accent-solid), color-mix(in srgb, var(--accent-solid) 60%, var(--hl)));
+  --fill-done: linear-gradient(90deg, var(--ok-solid), color-mix(in srgb, var(--ok-solid) 78%, #fff));
+}
+
+:root[data-theme="dark"] {
+  --spec: rgba(255, 255, 255, 0.32);
+  --rim-hover: color-mix(in srgb, var(--hl) 26%, var(--glass-stroke));
+  --glint: inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 -1px 0 rgba(0, 0, 0, 0.22);
+  --fill-done: linear-gradient(90deg, var(--ok-solid), color-mix(in srgb, var(--ok-solid) 70%, var(--ok)));
+}
+
+/* the foot of the room falls away a little into shadow */
+:root[data-theme="dark"] body {
+  background:
+    radial-gradient(120% 80% at 50% 118%, rgba(0, 0, 0, 0.35), transparent 70%),
+    radial-gradient(60% 60% at 10% 4%, var(--wall-1) 0, transparent 70%),
+    radial-gradient(52% 55% at 94% 0%, var(--wall-2) 0, transparent 70%),
+    radial-gradient(58% 58% at 88% 104%, var(--wall-3) 0, transparent 70%),
+    radial-gradient(48% 52% at -4% 100%, var(--wall-4) 0, transparent 70%),
+    var(--bg);
+}
+
+/* ---- reflection: the top edge of each large pane catches the light ---- */
+
+.toast {
+  position: relative;
+}
+
+.sidebar::before,
+.dialog::before,
+.palette::before,
+.menu::before,
+.toast::before,
+.paste::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: 12%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--spec), transparent);
+  pointer-events: none;
+}
+
+.paste {
+  position: relative;
+}
+
+/* ---- the pointer: a faint cyan rim, and a press that gives ---- */
+
+.btn:not(.btn-primary, .btn-danger, .btn-danger-solid):hover:not(:disabled),
+.pill-btn:hover,
+.icon-btn.is-outlined:hover,
+.select-btn:hover:not(:disabled),
+.chip:not(.is-active):hover {
+  border-color: var(--rim-hover);
+}
+
+.select-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.select-btn {
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+/* ---- primary: solid blue glass, lit from above; brighter under the pointer ---- */
+
+.btn-primary,
+.btn-primary:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent-solid) 70%, #000);
+}
+
+.btn-primary {
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--accent-solid) 84%, #fff), var(--accent-solid));
+  box-shadow: var(--glint), 0 4px 14px -5px color-mix(in srgb, var(--accent-solid) 60%, transparent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--accent-solid) 74%, #fff), color-mix(in srgb, var(--accent-solid) 92%, #fff));
+  box-shadow: var(--glint), 0 6px 22px -6px color-mix(in srgb, var(--accent-solid) 75%, transparent);
+}
+
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-solid);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.btn-danger-solid {
+  box-shadow: var(--glint), 0 4px 14px -5px color-mix(in srgb, var(--err-solid) 55%, transparent);
+}
+
+/* ---- the link box: the room's one lit field ---- */
+
+.paste:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--hl));
+}
+
+/* ---- selection: blue; the chosen row carries a fine accent rim ---- */
+
+.row.is-selected {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.nav-item.is-active,
+.settings-nav button.is-active {
+  box-shadow: var(--glass-edge-soft), inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 22%, transparent), var(--shadow-1);
+}
+
+.menu button.is-checked,
+.select-option.is-checked {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.menu button:hover,
+.menu button:focus-visible,
+.select-option.is-active,
+.palette-item.is-current {
+  background: var(--accent-soft);
+}
+
+/* ---- progress: a glowing bar that fills smoothly; green when done ---- */
+
+.bar {
+  box-shadow: inset 0 0.5px 1px rgba(0, 0, 0, 0.12);
+}
+
+.bar-threads {
+  box-shadow: none;
+}
+
+.fill {
+  transition:
+    width 450ms linear,
+    background-color var(--dur) var(--ease);
+}
+
+.bar-downloading > .fill,
+.bar-downloading .thread > .fill:not(.is-done) {
+  background: var(--fill-live);
+  box-shadow: 0 0 8px -1px color-mix(in srgb, var(--hl) 45%, transparent);
+}
+
+.bar-completed > .fill {
+  background: var(--fill-done);
+}
+
+/* ---- success ---- */
+
+.round-ok,
+.round-ok:hover {
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--ok-solid) 86%, #fff), var(--ok-solid));
+  box-shadow: var(--glint), 0 3px 10px -4px color-mix(in srgb, var(--ok-solid) 60%, transparent);
+}
+
+.status-completed .status-dot {
+  box-shadow: 0 0 0 3px var(--ok-soft);
+}
+
+/* ---- toasts: the icon sits on a small lit disc of its own colour ---- */
+
+.toast-info {
+  border-color: color-mix(in srgb, var(--ok) 22%, var(--glass-stroke));
+}
+
+.toast-error {
+  border-color: color-mix(in srgb, var(--err) 26%, var(--glass-stroke));
+}
+
+/* ---- solid materials keep their edges plain ---- */
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root {
+    --spec: transparent;
+  }
+
+  .bar-downloading > .fill,
+  .bar-downloading .thread > .fill:not(.is-done) {
+    box-shadow: none;
+  }
+}
+
+/* ---------- Download pressed with no usable link ----------
+ * The button stays blue and takes the click; it shakes (the rule above)
+ * and this line says what the box needs. */
+.home-alerts .paste-hint {
+  max-width: 100%;
+  margin: 0;
+  padding: 4px 16px;
+  /* a light red pane with grey text, the same in both themes */
+  border: 1px solid #fca5a5;
+  border-radius: var(--r-pill);
+  background: #fff1f1;
+  box-shadow:
+    var(--glass-edge-soft),
+    0 0 0 1px color-mix(in srgb, var(--err) 8%, transparent),
+    0 12px 60px -8px color-mix(in srgb, var(--err) 50%, transparent),
+    0 0 100px 0 color-mix(in srgb, var(--err) 26%, transparent);
+  color: #4b5563;
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.4;
+  /* fades in, stays three seconds, then fades out slowly over 1.2 s (the
+     timer in views.tsx takes it away at the end); its glow swells and eases */
+  animation:
+    hint-life 4.2s linear forwards,
+    hint-glow 1.6s ease-in-out infinite alternate;
+}
+
+@keyframes hint-life {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+    animation-timing-function: var(--ease-out);
+  }
+  /* in by 0.3 s */
+  7% {
+    opacity: 1;
+    transform: none;
+  }
+  /* held until 3 s, then a slow, even fade */
+  71% {
+    opacity: 1;
+    transform: none;
+    animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes hint-glow {
+  from {
+    box-shadow:
+      var(--glass-edge-soft),
+      0 0 0 1px color-mix(in srgb, var(--err) 6%, transparent),
+      0 8px 34px -10px color-mix(in srgb, var(--err) 30%, transparent),
+      0 0 50px -10px color-mix(in srgb, var(--err) 14%, transparent);
+  }
+  to {
+    box-shadow:
+      var(--glass-edge-soft),
+      0 0 0 1px color-mix(in srgb, var(--err) 12%, transparent),
+      0 14px 70px -6px color-mix(in srgb, var(--err) 58%, transparent),
+      0 0 120px 6px color-mix(in srgb, var(--err) 32%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* shown steady for its three seconds, then gone */
+  .home-alerts .paste-hint {
+    animation: none;
+  }
+}
+
+/* ---------- Home: alerts above the strip at the foot ----------
+ * A layer with no height of its own, just above the feature strip; its
+ * messages stack upward from there, so nothing on the page moves when one
+ * appears or goes. */
+.home-alerts {
+  position: relative;
+  flex: none;
+  z-index: 2;
+  align-self: stretch;
+  height: 0;
+}
+
+.home-alerts-stack {
+  position: absolute;
+  bottom: 18px;
+  inset-inline: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-inline: auto;
+  width: min(700px, 100%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.home-alerts-stack > * {
+  pointer-events: auto;
+}
+
+.home-alerts-stack > .note:not(.paste-hint) {
+  color: var(--text-2);
+  font-size: 13.5px;
+}
+
+.home-alerts-stack > .note-error:not(.paste-hint) {
+  color: var(--err);
+}
+
+.home-alerts-stack > .signin-needed,
+.home-alerts-stack > .video-looking {
+  margin-top: 0;
+}

@@ -526,6 +526,9 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>) -> Result
     let Some(rec) = inner.record(id) else {
         return Err(Fail::Cancelled);
     };
+    if !rec.bundle.is_empty() {
+        return crate::bundle::run(inner, id, live, &rec).await;
+    }
     if rec.profile {
         return crate::profile::run(inner, id, live, &rec).await;
     }

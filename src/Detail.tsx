@@ -285,7 +285,7 @@ function ItemList({ d }: { d: Download }) {
     ) : null;
   }
   // A torrent of one file has nothing to list: its bar is the download's own.
-  if (d.torrent && items.length < 2) return null;
+  if ((d.torrent || d.bundle) && items.length < 2) return null;
   const done = items.filter((item) => item.state === "done").length;
   const current = d.current;
   const pctOf = (item: DownloadItem) =>
@@ -310,7 +310,7 @@ function ItemList({ d }: { d: Download }) {
   return (
     <section className="items" aria-label={t.detail.items.label}>
       <div className="items-head">
-        <span>{d.torrent ? t.ui.files(items.length) : t.detail.items.count(items.length)}</span>
+        <span>{d.torrent || d.bundle ? t.ui.files(items.length) : t.detail.items.count(items.length)}</span>
         <span>{t.detail.items.done(done)}</span>
       </div>
       {total && <p className="items-net">{netLine(total)}</p>}
@@ -483,7 +483,7 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
             </Fact>
           </dl>
           {/* A torrent's files fill side by side: each one's bar, under the whole. */}
-          {d.torrent && <ItemList d={d} />}
+          {(d.torrent || d.bundle) && <ItemList d={d} />}
         </>
       )}
 
@@ -498,6 +498,8 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
                 ? t.detail.details.sourceProfile
                 : d.torrent
                   ? t.detail.details.sourceTorrent
+                  : d.bundle
+                  ? t.detail.details.sourceSite
                   : d.media
                     ? t.detail.details.sourceMedia
                     : t.detail.details.sourceDirect}

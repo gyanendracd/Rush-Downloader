@@ -4,12 +4,14 @@
 //! drive downloads through [`Engine`]. It owns the queue, persists progress
 //! so downloads survive restarts, and reports changes through a watch channel.
 
+mod bundle;
 mod dns;
 mod limiter;
 mod media;
 mod probe;
 mod profile;
 mod scan;
+mod sites;
 mod torrent;
 mod torrent_split;
 mod webseed;
@@ -27,6 +29,7 @@ use tokio::sync::watch;
 pub use media::MediaInfo;
 pub use profile::{Fetcher, PlaylistInfo, ProfileFace, ProfileRef};
 pub use scan::{Found, FoundKind};
+pub use sites::{SiteFile, SiteFiles, SiteKind, Support, Why};
 pub use torrent::{TorrentFile, TorrentPreview};
 
 use limiter::Limiter;
@@ -183,6 +186,9 @@ pub struct TaskInfo {
     /// While what is already on disk is being checked before the download
     /// carries on: how many bytes of `total` have been checked.
     pub checking: Option<u64>,
+    /// Files picked from a site link (a release, a shared folder), saved
+    /// together in `path`, each listed with how far it is.
+    pub bundle: bool,
 }
 
 /// One video or file of a profile or playlist download, for display.
@@ -334,6 +340,10 @@ pub(crate) struct Record {
     /// The files of a torrent (only those chosen), with how far each is.
     #[serde(default)]
     pub files: Vec<TorrentFileProgress>,
+    /// Files picked from a site link, downloaded together into the folder
+    /// `filename`; their progress is kept in `files`.
+    #[serde(default)]
+    pub bundle: Vec<sites::SiteFile>,
 }
 
 struct Entry {
@@ -353,7 +363,7 @@ impl Entry {
             if self.rec.profile {
                 self.rec.items = live.items.load(Relaxed);
             }
-            if self.rec.torrent {
+            if self.rec.torrent || !self.rec.bundle.is_empty() {
                 let files = live.files.lock().unwrap();
                 if !files.is_empty() {
                     self.rec.files = files.clone();
@@ -401,6 +411,7 @@ impl Entry {
                 .as_ref()
                 .filter(|l| l.checking.load(Relaxed))
                 .map(|l| l.checked.load(Relaxed)),
+            bundle: !r.bundle.is_empty(),
         }
     }
 }
@@ -628,6 +639,96 @@ impl Engine {
         media::info(&self.inner, url).await
     }
 
+    /// What the app does with a link of a site it knows: lists its files
+    /// for the user to pick from, or says why it cannot. `None` for any
+    /// other link. Read from the link alone.
+    pub fn site_kind(url: &str) -> Option<SiteKind> {
+        sites::kind(url)
+    }
+
+    /// The files a share link or project page holds (a release's assets, a
+    /// shared folder, a data set), with names and sizes, to pick from.
+    pub async fn site_files(&self, url: &str) -> Result<SiteFiles, String> {
+        sites::resolve(&self.inner, url).await
+    }
+
+    /// Downloads files picked from a site link. One plain file becomes a
+    /// usual download; several (or any that needs the site's help each
+    /// time) download together into a folder named `title`, listed file by
+    /// file in the download's details.
+    pub fn add_files(&self, page: &str, title: &str, files: Vec<SiteFile>, dir: Option<PathBuf>) -> Result<u64, String> {
+        if files.is_empty() {
+            return Err("Choose at least one file".into());
+        }
+        if let [one] = files.as_slice() {
+            if one.late.is_none() && one.path.len() == 1 {
+                return self.add(NewDownload {
+                    url: one.url.clone(),
+                    dir,
+                    filename: one.path.last().cloned(),
+                    headers: one.headers.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        let id = {
+            let mut st = self.inner.state.lock().unwrap();
+            let dir = dir.unwrap_or_else(|| st.settings.download_dir.clone());
+            let base = probe::sanitize(title.trim());
+            let base = if base.is_empty() { "download".to_string() } else { base };
+            // A folder of its own: not one already there or another download's.
+            let folder = (0..10_000)
+                .map(|n| probe::candidate(&base, n))
+                .find(|name| {
+                    !dir.join(name).exists() && !st.entries.iter().any(|e| e.rec.dir == dir && &e.rec.filename == name)
+                })
+                .unwrap_or(base);
+            let id = st.next_id;
+            st.next_id += 1;
+            let total = files.iter().map(|f| f.size).sum::<Option<u64>>();
+            let rec = Record {
+                id,
+                url: page.trim().to_string(),
+                headers: Vec::new(),
+                dir,
+                filename: folder,
+                user_named: false,
+                part_started: false,
+                status: Status::Queued,
+                error: None,
+                total,
+                resumable: true,
+                etag: None,
+                connections: st.settings.connections,
+                created_at: now(),
+                segments: Vec::new(),
+                downloaded: 0,
+                media: false,
+                media_options: MediaOptions::default(),
+                torrent: false,
+                torrent_file: None,
+                only_files: None,
+                media_copy: None,
+                named_stem: None,
+                profile: false,
+                items: 0,
+                thumbnail: None,
+                deleted_at: None,
+                collection: None,
+                files: files
+                    .iter()
+                    .map(|f| TorrentFileProgress { path: f.path.clone(), len: f.size.unwrap_or(0), done: 0, net: None })
+                    .collect(),
+                bundle: files,
+            };
+            st.entries.push(Entry { rec, live: None, speed: 0.0, last_bytes: 0, last_received: 0 });
+            id
+        };
+        self.inner.changed();
+        self.inner.pump();
+        Ok(id)
+    }
+
     /// Deep scan: lists the media links found on a web page.
     pub async fn scan_page(&self, url: &str) -> Result<Vec<Found>, String> {
         scan::scan(&self.inner.client, url).await
@@ -741,6 +842,7 @@ impl Engine {
                 deleted_at: None,
                 collection: profile.clone().filter(|p| p.by.is_some()),
                 files: Vec::new(),
+                bundle: Vec::new(),
             };
             st.entries.push(Entry {
                 rec,
@@ -821,6 +923,12 @@ impl Engine {
 }
 
 fn delete_files(rec: &Record, delete_completed: bool) {
+    if !rec.bundle.is_empty() {
+        if rec.part_started {
+            bundle::remove(rec, rec.status == Status::Completed && delete_completed);
+        }
+        return;
+    }
     if rec.profile {
         if rec.part_started {
             if rec.status != Status::Completed {
@@ -1121,7 +1229,7 @@ impl Inner {
     /// downloaded; `None` for any other download.
     fn torrent_items(&self, id: u64) -> Option<Vec<ItemInfo>> {
         let st = self.state.lock().unwrap();
-        let e = st.entries.iter().find(|e| e.rec.id == id && e.rec.torrent)?;
+        let e = st.entries.iter().find(|e| e.rec.id == id && (e.rec.torrent || !e.rec.bundle.is_empty()))?;
         let running = e.live.is_some();
         let files = match &e.live {
             Some(live) => {

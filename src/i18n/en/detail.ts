@@ -43,6 +43,7 @@ export const detail = {
     source: "Source",
     sourceProfile: "Profile or playlist",
     sourceTorrent: "Torrent",
+    sourceSite: `Files from a site link`,
     sourceMedia: "Video page",
     sourceDirect: "Direct file link",
     pauseResume: "Pause and Resume",

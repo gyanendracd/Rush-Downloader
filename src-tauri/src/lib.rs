@@ -4,6 +4,9 @@ use rushdownload_engine::{
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl};
 use tauri_plugin_opener::OpenerExt;
 
+mod extension;
+mod shell;
+
 struct AppState(Engine);
 
 #[tauri::command]
@@ -729,6 +732,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![shell::AUTOSTART_ARG]),
+        ))
+        .on_window_event(shell::on_window_event)
         .setup(|app| {
             // RUSHDOWNLOAD_STATE_DIR points the app at a separate list and
             // settings, so it can be tested without touching the real ones.
@@ -745,6 +754,13 @@ pub fn run() {
             let engine = tauri::async_runtime::block_on(async {
                 Engine::new(&state_dir, Settings::new(download_dir.clone()))
             })?;
+
+            // The window is opened here rather than from the configuration,
+            // as its graphics follow a preference (see shell.rs).
+            let prefs = shell::Prefs::load(&state_dir);
+            shell::open_main_window(app.handle(), prefs.get())?;
+            app.manage(prefs);
+            shell::tray(app.handle())?;
 
             // Installs from before this folder existed saved straight into
             // Downloads. Move that old default over once; a folder the user
@@ -763,6 +779,17 @@ pub fn run() {
             }
 
             watch_clipboard(app.handle().clone());
+
+            // The browser extension sends the links it finds here. A test
+            // copy of the app (its own state folder) stays out of the way of
+            // the real one unless it is given a port of its own.
+            let extension_port = match std::env::var("RUSHDOWNLOAD_EXT_PORT") {
+                Ok(port) => port.parse().ok(),
+                Err(_) => std::env::var_os("RUSHDOWNLOAD_STATE_DIR").is_none().then_some(extension::PORT),
+            };
+            if let Some(port) = extension_port {
+                extension::listen(app.handle().clone(), engine.clone(), port);
+            }
 
             // Push every change to the UI.
             let handle = app.handle().clone();
@@ -810,7 +837,10 @@ pub fn run() {
             reveal_file,
             open_download_dir,
             import_links,
-            tool_status
+            tool_status,
+            shell::get_app_prefs,
+            shell::set_app_prefs,
+            shell::set_tray_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running RushDownload");

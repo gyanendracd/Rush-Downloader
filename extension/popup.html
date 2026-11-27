@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>RushDownload</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="icons/64.png" alt="" width="22" height="22" />
+      <h1>RushDownload</h1>
+      <span id="app" class="app" role="status">Looking for the app</span>
+    </header>
+
+    <section class="page">
+      <div class="page-text">
+        <strong id="page-title">This page</strong>
+        <span id="page-note">The app finds the video and lets you pick a quality.</span>
+      </div>
+      <button id="send-page" class="button">Send page</button>
+    </section>
+
+    <section class="found">
+      <div class="found-head">
+        <label class="all"><input type="checkbox" id="all" /> <span id="count">Reading the page</span></label>
+      </div>
+      <ul id="list" aria-live="polite"></ul>
+      <p id="empty" class="empty" hidden></p>
+    </section>
+
+    <footer>
+      <span id="said" role="status"></span>
+      <button id="send" class="button primary" disabled>Send to app</button>
+    </footer>
+
+    <script src="shared.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

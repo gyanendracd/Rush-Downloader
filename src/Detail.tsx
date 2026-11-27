@@ -20,27 +20,34 @@ import {
   api,
   canPause,
   displayName,
+  checkingText,
   etaOf,
   fileSrc,
   formatBytes,
   formatDate,
   formatDuration,
   formatSpeed,
-  percentOf,
   pictureKind,
   STATUS_LABEL,
   type CurrentFile,
   type Download,
   type DownloadItem,
+  type FileNet,
 } from "./api";
 import { amountOf, FileIcon, Modal, Progress, Sparkline, useApp } from "./ui";
+import { pct as pctText, t } from "./i18n";
 
 type Tab = "progress" | "details" | "options";
-const TABS: { id: Tab; label: string }[] = [
-  { id: "progress", label: "Progress" },
-  { id: "details", label: "Details" },
-  { id: "options", label: "Options" },
-];
+const TABS: Tab[] = ["progress", "details", "options"];
+
+/** A time left without its "left" word: "3h 0m 12s". */
+function withoutLeft(eta: string): string {
+  const [before, after = ""] = t.common.eta.left("\u0000").split("\u0000");
+  let rest = eta;
+  if (before && rest.startsWith(before)) rest = rest.slice(before.length);
+  if (after && rest.endsWith(after)) rest = rest.slice(0, -after.length);
+  return rest;
+}
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -51,18 +58,44 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
+/** Decimals the detail shows a percentage with: a 100 GB file moves by a
+ *  whole percent only every gigabyte. */
+const PCT_DIGITS = 3;
+
+/** How much of `whole` is `part`, from 0 to 100, cut (not rounded) to
+ *  PCT_DIGITS decimals, so an unfinished file never reads 100.000%. */
+function exactPct(part: number, whole: number): number {
+  const scale = 10 ** PCT_DIGITS;
+  return Math.min(100, Math.floor((part / whole) * 100 * scale) / scale);
+}
+
+/** "12 of 40 peers · 3 seeders · ↓ 1.2 MB/s · ↑ 200 KB/s": where a torrent
+ *  file's speed comes from, and how much of the line uploading takes. */
+function netLine(net: FileNet): string {
+  return [
+    t.detail.items.peersOf(net.peers, net.found),
+    t.detail.items.seeders(net.seeders),
+    `↓ ${formatSpeed(net.down)}`,
+    `↑ ${formatSpeed(net.up)}`,
+  ].join(" · ");
+}
+
 /** The one file a profile or playlist download is fetching right now. */
 function CurrentFileProgress({ file }: { file: CurrentFile }) {
   const known = file.total != null && file.total > 0;
-  const pct = known ? Math.min(100, Math.floor((file.downloaded / file.total!) * 100)) : null;
+  const pct = known ? exactPct(file.downloaded, file.total!) : null;
   const place =
-    file.index != null ? (file.count != null ? `${file.index} of ${file.count}` : `No. ${file.index}`) : null;
+    file.index != null
+      ? file.count != null
+        ? t.detail.placeOf(file.index, file.count)
+        : t.detail.now.number(file.index)
+      : null;
   return (
-    <section className="now-file" aria-label="File downloading now">
+    <section className="now-file" aria-label={t.detail.now.label}>
       <div className="now-file-head">
-        <span>Downloading now{place ? ` · ${place}` : ""}</span>
+        <span>{place ? t.detail.now.headingAt(place) : t.detail.now.heading}</span>
         <span>
-          {known ? `${formatBytes(file.downloaded)} / ${formatBytes(file.total!)}` : formatBytes(file.downloaded)}
+          {known ? t.detail.now.amount(formatBytes(file.downloaded), formatBytes(file.total!)) : formatBytes(file.downloaded)}
         </span>
       </div>
       <p className="now-file-name" title={file.name}>
@@ -73,7 +106,7 @@ function CurrentFileProgress({ file }: { file: CurrentFile }) {
           <div
             className={`bar bar-tall bar-${pct >= 100 ? "completed" : "downloading"}`}
             role="progressbar"
-            aria-label={`${file.name} progress`}
+            aria-label={t.detail.now.progressOf(file.name)}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={pct}
@@ -83,19 +116,11 @@ function CurrentFileProgress({ file }: { file: CurrentFile }) {
         ) : (
           <div className="bar bar-tall bar-downloading bar-busy" />
         )}
-        <span>{pct != null ? `${pct}%` : ""}</span>
+        <span>{pct != null ? pctText(pct, PCT_DIGITS) : ""}</span>
       </div>
     </section>
   );
 }
-
-const ITEM_STATE: Record<DownloadItem["state"], string> = {
-  done: "Downloaded",
-  downloading: "Downloading",
-  waiting: "Waiting",
-  missed: "Not available",
-  deleted: "Deleted",
-};
 
 /** True once the element has come into view (or at once, when not `wanted`). */
 function useSeen<T extends Element>(wanted: boolean): [React.RefObject<T | null>, boolean] {
@@ -187,18 +212,27 @@ function ItemCard(props: { item: DownloadItem; place: string; pct: number | null
       )}
       <strong>{item.title}</strong>
       <dl>
-        <Fact label="Status">
-          {ITEM_STATE[item.state]}
-          {props.pct != null ? ` · ${props.pct}%` : ""}
+        <Fact label={t.detail.card.status}>
+          {props.pct != null
+            ? t.detail.card.stateWithPct(t.detail.items.state[item.state], pctText(props.pct, PCT_DIGITS))
+            : t.detail.items.state[item.state]}
         </Fact>
-        <Fact label="Position">{props.place}</Fact>
-        {item.duration != null && <Fact label="Length">{formatDuration(item.duration)}</Fact>}
-        {item.channel && <Fact label="Channel">{item.channel}</Fact>}
-        {item.size != null && (
-          <Fact label={item.state === "downloading" ? "Downloaded" : "Size"}>{formatBytes(item.size)}</Fact>
+        <Fact label={t.detail.card.position}>{props.place}</Fact>
+        {item.duration != null && <Fact label={t.detail.card.length}>{formatDuration(item.duration)}</Fact>}
+        {item.channel && <Fact label={t.detail.card.channel}>{item.channel}</Fact>}
+        {item.downloaded != null && item.size != null ? (
+          <Fact label={t.detail.card.downloaded}>
+            {formatBytes(item.downloaded)} / {formatBytes(item.size)}
+          </Fact>
+        ) : (
+          item.size != null && (
+            <Fact label={item.state === "downloading" ? t.detail.card.downloaded : t.detail.card.size}>
+              {formatBytes(item.size)}
+            </Fact>
+          )
         )}
-        {item.file && item.file !== item.title && <Fact label="File">{item.file}</Fact>}
-        {item.url && <Fact label="Link">{item.url.replace(/^https?:\/\/(www\.)?/i, "")}</Fact>}
+        {item.file && item.file !== item.title && <Fact label={t.detail.card.file}>{item.file}</Fact>}
+        {item.url && <Fact label={t.detail.card.link}>{item.url.replace(/^https?:\/\/(www\.)?/i, "")}</Fact>}
       </dl>
     </div>,
     document.body,
@@ -208,7 +242,8 @@ function ItemCard(props: { item: DownloadItem; place: string; pct: number | null
 /** More rows than this are counted, not drawn. */
 const ITEMS_SHOWN = 500;
 
-/** Every video or file of a profile or playlist download, with how far each is. */
+/** Every video or file of a profile, playlist or torrent download, with how
+ *  far each is. A torrent's files all download at once, each with its bar. */
 function ItemList({ d }: { d: Download }) {
   const [items, setItems] = useState<DownloadItem[] | null>(null);
   /** The row under the pointer (or focused), and where it is on screen. */
@@ -243,25 +278,42 @@ function ItemList({ d }: { d: Download }) {
     return live ? (
       <div className="items">
         <div className="card-loading" role="status">
-          <span>Getting the list</span>
+          <span>{t.detail.items.gettingList}</span>
           <div className="bar bar-downloading bar-busy" />
         </div>
       </div>
     ) : null;
   }
+  // A torrent of one file has nothing to list: its bar is the download's own.
+  if (d.torrent && items.length < 2) return null;
   const done = items.filter((item) => item.state === "done").length;
   const current = d.current;
   const pctOf = (item: DownloadItem) =>
-    item.state === "downloading" && current?.total
-      ? Math.min(100, Math.floor((current.downloaded / current.total) * 100))
-      : null;
+    item.downloaded != null && item.size
+      ? exactPct(item.downloaded, item.size)
+      : item.state === "downloading" && current?.total
+        ? exactPct(current.downloaded, current.total)
+        : null;
   const shown = pointed && items[pointed.index];
+  // Every file's engine together, while a torrent downloads file by file.
+  const nets = items.map((item) => item.net).filter((net): net is FileNet => net != null);
+  const total =
+    nets.length > 0
+      ? nets.reduce((sum, net) => ({
+          peers: sum.peers + net.peers,
+          seeders: sum.seeders + net.seeders,
+          found: sum.found + net.found,
+          down: sum.down + net.down,
+          up: sum.up + net.up,
+        }))
+      : null;
   return (
-    <section className="items" aria-label="What this download holds">
+    <section className="items" aria-label={t.detail.items.label}>
       <div className="items-head">
-        <span>{items.length === 1 ? "1 item" : `${items.length} items`}</span>
-        <span>{done} done</span>
+        <span>{d.torrent ? t.ui.files(items.length) : t.detail.items.count(items.length)}</span>
+        <span>{t.detail.items.done(done)}</span>
       </div>
+      {total && <p className="items-net">{netLine(total)}</p>}
       <ol className="items-list" onScroll={() => setPointed(null)}>
         {items.slice(0, ITEMS_SHOWN).map((item, i) => {
           const pct = pctOf(item);
@@ -279,30 +331,36 @@ function ItemList({ d }: { d: Download }) {
             >
               <span className="item-index">{i + 1}</span>
               <ItemPicture item={item} />
-              <span className="item-title">{item.title}</span>
+              <span className="item-main">
+                <span className="item-title">{item.title}</span>
+                {item.downloaded != null && item.size != null && (
+                  <span className="item-bar" aria-hidden="true">
+                    <span style={{ width: `${pct ?? 0}%` }} />
+                  </span>
+                )}
+                {item.net && <span className="item-net">{netLine(item.net)}</span>}
+              </span>
               <span className="item-state">
                 {item.state === "done" ? (
                   <>
                     {item.size != null ? `${formatBytes(item.size)} ` : ""}
-                    <Check size={14} strokeWidth={2.5} aria-label="Done" />
+                    <Check size={14} strokeWidth={2.5} aria-label={t.detail.items.doneMark} />
                   </>
+                ) : pct != null && (item.state === "downloading" || pct > 0) ? (
+                  pctText(pct, PCT_DIGITS)
                 ) : item.state === "downloading" ? (
-                  pct != null ? `${pct}%` : "Downloading"
-                ) : item.state === "missed" ? (
-                  "Not available"
-                ) : item.state === "deleted" ? (
-                  "Deleted"
+                  t.detail.items.state.downloading
                 ) : (
-                  "Waiting"
+                  t.detail.items.state[item.state]
                 )}
               </span>
             </li>
           );
         })}
       </ol>
-      {items.length > ITEMS_SHOWN && <p className="items-more">and {items.length - ITEMS_SHOWN} more</p>}
+      {items.length > ITEMS_SHOWN && <p className="items-more">{t.detail.items.more(items.length - ITEMS_SHOWN)}</p>}
       {pointed && shown && (
-        <ItemCard item={shown} place={`${pointed.index + 1} of ${items.length}`} pct={pctOf(shown)} row={pointed.row} />
+        <ItemCard item={shown} place={t.detail.placeOf(pointed.index + 1, items.length)} pct={pctOf(shown)} row={pointed.row} />
       )}
     </section>
   );
@@ -313,33 +371,35 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
   const { history, actions } = useApp();
   const [tab, setTab] = useState<Tab>("progress");
   const eta = etaOf(d);
-  const pct = percentOf(d);
+  const pct = d.status === "completed" ? 100 : d.total ? exactPct(d.downloaded, d.total) : null;
   const running = d.status === "downloading";
   const segmented = d.segments.length > 0 && !!d.total;
 
   const headline =
     d.status === "completed"
-      ? `Completed · ${d.total != null ? formatBytes(d.total) : ""}`
+      ? t.detail.headline.completed(d.total != null ? formatBytes(d.total) : "")
       : running
-        ? `${amountOf(d)} · ${formatSpeed(d.speed)}`
-        : `${STATUS_LABEL[d.status]} · ${amountOf(d)}`;
+        ? t.detail.headline.running(amountOf(d), formatSpeed(d.speed))
+        : checkingText(d)
+          ? t.detail.headline.checking(checkingText(d)!, amountOf(d))
+          : t.detail.headline.status(STATUS_LABEL[d.status], amountOf(d));
 
   return (
     <Modal
       bare
-      title={`Details for ${d.filename}`}
+      title={t.detail.title(d.filename)}
       onClose={onClose}
       footer={
         d.status === "completed" ? (
           <>
             <button type="button" className="btn btn-wide" onClick={() => actions.open(d)}>
-              <SquareArrowOutUpRight size={16} strokeWidth={2} aria-hidden="true" /> Open
+              <SquareArrowOutUpRight size={16} strokeWidth={2} aria-hidden="true" /> {t.detail.buttons.open}
             </button>
             <button type="button" className="btn btn-wide" onClick={() => actions.reveal(d)}>
-              <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> Show in folder
+              <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> {t.detail.buttons.showInFolder}
             </button>
             <button type="button" className="btn btn-wide btn-danger" onClick={() => actions.remove([d.id])}>
-              <X size={16} strokeWidth={2} aria-hidden="true" /> Remove
+              <X size={16} strokeWidth={2} aria-hidden="true" /> {t.detail.buttons.remove}
             </button>
           </>
         ) : (
@@ -348,7 +408,7 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
                 Resume once paused, Retry after a failure. */}
             {canPause(d) ? (
               <button type="button" className="btn btn-wide" onClick={() => actions.pause([d.id])}>
-                <Pause size={15} strokeWidth={0} fill="currentColor" aria-hidden="true" /> Pause
+                <Pause size={15} strokeWidth={0} fill="currentColor" aria-hidden="true" /> {t.detail.buttons.pause}
               </button>
             ) : (
               <button type="button" className="btn btn-wide btn-primary" onClick={() => actions.resume([d.id])}>
@@ -357,11 +417,11 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
                 ) : (
                   <Play size={15} strokeWidth={0} fill="currentColor" aria-hidden="true" />
                 )}
-                {d.status === "failed" ? "Retry" : "Resume"}
+                {d.status === "failed" ? t.detail.buttons.retry : t.detail.buttons.resume}
               </button>
             )}
             <button type="button" className="btn btn-wide btn-danger" onClick={() => actions.remove([d.id])}>
-              <Trash2 size={16} strokeWidth={2} aria-hidden="true" /> Cancel
+              <Trash2 size={16} strokeWidth={2} aria-hidden="true" /> {t.detail.buttons.cancel}
             </button>
           </>
         )
@@ -374,22 +434,23 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
           <p className={`detail-headline detail-${d.status}`}>{headline}</p>
           <div className="detail-progress">
             <Progress d={d} tall />
-            <span>{eta || (pct != null ? `${pct}%` : "")}</span>
+            {/* How far, to three decimals, and the time left beside it while it runs. */}
+            <span>{[pct != null ? pctText(pct, PCT_DIGITS) : "", eta].filter(Boolean).join(" · ")}</span>
           </div>
         </div>
       </div>
 
       <div className="tabs-line" role="tablist">
-        {TABS.map((t) => (
+        {TABS.map((id) => (
           <button
-            key={t.id}
+            key={id}
             type="button"
             role="tab"
-            aria-selected={tab === t.id}
-            className={tab === t.id ? "is-active" : undefined}
-            onClick={() => setTab(t.id)}
+            aria-selected={tab === id}
+            className={tab === id ? "is-active" : undefined}
+            onClick={() => setTab(id)}
           >
-            {t.label}
+            {t.detail.tabs[id]}
           </button>
         ))}
       </div>
@@ -398,60 +459,72 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
         <>
           {d.status === "failed" && d.error && (
             <div className="callout callout-error">
-              <strong>Why it failed</strong>
+              <strong>{t.detail.progress.whyFailed}</strong>
               <p>{d.error}</p>
             </div>
           )}
           {d.status !== "completed" && (
             <Sparkline
               values={history.get(d.id) ?? []}
-              label="Download speed over the last minute"
+              label={t.detail.progress.speedChart}
               now={running ? formatSpeed(d.speed) : undefined}
               speed={running ? d.speed : 0}
             />
           )}
           {running && d.current && <CurrentFileProgress file={d.current} />}
           <dl className="facts">
-            <Fact label="Save Location">{d.dir}</Fact>
-            <Fact label="File Size">{d.total != null ? formatBytes(d.total) : "Unknown"}</Fact>
-            <Fact label="Downloaded">{formatBytes(d.downloaded)}</Fact>
-            <Fact label="Time Remaining">
-              {d.status === "completed" ? "Done" : eta.replace(" left", "") || "—"}
+            <Fact label={t.detail.progress.saveLocation}>{d.dir}</Fact>
+            <Fact label={t.detail.progress.fileSize}>
+              {d.total != null ? formatBytes(d.total) : t.detail.progress.unknown}
+            </Fact>
+            <Fact label={t.detail.progress.downloaded}>{formatBytes(d.downloaded)}</Fact>
+            <Fact label={t.detail.progress.timeRemaining}>
+              {d.status === "completed" ? t.detail.progress.done : withoutLeft(eta) || "—"}
             </Fact>
           </dl>
+          {/* A torrent's files fill side by side: each one's bar, under the whole. */}
+          {d.torrent && <ItemList d={d} />}
         </>
       )}
 
       {tab === "details" && (
         <>
           <dl className="facts">
-            <Fact label="Link"><span className="selectable break">{d.url}</span></Fact>
-            <Fact label="Saved As"><span className="selectable break">{d.path}</span></Fact>
-            <Fact label="Added">{formatDate(d.created_at)}</Fact>
-            <Fact label="Source">{d.profile ? "Profile or playlist" : d.torrent ? "Torrent" : d.media ? "Video page" : "Direct file link"}</Fact>
-            <Fact label="Pause and Resume">
-              {d.media || d.resumable
-                ? "Supported"
-                : d.status === "queued" || d.status === "connecting"
-                  ? "Not known yet"
-                  : "Not supported by this server"}
+            <Fact label={t.detail.details.link}><span className="selectable break">{d.url}</span></Fact>
+            <Fact label={t.detail.details.savedAs}><span className="selectable break">{d.path}</span></Fact>
+            <Fact label={t.detail.details.added}>{formatDate(d.created_at)}</Fact>
+            <Fact label={t.detail.details.source}>
+              {d.profile
+                ? t.detail.details.sourceProfile
+                : d.torrent
+                  ? t.detail.details.sourceTorrent
+                  : d.media
+                    ? t.detail.details.sourceMedia
+                    : t.detail.details.sourceDirect}
             </Fact>
-            <Fact label="Connections">
+            <Fact label={t.detail.details.pauseResume}>
+              {d.media || d.resumable
+                ? t.detail.details.supported
+                : d.status === "queued" || d.status === "connecting"
+                  ? t.detail.details.notKnownYet
+                  : t.detail.details.notSupported}
+            </Fact>
+            <Fact label={t.detail.details.connections}>
               {d.torrent
-                ? "Shared between peers by the torrent engine"
+                ? t.detail.details.connectionsTorrent
                 : d.media
-                ? "Handled by the site backend"
+                ? t.detail.details.connectionsMedia
                 : running
-                  ? `${d.active_connections} of ${d.connections}`
-                  : `Up to ${d.connections}`}
+                  ? t.detail.details.connectionsActive(d.active_connections, d.connections)
+                  : t.detail.details.connectionsUpTo(d.connections)}
             </Fact>
           </dl>
           {d.profile && <ItemList d={d} />}
           {segmented && (
-            <ol className="segments" aria-label="Progress of each connection">
+            <ol className="segments" aria-label={t.detail.details.segments}>
               {d.segments.map(([start, pos, end], i) => {
                 const size = Math.max(1, end - start);
-                const done = Math.min(100, Math.floor(((pos - start) / size) * 100));
+                const done = exactPct(pos - start, size);
                 return (
                   <li key={i}>
                     <span className="segment-index">{i + 1}</span>
@@ -460,7 +533,7 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
                         <div className="fill" style={{ width: `${done}%` }} />
                       </div>
                     </div>
-                    <span className="segment-pct">{done}%</span>
+                    <span className="segment-pct">{pctText(done, PCT_DIGITS)}</span>
                   </li>
                 );
               })}
@@ -474,18 +547,18 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
           {d.status === "completed" && (
             <>
               <button type="button" onClick={() => actions.open(d)}>
-                <SquareArrowOutUpRight size={17} strokeWidth={2} aria-hidden="true" /> Open file
+                <SquareArrowOutUpRight size={17} strokeWidth={2} aria-hidden="true" /> {t.detail.options.openFile}
               </button>
               <button type="button" onClick={() => actions.reveal(d)}>
-                <FolderOpen size={17} strokeWidth={2} aria-hidden="true" /> Show in folder
+                <FolderOpen size={17} strokeWidth={2} aria-hidden="true" /> {t.detail.options.showInFolder}
               </button>
-              <button type="button" onClick={() => actions.copy(d.path, "File path")}>
-                <Copy size={17} strokeWidth={2} aria-hidden="true" /> Copy file path
+              <button type="button" onClick={() => actions.copy(d.path, t.detail.options.filePath)}>
+                <Copy size={17} strokeWidth={2} aria-hidden="true" /> {t.detail.options.copyFilePath}
               </button>
             </>
           )}
-          <button type="button" onClick={() => actions.copy(d.url, "Link")}>
-            <LinkGlyph size={17} strokeWidth={2} aria-hidden="true" /> Copy link
+          <button type="button" onClick={() => actions.copy(d.url, t.detail.options.link)}>
+            <LinkGlyph size={17} strokeWidth={2} aria-hidden="true" /> {t.detail.options.copyLink}
           </button>
           {d.media && d.status === "failed" && (
             <button
@@ -495,12 +568,12 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
                 actions.scan(d.url);
               }}
             >
-              <ScanSearch size={17} strokeWidth={2} aria-hidden="true" /> Find media on this page
+              <ScanSearch size={17} strokeWidth={2} aria-hidden="true" /> {t.detail.options.findMedia}
             </button>
           )}
           {d.status === "completed" && (
             <button type="button" className="is-danger" onClick={() => actions.deleteFile(d)}>
-              <Trash2 size={17} strokeWidth={2} aria-hidden="true" /> Delete file from disk
+              <Trash2 size={17} strokeWidth={2} aria-hidden="true" /> {t.detail.options.deleteFile}
             </button>
           )}
         </div>

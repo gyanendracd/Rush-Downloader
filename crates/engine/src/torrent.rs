@@ -2,6 +2,7 @@
 //! librqbit. Each torrent gets a folder of its own inside the download
 //! folder, so pausing, resuming and removing act on exactly that folder.
 
+use std::net::Ipv6Addr;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
@@ -10,15 +11,16 @@ use std::time::Duration;
 
 use librqbit::limits::LimitsConfig;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, Session, SessionOptions,
-    TorrentStatsState,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerMode, ListenerOptions, Session,
+    SessionOptions, TorrentStatsState,
 };
 use percent_encoding::percent_decode_str;
 use serde::Serialize;
 
 use crate::probe::{candidate, sanitize};
 use crate::task::{ConnGuard, Fail, Live, Seg};
-use crate::{Inner, Record, Status};
+use crate::webseed::{self, Plan, WebSeeds};
+use crate::{Inner, Record, Status, TorrentFileProgress};
 
 /// One file inside a torrent, as shown before the download starts.
 #[derive(Clone, Debug, Serialize)]
@@ -62,18 +64,39 @@ pub(crate) fn local_name(path: &str) -> String {
 }
 
 /// Where the torrent comes from: bytes of a `.torrent` file, or a link.
-fn open(source: &str, saved_copy: Option<&Path>) -> Result<AddTorrent<'static>, Fail> {
+/// The bytes are returned too, where there are any, for the web seeds they list.
+pub(crate) async fn open(inner: &Arc<Inner>, source: &str, saved_copy: Option<&Path>) -> Result<(AddTorrent<'static>, Option<Vec<u8>>), Fail> {
     let file = match saved_copy {
         Some(copy) if copy.is_file() => Some(copy.to_path_buf()),
         _ if is_local_torrent(source) => Some(PathBuf::from(source)),
         _ => None,
     };
-    match file {
-        Some(path) => std::fs::read(&path)
-            .map(AddTorrent::from_bytes)
-            .map_err(|e| Fail::Fatal(format!("could not read the torrent file: {e}"))),
-        None => Ok(AddTorrent::from_url(source.to_string())),
+    if let Some(path) = file {
+        let bytes = std::fs::read(&path).map_err(|e| Fail::Fatal(format!("could not read the torrent file: {e}")))?;
+        return Ok((AddTorrent::from_bytes(bytes.clone()), Some(bytes)));
     }
+    // A link to a .torrent file is fetched here, so its web seeds are known
+    // (and it is looked up the way the app's other downloads are).
+    if !source.to_ascii_lowercase().starts_with("magnet:") {
+        if let Some(bytes) = fetch_torrent_file(inner, source).await {
+            return Ok((AddTorrent::from_bytes(bytes.clone()), Some(bytes)));
+        }
+    }
+    Ok((AddTorrent::from_url(source.to_string()), None))
+}
+
+/// A .torrent file from the web, or `None` (the torrent library then tries).
+async fn fetch_torrent_file(inner: &Arc<Inner>, url: &str) -> Option<Vec<u8>> {
+    const MAX: usize = 32 << 20;
+    let mut answer = inner.client.get(url).send().await.ok()?.error_for_status().ok()?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = tokio::time::timeout(Duration::from_secs(30), answer.chunk()).await.ok()?.ok()? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > MAX {
+            return None;
+        }
+    }
+    (bytes.first() == Some(&b'd')).then_some(bytes)
 }
 
 /// Reads a torrent's name and file list without downloading its contents.
@@ -83,7 +106,7 @@ pub(crate) async fn preview(inner: &Arc<Inner>, source: &str) -> Result<TorrentP
         Fail::Fatal(m) | Fail::Retry(m) => m,
         Fail::Cancelled => "cancelled".to_string(),
     };
-    let add = open(&source, None).map_err(fail)?;
+    let (add, _) = open(inner, &source, None).await.map_err(fail)?;
     let session = session(inner).await.map_err(fail)?;
     let options = AddTorrentOptions {
         list_only: true,
@@ -177,16 +200,34 @@ pub(crate) fn remove_data(dir: &Path, folder: &str) {
     }
 }
 
-fn session_options(dht: bool) -> SessionOptions {
+/// The port peers are asked to connect to. A fixed one, the way other
+/// clients keep theirs, so a router's forwarding of it keeps working.
+const LISTEN_PORT: u16 = 51381;
+
+/// Peers kept per torrent; the library's own default is 128.
+const PEER_LIMIT: usize = 200;
+
+/// `listen`: the port to take connections from other peers on (0 for any
+/// free one), or `None` to only connect out.
+fn session_options(dht: bool, listen: Option<u16>) -> SessionOptions {
     SessionOptions {
-        // Needed to find peers for magnet links. Nothing is kept
-        // between runs, and no port is opened for incoming connections.
+        // Needed to find peers for magnet links. Nothing is kept between runs.
         // RUSHDOWNLOAD_NO_DHT turns it off (trackers only), for tests.
         dht: (dht && std::env::var_os("RUSHDOWNLOAD_NO_DHT").is_none()).then(|| DhtSessionConfig {
             bootstrap_addrs: None,
             port: None,
             persistence: None,
         }),
+        // Peers that find this one connect to it, as they do to any other
+        // client; a peer that can only be reached that way is otherwise
+        // lost. The router is asked to pass the port on (UPnP).
+        listen: listen.map(|port| ListenerOptions {
+            mode: ListenerMode::TcpOnly,
+            listen_addr: (Ipv6Addr::UNSPECIFIED, port).into(),
+            enable_upnp_port_forwarding: true,
+            ..Default::default()
+        }),
+        peer_limit: Some(PEER_LIMIT),
         persistence: None,
         fastresume: false,
         client_name_and_version: Some(concat!("RushDownload ", env!("CARGO_PKG_VERSION")).into()),
@@ -194,27 +235,62 @@ fn session_options(dht: bool) -> SessionOptions {
     }
 }
 
+/// Starts a torrent engine, taking connections on the usual port, else on
+/// any free one, else only connecting out. Tests (RUSHDOWNLOAD_NO_DHT) do not
+/// listen, so Windows does not ask about the firewall.
+async fn new_session(inner: &Arc<Inner>, dht: bool) -> Result<Arc<Session>, String> {
+    let ports: &[Option<u16>] = if std::env::var_os("RUSHDOWNLOAD_NO_DHT").is_some() {
+        &[None]
+    } else {
+        &[Some(LISTEN_PORT), Some(0), None]
+    };
+    let mut last = String::new();
+    for listen in ports {
+        match Session::new_with_opts(inner.download_dir(), session_options(dht, *listen)).await {
+            Ok(s) => return Ok(s),
+            Err(e) => last = format!("{e:#}"),
+        }
+    }
+    Err(last)
+}
+
+/// An engine of its own for one file of a torrent downloaded file by file
+/// (see torrent_split.rs): any free port, as the usual one belongs to the
+/// app's main engine.
+pub(crate) async fn worker_session(inner: &Arc<Inner>) -> Result<Arc<Session>, Fail> {
+    let quiet = std::env::var_os("RUSHDOWNLOAD_NO_DHT").is_some();
+    let ports: &[Option<u16>] = if quiet { &[None] } else { &[Some(0), None] };
+    let mut last = String::new();
+    for dht in [true, false] {
+        for listen in ports {
+            match Session::new_with_opts(inner.download_dir(), session_options(dht, *listen)).await {
+                Ok(s) => return Ok(s),
+                Err(e) => last = format!("{e:#}"),
+            }
+        }
+    }
+    Err(Fail::Fatal(format!("could not start the torrent engine: {last}")))
+}
+
 async fn session(inner: &Arc<Inner>) -> Result<Arc<Session>, Fail> {
     inner
         .torrents
-        .get_or_try_init(|| async {
-            Session::new_with_opts(inner.download_dir(), session_options(true)).await
-        })
+        .get_or_try_init(|| new_session(inner, true))
         .await
         .cloned()
-        .map_err(|e| Fail::Fatal(format!("could not start the torrent engine: {e:#}")))
+        .map_err(|e| Fail::Fatal(format!("could not start the torrent engine: {e}")))
 }
 
 /// A torrent engine of its own for a second copy of a torrent that is already
 /// running: one engine holds a torrent only once, so the copy gets a separate
 /// one and the two never share anything.
 async fn private_session(inner: &Arc<Inner>) -> Result<Arc<Session>, Fail> {
-    match Session::new_with_opts(inner.download_dir(), session_options(true)).await {
+    match new_session(inner, true).await {
         Ok(s) => Ok(s),
         // If a second peer finder cannot start, trackers alone still work.
-        Err(_) => Session::new_with_opts(inner.download_dir(), session_options(false))
+        Err(_) => new_session(inner, false)
             .await
-            .map_err(|e| Fail::Fatal(format!("could not start the torrent engine: {e:#}"))),
+            .map_err(|e| Fail::Fatal(format!("could not start the torrent engine: {e}"))),
     }
 }
 
@@ -257,7 +333,39 @@ pub(crate) async fn run(
         }
     });
 
+    // What was downloaded before stays shown until the check of the folder
+    // says otherwise (a new folder has nothing in it).
+    // The amount itself may already read 0 by the time this runs, so it is
+    // also worked out from the pieces each part had, which are kept.
+    let had = if folder_is_new {
+        0
+    } else {
+        let (done, all) = rec.segments.iter().fold((0u64, 0u64), |(d, a), s| (d + (s[1] - s[0]), a + (s[2] - s[0])));
+        let from_pieces = match rec.total {
+            Some(total) if all > 0 => (total as u128 * done as u128 / all as u128) as u64,
+            _ => 0,
+        };
+        rec.downloaded.max(from_pieces)
+    };
+    // The speed follows bytes received from the start, so putting back the
+    // amount it had is not taken for a burst of speed.
+    live.counts_received.store(true, Relaxed);
+    live.downloaded.store(had, Relaxed);
+
     let mut session = session(inner).await?;
+
+    // A torrent of several files can download each file on its own engine,
+    // side by side (Settings; see torrent_split.rs).
+    if inner.state.lock().unwrap().settings.torrent_files_apart {
+        let listed = tokio::select! {
+            _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
+            l = crate::torrent_split::list(inner, &session, rec) => l,
+        };
+        if let Some(listed) = listed {
+            return crate::torrent_split::run(inner, id, live, rec, &folder, &folder_name, listed, had).await;
+        }
+    }
+
     let mut private = false;
     let limit = u32::try_from(inner.limiter.rate()).unwrap_or(u32::MAX);
     let options = || AddTorrentOptions {
@@ -274,7 +382,7 @@ pub(crate) async fn run(
 
     // For a magnet link this first has to find peers and fetch the torrent's
     // details from them, which can take a while.
-    let source = open(&rec.url, rec.torrent_file.as_deref())?;
+    let (source, torrent_bytes) = open(inner, &rec.url, rec.torrent_file.as_deref()).await?;
     let mut added = tokio::select! {
         _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
         r = session.add_torrent(source, Some(options())) => r,
@@ -285,7 +393,7 @@ pub(crate) async fn run(
         // stop it), so the copy runs in a torrent engine of its own.
         session = private_session(inner).await?;
         private = true;
-        let source = open(&rec.url, rec.torrent_file.as_deref())?;
+        let (source, _) = open(inner, &rec.url, rec.torrent_file.as_deref()).await?;
         added = tokio::select! {
             _ = live.cancel.cancelled() => {
                 session.stop().await;
@@ -313,9 +421,22 @@ pub(crate) async fn run(
     let pieces = librqbit::Api::new(session.clone(), None);
     let part_count = rec.connections.clamp(2, 16);
 
+    // Web servers the .torrent file lists as holding its files are fetched
+    // from as well, the way other clients do (see webseed.rs).
+    let plan = torrent_bytes
+        .as_deref()
+        .and_then(WebSeeds::read)
+        .map(|seeds| Arc::new(Plan::new(seeds, folder.clone(), rec.only_files.as_deref())));
+    let seeds_stop = live.cancel.child_token();
+    let mut fetchers = Vec::new();
+
     let _conn = ConnGuard::new(&live.conns);
     let mut started = false;
     let mut total = 0u64;
+    let mut by_swarm = false;
+    let mut peer_bytes = 0u64;
+    // Each chosen file's place in the torrent, path and size, read once.
+    let mut names: Option<Vec<(usize, Vec<String>, u64)>> = None;
     let outcome = loop {
         tokio::select! {
             _ = live.cancel.cancelled() => break Err(Fail::Cancelled),
@@ -323,15 +444,59 @@ pub(crate) async fn run(
         }
         let stats = handle.stats();
         total = stats.total_bytes;
-        live.downloaded.store(stats.progress_bytes, Relaxed);
+        // How far each file is, for the list in the download's detail. All
+        // the files download at once: the pieces are fetched from every
+        // peer side by side, wherever in the torrent they fall.
+        if names.is_none() {
+            names = handle.with_metadata(|m| file_names(&m.file_infos, rec.only_files.as_deref())).ok();
+        }
+        if let Some(names) = &names {
+            let files = files_progress(names, &stats.file_progress);
+            if !files.is_empty() {
+                *live.files.lock().unwrap() = files;
+            }
+        }
+        // Before carrying on, the torrent library reads back what is already
+        // on disk and checks every piece. Until it is done, the download is
+        // shown as checking, with what it had before, and no speed.
+        if matches!(stats.state, TorrentStatsState::Initializing { .. }) {
+            if let Some(error) = stats.error {
+                break Err(Fail::Fatal(format!("torrent error: {error}")));
+            }
+            live.checking.store(true, Relaxed);
+            live.checked.store(stats.progress_bytes.min(total), Relaxed);
+            if total > 0 {
+                live.total_hint.store(total, Relaxed);
+            }
+            continue;
+        }
+        live.checking.store(false, Relaxed);
+        // The speed shown follows the bytes as they arrive from peers and web
+        // seeds, not the checked pieces, which land 4 MB or so at a time. The
+        // library's count is only there while the torrent is live, so the
+        // last one seen is kept, and the total never goes back.
+        if let Some(l) = &stats.live {
+            peer_bytes = peer_bytes.max(l.snapshot.fetched_bytes);
+        }
+        let seed_bytes = plan.as_ref().map_or(0, |p| p.received());
+        live.received.fetch_max(peer_bytes + seed_bytes, Relaxed);
+        live.counts_received.store(true, Relaxed);
+
+        let haves = pieces.api_dump_haves(torrent_id.into()).ok();
+        let plan = plan.as_ref().filter(|p| haves.as_ref().is_some_and(|(_, count)| *count as usize == p.piece_count()));
+        if let (Some(plan), Some((have, _))) = (plan, &haves) {
+            plan.set_swarm(|i| have.get(i).map(|b| *b).unwrap_or(false));
+        }
+        let extra = plan.map_or(0, |p| p.extra_bytes());
+        live.downloaded.store((stats.progress_bytes + extra).min(total.max(stats.progress_bytes)), Relaxed);
         if total > 0 {
             live.total_hint.store(total, Relaxed);
         }
         // A torrent's pieces arrive from many peers at once, all over the
         // file. The file is cut into equal stretches and each one reports how
         // many of its pieces are done, so the bars fill side by side.
-        if let Ok((have, count)) = pieces.api_dump_haves(torrent_id.into()) {
-            let count = count as usize;
+        if let Some((have, count)) = &haves {
+            let count = *count as usize;
             let parts = part_count.min(count);
             if parts > 1 {
                 let segs: Vec<Seg> = (0..parts)
@@ -339,7 +504,9 @@ pub(crate) async fn run(
                         let from = p * count / parts;
                         let to = (p + 1) * count / parts;
                         let done = (from..to)
-                            .filter(|i| have.get(*i).map(|b| *b).unwrap_or(false))
+                            .filter(|i| {
+                                have.get(*i).map(|b| *b).unwrap_or(false) || plan.is_some_and(|plan| plan.has(*i))
+                            })
                             .count();
                         Seg {
                             start: from as u64,
@@ -358,11 +525,34 @@ pub(crate) async fn run(
         if !started && matches!(stats.state, TorrentStatsState::Live) {
             started = true;
             inner.update(id, |r| r.status = Status::Downloading);
+            // The files exist once the torrent is live; the web seeds start then.
+            if let Some(plan) = plan.filter(|_| !stats.finished) {
+                // One fetcher per web seed at most: when the swarm already
+                // fills the line, more only split the same bandwidth.
+                let count = rec.connections.clamp(2, 16).min(plan.mirror_count());
+                for _ in 0..count {
+                    fetchers.push(tokio::spawn(webseed::fetcher(
+                        plan.clone(),
+                        inner.client.clone(),
+                        inner.limiter.clone(),
+                        live.clone(),
+                        seeds_stop.clone(),
+                    )));
+                }
+            }
         }
         if stats.finished {
+            by_swarm = true;
+            break Ok(());
+        }
+        if started && plan.is_some_and(|p| p.complete()) {
             break Ok(());
         }
     };
+    seeds_stop.cancel();
+    for fetcher in fetchers {
+        let _ = fetcher.await;
+    }
 
     // Stop the torrent in every case; the app does not keep uploading after a
     // download ends. Files are left for a pause and removed only when the
@@ -375,15 +565,85 @@ pub(crate) async fn run(
     if removing {
         remove_data(&rec.dir, &folder_name);
     }
+    // Finished with the web seeds' help: what was only fetched from them is
+    // checked once more now the torrent library has let go of the files.
+    let outcome = match (outcome, &plan) {
+        (Ok(()), Some(plan)) if !by_swarm => {
+            webseed::settle(plan.clone(), inner.client.clone(), inner.limiter.clone(), live.cancel.clone())
+                .await
+                .map_err(|e| if live.cancel.is_cancelled() { Fail::Cancelled } else { Fail::Retry(e) })
+        }
+        (outcome, _) => outcome,
+    };
     if outcome.is_ok() {
-        inner.update(id, |r| r.total = Some(total));
+        live.downloaded.store(total, Relaxed);
+        // Finished: every chosen file is whole, web-seeded parts included.
+        let files: Vec<TorrentFileProgress> = {
+            let mut files = live.files.lock().unwrap();
+            for f in files.iter_mut() {
+                f.done = f.len;
+            }
+            files.clone()
+        };
+        inner.update(id, |r| {
+            r.total = Some(total);
+            if !files.is_empty() {
+                r.files = files;
+            }
+        });
     }
     outcome
+}
+
+/// The torrent's files that are downloaded (the chosen ones, without the
+/// padding some torrents put between files): place, path and size.
+fn file_names(infos: &librqbit::FileInfos, only: Option<&[usize]>) -> Vec<(usize, Vec<String>, u64)> {
+    infos
+        .iter()
+        .enumerate()
+        .filter(|(i, f)| !f.attrs.padding && only.is_none_or(|only| only.contains(i)))
+        .map(|(i, f)| {
+            let path = f
+                .relative_filename
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            (i, path, f.len)
+        })
+        .collect()
+}
+
+/// Each file with how much of it is downloaded, from the library's count per
+/// file; empty until the library has one.
+fn files_progress(names: &[(usize, Vec<String>, u64)], progress: &[u64]) -> Vec<TorrentFileProgress> {
+    if progress.is_empty() {
+        return Vec::new();
+    }
+    names
+        .iter()
+        .map(|(i, path, len)| TorrentFileProgress {
+            path: path.clone(),
+            len: *len,
+            done: progress.get(*i).copied().unwrap_or(0).min(*len),
+            net: None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_file_takes_its_own_count() {
+        let names = vec![(0, vec!["a.mkv".to_string()], 100), (2, vec!["sub".to_string(), "b.srt".to_string()], 10)];
+        assert!(files_progress(&names, &[]).is_empty());
+        let files = files_progress(&names, &[40, 0, 99]);
+        assert_eq!(files[0].done, 40);
+        assert_eq!(files[1].path, vec!["sub", "b.srt"]);
+        // never more than the file holds
+        assert_eq!(files[1].done, 10);
+    }
 
     #[test]
     fn recognises_torrent_links() {

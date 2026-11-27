@@ -4,7 +4,7 @@ Written from the built interface (`src/styles.css`, `src/ui.tsx`, `src/views.tsx
 
 ## Character
 
-Liquid glass: translucent panes floating over a soft field of colour, lit along their top edge, with near-black text and one saturated blue. Nothing behind a pane has a hard edge, so text never crosses a shape. Dark mode is the same design on a near-black ground with deeper colour in the field.
+Liquid glass: translucent panes floating over a soft field of colour, lit along their top edge, with near-black text and one saturated blue. Nothing behind a pane has a hard edge, so text never crosses a shape. Dark mode is the same design on a neutral graphite ground; its colour field is only a faint cool tint and its glass edges are lit lightly, so nothing glows (the earlier saturated blue, purple and magenta field read as generic and was dropped).
 
 Five materials, never the same one twice in a stack (tokens `--glass-*`, section "liquid glass" in the stylesheet):
 
@@ -32,14 +32,14 @@ Tokens live on `:root` (light) and `:root[data-theme="dark"]`.
 
 | Role | Light | Dark |
 |---|---|---|
-| Ground `--bg` | `#eef1f7` | `#0b0c11` |
-| Colour field `--wall-1` to `--wall-4` | `#c6dbff` `#e2d3ff` `#c4ecf3` `#ffdbe6` | `#17306b` `#3a2168` `#0d3d4b` `#45193a` |
-| Content pane `--glass-regular` | white at 32% | white at 6.5% |
-| Hairline `--border` | `rgba(60, 60, 67, 0.12)` | `rgba(255, 255, 255, 0.1)` |
-| Text `--text` / `--text-2` / `--text-3` | `#1d1d1f` / `#55555c` / `#68686f` | `#f5f5f7` / `#b4b4bb` / `#8e8e96` |
-| Accent `--accent` | `#0b63f6` | `#6ea8ff` |
-| Filled button `--accent-solid` | `#0b63f6` | `#2a6cf0` |
-| Active nav, active chip, selection `--accent-soft` | accent at 12% | `rgba(80, 140, 255, 0.2)` |
+| Ground `--bg` | `#eef1f7` | `#101114` |
+| Colour field `--wall-1` to `--wall-4` | `#c6dbff` `#e2d3ff` `#c4ecf3` `#ffdbe6` | `#172032` `#1a1b21` `#131a1d` `#1a171b` |
+| Content pane `--glass-regular` | white at 32% | white at 6.5% (sidebar 4%) |
+| Hairline `--border` | `rgba(60, 60, 67, 0.12)` | `rgba(255, 255, 255, 0.08)` |
+| Text `--text` / `--text-2` / `--text-3` | `#1d1d1f` / `#55555c` / `#68686f` | `#ececef` / `#b4b4bb` / `#8e8e96` |
+| Accent `--accent` | `#0b63f6` | `#7eaefc` |
+| Filled button `--accent-solid` | `#0b63f6` | `#2f6fe8` |
+| Active nav, active chip, selection `--accent-soft` | accent at 12% | accent at 13% |
 | Done `--ok` / `--ok-solid` | `#15803d` / `#16a34a` | `#4ad38a` / `#1f9d57` |
 | Failed `--err` / `--err-solid` | `#d0262d` / `#e5343b` | `#ff7b82` / `#d93a42` |
 | Speed shade, slowest on screen `--speed-min` | `#cfe0ff` | `#1a2f63` |
@@ -95,6 +95,6 @@ Two pages over the same list, for two questions.
 
 ## Honesty rules
 
-- Options from the mockup that the app cannot do yet (start with Windows, tray, notifications, hardware acceleration, languages, scheduler) are shown switched off with a "Soon" tag, never as working controls.
+- Options from the mockup that the app cannot do yet (the scheduler) are shown switched off with a "Soon" tag, never as working controls. Starting with Windows, the tray, notifications, hardware acceleration and the language are built and live in Settings › General.
 - "Add from Browser" opens the page scan and "Browse Files" imports a text file of links; both have tooltips that say so.
 - Sample data lives only in `src/mock.ts`, loaded in development outside Tauri and absent from production builds.

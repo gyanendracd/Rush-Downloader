@@ -943,6 +943,8 @@ impl Listed {
                     duration: item.duration,
                     channel: item.channel.clone(),
                     url: item.url.clone(),
+                    downloaded: None,
+                    net: None,
                 }
             })
             .collect()
@@ -1037,6 +1039,8 @@ pub(crate) fn on_disk(folder: &Path) -> Vec<ItemInfo> {
             duration: None,
             channel: None,
             url: None,
+            downloaded: None,
+            net: None,
         })
         .collect()
 }

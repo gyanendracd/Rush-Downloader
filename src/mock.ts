@@ -52,6 +52,52 @@ function segments(total: number, fill: number[]): [number, number, number][] {
 const isoSegments = segments(1800 * MB, [1, 0.82, 0.64, 0.71, 0.33, 0.48, 0.12, 0.05]);
 const liveSegments = segments(640 * MB, [0.4, 0.3, 0.35, 0.2, 0.25, 0.1, 0.15, 0.05]);
 
+/** The files of the sample torrent: path inside its folder, and size. */
+const TORRENT_FILES: [string, number][] = [
+  ["Big Buck Bunny (2008)/Big Buck Bunny.mkv", 820 * MB],
+  ["Big Buck Bunny (2008)/Subtitles/English.srt", 0.1 * MB],
+  ["Sintel (2010)/Sintel.mkv", 1240 * MB],
+  ["Sintel (2010)/Poster.jpg", 2.4 * MB],
+  ["Tears of Steel (2012)/Tears of Steel.mkv", 1630 * MB],
+  ["README.txt", 0.01 * MB],
+];
+
+/** How far each file of the sample torrent is: up to 12 files at once, each
+ *  on its own (as with "side by side" in Settings), sharing what came in. */
+function torrentItems(downloaded: number, running: boolean) {
+  const got = TORRENT_FILES.map(() => 0);
+  let left = downloaded;
+  while (left > 1) {
+    const active = TORRENT_FILES.map((_, i) => i).filter((i) => got[i] < TORRENT_FILES[i][1]).slice(0, 12);
+    if (active.length === 0) break;
+    // each takes an equal share, no more than it still needs
+    const share = Math.min(left / active.length, ...active.map((i) => TORRENT_FILES[i][1] - got[i]));
+    for (const i of active) got[i] += share;
+    left -= share * active.length;
+  }
+  return TORRENT_FILES.map(([path, size], i) => {
+    const done = got[i] >= size - 1;
+    const name = path.split("/").pop()!;
+    return {
+      title: path,
+      state: done ? ("done" as const) : running && got[i] > 0 ? ("downloading" as const) : ("waiting" as const),
+      size,
+      file: done ? name : null,
+      path: null,
+      thumbnail: null,
+      duration: null,
+      channel: null,
+      url: null,
+      downloaded: done ? null : Math.round(got[i]),
+      // each file's own engine: a big file has few peers, as on a real swarm
+      net:
+        running && !done
+          ? { peers: 2 + i * 3, seeders: 1 + i, found: 12 + i * 9, down: (0.4 + i * 0.6) * MB, up: (0.05 + i * 0.1) * MB }
+          : null,
+    };
+  });
+}
+
 let downloads: Download[] = [
   make({ id: 1, url: "https://example.com/files/project-backup-2026.zip", filename: "project-backup-2026.zip", status: "completed", total: 1240 * MB, downloaded: 1240 * MB, created_at: now - 86400 }),
   make({ id: 2, url: "https://example.com/docs/annual-report.pdf", filename: "annual-report.pdf", status: "completed", total: 12 * MB, downloaded: 12 * MB, created_at: now - 7200 }),
@@ -83,6 +129,30 @@ let downloads: Download[] = [
   }),
   make({ id: 9, url: "https://example.com/photos/trip-raw-photos.zip", filename: "trip-raw-photos.zip", status: "queued", total: 2300 * MB, created_at: now - 20 }),
   make({ id: 10, url: "https://example.com/img/poster.png", filename: "poster.png", status: "connecting", created_at: now - 10 }),
+  // A torrent of several files, all filling at once (see TORRENT_FILES).
+  make({
+    id: 16,
+    url: "magnet:?xt=urn:btih:0000000000000000000000000000000000000016&dn=Open+Movie+Collection",
+    filename: "Open Movie Collection",
+    status: "downloading",
+    torrent: true,
+    total: TORRENT_FILES.reduce((sum, [, size]) => sum + size, 0),
+    downloaded: 1150 * MB,
+    speed: 6.2 * MB,
+    created_at: now - 40,
+  }),
+  // A resumed torrent while what it had is checked before it carries on.
+  make({
+    id: 15,
+    url: "C:\\Users\\me\\Downloads\\planet-sample.osm.pbf.torrent",
+    filename: "planet-sample.osm.pbf",
+    status: "connecting",
+    torrent: true,
+    total: 89.5 * 1024 * MB,
+    downloaded: 5.1 * 1024 * MB,
+    checking: 38 * 1024 * MB,
+    created_at: now - 5,
+  }),
   make({
     id: 11,
     url: "https://example.com/playlist?list=sample",
@@ -138,9 +208,10 @@ let settings: Settings = {
   speed_limit: 0,
   cookies_browser: null,
   secure_dns: true,
+  torrent_files_apart: true,
 };
 
-let nextId = 15;
+let nextId = 16;
 const listeners = new Map<symbol, (list: Download[]) => void>();
 const emit = () => listeners.forEach((cb) => cb(downloads.map((d) => ({ ...d }))));
 const patch = (id: number, change: Partial<Download>) => {
@@ -201,11 +272,21 @@ const NOBODY = {
   joined: null,
 } satisfies ProfileFace as ProfileFace;
 
+let appPrefs = { start_with_system: false, close_to_tray: false, notifications: true, hardware_acceleration: true };
+
 export const mockApi = {
   list: async () => downloads,
+  getAppPrefs: async () => ({ ...appPrefs }),
+  setAppPrefs: async (prefs: typeof appPrefs) => {
+    appPrefs = { ...prefs };
+  },
+  setTrayText: async () => {},
+  // A plain browser has no system notifications to send here.
+  notify: async (title: string, body: string) => console.info("[notification]", title, body),
   items: async (id: number) => {
     await new Promise((r) => setTimeout(r, 600));
     const d = downloads.find((x) => x.id === id);
+    if (d?.torrent && d.id === 16) return torrentItems(d.downloaded, d.status === "downloading");
     const at = d?.current?.index;
     // A saved profile: what is in its folder. A plain browser cannot show a
     // file from this computer, so these stand in with a sign of their kind.
@@ -293,6 +374,13 @@ export const mockApi = {
     return Promise.resolve(() => window.removeEventListener("mock-copy", hear));
   },
   setClipboardWatch: async (_on: boolean) => {},
+  // Likewise for the browser extension: new CustomEvent("mock-extension-link", { detail: "https://…" })
+  onExtensionLink: (cb: (link: string) => void) => {
+    const hear = (e: Event) => cb(String((e as CustomEvent).detail));
+    window.addEventListener("mock-extension-link", hear);
+    return Promise.resolve(() => window.removeEventListener("mock-extension-link", hear));
+  },
+  onExtensionAdded: (_cb: (count: number) => void) => Promise.resolve(() => {}),
   linkSize: async (url: string, _referer: string) => {
     await new Promise((r) => setTimeout(r, 500));
     return /1080/.test(url) ? 412 * MB : 96 * MB;
@@ -341,7 +429,8 @@ export const mockApi = {
     signedIn = [];
   },
   playlistInfo: async (url: string) => {
-    await new Promise((r) => setTimeout(r, 900));
+    // "slow" in the link stands for a site that takes long to list a profile's posts.
+    await new Promise((r) => setTimeout(r, /slow/.test(url) ? 12000 : 900));
     if (!/playlist\?list=/.test(url)) {
       // "locked" in the link stands for a site that lists a profile's posts
       // only for signed-in visitors, and tells the downloader it is not there.
@@ -370,7 +459,7 @@ export const mockApi = {
     };
   },
   profileFace: async (url: string) => {
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, /slow/.test(url) ? 1500 : 300));
     // "plain" in the link stands for a site that says nothing about whose it is.
     if (/plain/.test(url) || /playlist\?list=/.test(url)) return NOBODY;
     return {
@@ -386,7 +475,7 @@ export const mockApi = {
     };
   },
   profileStats: async (url: string) => {
-    await new Promise((r) => setTimeout(r, 700));
+    await new Promise((r) => setTimeout(r, /slow/.test(url) ? 3500 : 700));
     // Only some sites tell a visitor a profile's numbers: "plain" and "bare" stand for the others.
     if (/plain|bare/.test(url) || /playlist\?list=/.test(url)) return NOBODY;
     return {
@@ -444,6 +533,15 @@ export const mockApi = {
   torrentPreview: async (source: string): Promise<TorrentPreview> => {
     await new Promise((r) => setTimeout(r, 900));
     if (/broken/i.test(source)) throw "Could not read this torrent";
+    // A map data set: tens of thousands of small tiles, most in one folder.
+    if (/lod2|huge/i.test(source)) {
+      const tiles = Array.from({ length: 30000 }, (_, i) => ({
+        path: ["bavaria-lod2-citygml", i < 29000 ? "tiles" : `extra-${Math.floor(i / 200)}`, `${600 + Math.floor(i / 180)}_${5300 + (i % 180)}.gml`],
+        size: (2 + (i % 7)) * MB,
+      }));
+      const files = tiles.map((f, index) => ({ index, ...f }));
+      return { name: "bavaria-lod2-citygml", total: files.reduce((sum, f) => sum + f.size, 0), files };
+    }
     const files = [
       { path: ["Sample Collection", "Readme.txt"], size: 4 * 1024 },
       { path: ["Sample Collection", "Videos", "Part 1.mkv"], size: 1400 * MB },

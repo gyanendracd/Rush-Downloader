@@ -9,6 +9,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Archive,
   Check,
@@ -38,10 +39,12 @@ import {
 import {
   api,
   canPause,
-  categoryOf,
+
   deletedAgo,
   displayName,
   isDeleted,
+  checkingText,
+  checkPercent,
   etaOf,
   formatBytes,
   formatSpeed,
@@ -52,6 +55,8 @@ import {
   type MediaOptions,
   type Settings,
 } from "./api";
+import { DocIcon } from "./DocIcon";
+import { t } from "./i18n";
 
 /* ---------- shared app state ---------- */
 
@@ -234,11 +239,9 @@ function useProfilePicture(d: Download): [string | null, () => void] {
   return [picture, failed];
 }
 
-/** Coloured file tile; the colour says what kind of file it is. A profile
+/** A page marked with the file's type and extension (see DocIcon). A profile
  *  being saved shows whose it is instead: the profile's own picture. */
 export function FileIcon({ d, large }: { d: Download; large?: boolean }) {
-  const category = categoryOf(d);
-  const Icon = CATEGORY_ICON[category];
   const [picture, pictureFailed] = useProfilePicture(d);
   // A video from a site (or a playlist of them) shows the site's picture of
   // it, in the tile's own shape. One that will not load gives way to the tile.
@@ -267,11 +270,7 @@ export function FileIcon({ d, large }: { d: Download; large?: boolean }) {
       />
     );
   }
-  return (
-    <span className={`file-icon cat-${category}${large ? " file-icon-lg" : ""}`} aria-hidden="true">
-      <Icon size={large ? 26 : 18} strokeWidth={2} />
-    </span>
-  );
+  return <DocIcon d={d} large={large} />;
 }
 
 /** Dot plus status word, used where a download is listed outside the main list. */
@@ -279,7 +278,7 @@ export function StatusText({ d }: { d: Download }) {
   return (
     <span className={`status status-${d.status}`}>
       <span className="status-dot" aria-hidden="true" />
-      {STATUS_LABEL[d.status]}
+      {checkPercent(d) != null ? t.ui.checking : STATUS_LABEL[d.status]}
     </span>
   );
 }
@@ -295,7 +294,7 @@ function ConnectingBar({ tall, failures }: { tall?: boolean; failures: number })
   // Blue while all is well, orange after a failed attempt, red if it keeps failing.
   const tone = failures >= 2 ? " is-failing" : failures === 1 ? " is-trouble" : "";
   const label =
-    failures >= 2 ? "Still failing to connect, trying again" : failures === 1 ? "Connection failed, trying again" : "Connecting";
+    failures >= 2 ? t.ui.connect.stillFailing : failures === 1 ? t.ui.connect.failed : t.ui.connect.connecting;
   return (
     <div className={`connect-bar${tall ? " connect-bar-tall" : ""}${tone}`} role="status" aria-label={label} title={label}>
       {Array.from({ length: CONNECT_SEGMENTS }, (_, i) => (
@@ -313,11 +312,39 @@ function ConnectingBar({ tall, failures }: { tall?: boolean; failures: number })
   );
 }
 
+/**
+ * Shown above the progress bar in place of the connecting strip while what
+ * is already on disk is being checked (a resumed torrent): how far the
+ * check has got. The bar under it keeps what was downloaded before.
+ */
+function CheckingBar({ tall, percent }: { tall?: boolean; percent: number }) {
+  return (
+    <div
+      className={`check-bar${tall ? " check-bar-tall" : ""}`}
+      role="progressbar"
+      aria-label={t.ui.checkBar}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percent}
+      title={t.common.checking(percent)}
+    >
+      <span style={{ width: `${percent}%` }} />
+    </div>
+  );
+}
+
 /** One continuous bar of overall progress. */
 export function Progress({ d, tall }: { d: Download; tall?: boolean }) {
   const cls = `bar bar-${d.status}${tall ? " bar-tall" : ""}`;
   const pct = percentOf(d);
-  const connecting = d.status === "connecting" && <ConnectingBar tall={tall} failures={d.connect_failures ?? 0} />;
+  const checked = checkPercent(d);
+  const connecting =
+    d.status === "connecting" &&
+    (checked != null ? (
+      <CheckingBar tall={tall} percent={checked} />
+    ) : (
+      <ConnectingBar tall={tall} failures={d.connect_failures ?? 0} />
+    ));
   const { progressStyle } = useApp();
   // One bar for each connection, each as wide as its share of the file.
   // Torrents report equal stretches of the file with the pieces done in each.
@@ -343,7 +370,7 @@ export function Progress({ d, tall }: { d: Download; tall?: boolean }) {
         <div
           className={`${cls} bar-threads`}
           role="progressbar"
-          aria-label={`${d.filename} progress, ${parts.length} parts`}
+          aria-label={t.ui.progress.parts(d.filename, parts.length)}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={pct ?? 0}
@@ -378,7 +405,7 @@ export function Progress({ d, tall }: { d: Download; tall?: boolean }) {
       <div
         className={cls}
         role="progressbar"
-        aria-label={`${d.filename} progress`}
+        aria-label={t.ui.progress.label(d.filename)}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={pct}
@@ -390,12 +417,12 @@ export function Progress({ d, tall }: { d: Download; tall?: boolean }) {
 }
 
 export function fileCount(n: number): string {
-  return `${n} ${n === 1 ? "file" : "files"}`;
+  return t.ui.files(n);
 }
 
 /** "72.5 MB / 1.2 GB" for anything unfinished. */
 export function amountOf(d: Download): string {
-  if (d.profile) return `${fileCount(d.items)} · ${formatBytes(d.downloaded)}`;
+  if (d.profile) return t.ui.profileAmount(fileCount(d.items), formatBytes(d.downloaded));
   return d.total != null
     ? `${formatBytes(d.downloaded)} / ${formatBytes(d.total)}`
     : formatBytes(d.downloaded);
@@ -407,24 +434,24 @@ export function RowMeta({ d }: { d: Download }) {
     case "downloading":
       return <>{amountOf(d)} · {formatSpeed(d.speed)}</>;
     case "connecting":
-      return <>Connecting</>;
+      return <>{checkingText(d) ?? t.common.status.connecting}</>;
     case "queued":
-      return <>Queued{d.total != null ? ` · ${formatBytes(d.total)}` : " · waiting for a free slot"}</>;
+      return <>{d.total != null ? t.ui.meta.queuedSize(formatBytes(d.total)) : t.ui.meta.queuedWaiting}</>;
     case "paused":
-      return <>Paused · {amountOf(d)}</>;
+      return <>{t.ui.meta.paused(amountOf(d))}</>;
     case "completed":
       // The file is gone from where it was saved: that is what there is to say.
       if (isDeleted(d)) {
         return (
           <>
-            <span className="tone-deleted">Deleted</span> · {deletedAgo(d)}
-            {d.total != null ? ` · was ${formatBytes(d.total)}` : ""}
+            <span className="tone-deleted">{t.ui.meta.deleted}</span> · {deletedAgo(d)}
+            {d.total != null ? ` · ${t.ui.meta.was(formatBytes(d.total))}` : ""}
           </>
         );
       }
       return (
         <>
-          <span className="tone-ok">Completed</span>
+          <span className="tone-ok">{t.common.status.completed}</span>
           {d.profile ? ` · ${fileCount(d.items)}` : ""}
           {d.total != null ? ` · ${formatBytes(d.total)}` : ""}
         </>
@@ -432,7 +459,7 @@ export function RowMeta({ d }: { d: Download }) {
     case "failed":
       return (
         <>
-          <span className="tone-err">Failed</span> · {d.error ?? "Unknown error"}
+          <span className="tone-err">{t.common.status.failed}</span> · {d.error ?? t.ui.meta.unknownError}
         </>
       );
   }
@@ -499,7 +526,7 @@ export function Sparkline(props: { values: number[]; label: string; now?: string
   if (values.length < 3) {
     return (
       <div className="spark spark-empty" role="img" aria-label={label}>
-        Speed appears here while the download is running.
+        {t.ui.spark.empty}
       </div>
     );
   }
@@ -538,15 +565,15 @@ export function Sparkline(props: { values: number[]; label: string; now?: string
   const edge = (yy: number) => Math.min(bottom, Math.max(top, yy));
   const waveY = (px: number) => {
     const seg = Math.min(count - 2, Math.max(0, Math.floor(px / span)));
-    const t = Math.min(1, Math.max(0, (px - seg * span) / span));
+    const k = Math.min(1, Math.max(0, (px - seg * span) / span));
     const y0 = main[Math.max(0, seg - 1)][1];
     const y1 = main[seg][1];
     const y2 = main[seg + 1][1];
     const y3 = main[Math.min(count - 1, seg + 2)][1];
     const c1 = edge(y1 + (y2 - y0) / 6);
     const c2 = edge(y2 - (y3 - y1) / 6);
-    const u = 1 - t;
-    return u * u * u * y1 + 3 * u * u * t * c1 + 3 * u * t * t * c2 + t * t * t * y2;
+    const u = 1 - k;
+    return u * u * u * y1 + 3 * u * u * k * c1 + 3 * u * k * k * c2 + k * k * k * y2;
   };
   const bars = Array.from({ length: barCount }, (_, i) => {
     const px = ((i + 0.5) / barCount) * w;
@@ -625,7 +652,7 @@ export function Sparkline(props: { values: number[]; label: string; now?: string
             role="status"
           >
             <strong>{formatSpeed(points[shown])}</strong>
-            <small>{secondsAgo === 0 ? "now" : `about ${secondsAgo}s ago`}</small>
+            <small>{secondsAgo === 0 ? t.ui.spark.now : t.ui.spark.secondsAgo(secondsAgo)}</small>
           </span>
         )}
       </div>
@@ -710,6 +737,237 @@ export function Menu(props: { x: number; y: number; items: MenuItem[]; onClose: 
   );
 }
 
+/** One choice of a `Select`. */
+export interface SelectOption<T extends string> {
+  value: T;
+  label: string;
+  /** The language the label is written in, where it is not the app's. */
+  lang?: string;
+}
+
+/**
+ * The app's own drop-down list, in place of the system's `<select>`, whose
+ * open list cannot be styled: a field that shows the choice, and a list in
+ * the Float material under it (above it when there is no room below). It
+ * works like a select from the keyboard: arrows, Home, End, a letter to jump,
+ * Enter or Space to pick, Escape or Tab to close.
+ */
+export function Select<T extends string>(props: {
+  value: T;
+  options: SelectOption<T>[];
+  onChange: (value: T) => void;
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const listId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{ top: number; left: number; minWidth: number; maxHeight: number } | null>(null);
+  const typed = useRef({ text: "", at: 0 });
+  const chosenIndex = Math.max(
+    0,
+    props.options.findIndex((o) => o.value === props.value),
+  );
+  const chosen = props.options[chosenIndex];
+
+  function show() {
+    if (props.disabled) return;
+    setActive(chosenIndex);
+    setOpen(true);
+  }
+
+  function close(refocus = true) {
+    setOpen(false);
+    setPos(null);
+    if (refocus) trigger.current?.focus();
+  }
+
+  function pick(i: number) {
+    const option = props.options[i];
+    close();
+    if (option && option.value !== props.value) props.onChange(option.value);
+  }
+
+  // Place the list under the field, inside the window, the field's width at least.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const field = trigger.current?.getBoundingClientRect();
+    const el = list.current;
+    if (!field || !el) return;
+    const gap = 6;
+    const margin = 8;
+    const below = window.innerHeight - field.bottom - gap - margin;
+    const above = field.top - gap - margin;
+    const wanted = Math.min(el.scrollHeight, 320);
+    const down = below >= wanted || below >= above;
+    const maxHeight = Math.max(120, Math.min(320, down ? below : above));
+    const height = Math.min(wanted, maxHeight);
+    const width = Math.max(field.width, el.offsetWidth);
+    const rtl = document.documentElement.dir === "rtl";
+    const start = rtl ? field.right - width : field.left;
+    setPos({
+      top: down ? field.bottom + gap : field.top - gap - height,
+      left: Math.max(margin, Math.min(start, window.innerWidth - width - margin)),
+      minWidth: field.width,
+      maxHeight,
+    });
+  }, [open]);
+
+  // Bring the line being pointed at into view and give it the focus.
+  useEffect(() => {
+    if (!open || !pos) return;
+    const item = list.current?.querySelectorAll<HTMLElement>("[role=option]")[active];
+    item?.focus({ preventScroll: true });
+    item?.scrollIntoView({ block: "nearest" });
+  }, [open, pos, active]);
+
+  // A change of window size, or the page scrolling under it, closes the list.
+  useEffect(() => {
+    if (!open) return;
+    const shut = () => close(false);
+    const onScroll = (e: Event) => {
+      if (list.current && e.target instanceof Node && list.current.contains(e.target)) return;
+      shut();
+    };
+    window.addEventListener("resize", shut);
+    window.addEventListener("blur", shut);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("resize", shut);
+      window.removeEventListener("blur", shut);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open]);
+
+  function onTriggerKey(e: React.KeyboardEvent) {
+    if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
+      e.preventDefault();
+      show();
+    }
+  }
+
+  function onListKey(e: React.KeyboardEvent) {
+    // Keys stay here: Escape closes the list, not the dialog it is in.
+    e.stopPropagation();
+    const last = props.options.length - 1;
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        setActive((i) => Math.min(last, i + 1));
+        return;
+      case "ArrowUp":
+        e.preventDefault();
+        setActive((i) => Math.max(0, i - 1));
+        return;
+      case "Home":
+        e.preventDefault();
+        setActive(0);
+        return;
+      case "End":
+        e.preventDefault();
+        setActive(last);
+        return;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        pick(active);
+        return;
+      case "Escape":
+      case "Tab":
+        e.preventDefault();
+        close();
+        return;
+    }
+    // A letter jumps to the next choice starting with what was typed.
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const now = Date.now();
+      const text = (now - typed.current.at < 700 ? typed.current.text : "") + e.key.toLowerCase();
+      typed.current = { text, at: now };
+      const from = text.length === 1 ? active + 1 : active;
+      for (let k = 0; k <= last; k++) {
+        const i = (from + k) % (last + 1);
+        if (props.options[i].label.toLowerCase().startsWith(text)) {
+          setActive(i);
+          break;
+        }
+      }
+    }
+  }
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        className={`select-btn${props.className ? ` ${props.className}` : ""}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-label={props["aria-label"]}
+        aria-labelledby={props["aria-labelledby"]}
+        disabled={props.disabled}
+        onClick={() => (open ? close() : show())}
+        onKeyDown={onTriggerKey}
+      >
+        <span className="select-value" lang={chosen?.lang}>
+          {chosen?.label}
+        </span>
+        <ChevronDown className="select-chevron" size={15} strokeWidth={2} aria-hidden="true" />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            className="menu-layer"
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              close(false);
+            }}
+          >
+            <div
+              ref={list}
+              id={listId}
+              className="menu select-list"
+              role="listbox"
+              aria-label={props["aria-label"]}
+              aria-labelledby={props["aria-labelledby"]}
+              style={
+                pos
+                  ? { top: pos.top, left: pos.left, minWidth: pos.minWidth, maxHeight: pos.maxHeight }
+                  : { visibility: "hidden", top: 0, left: 0 }
+              }
+              onMouseDown={(e) => e.stopPropagation()}
+              onKeyDown={onListKey}
+            >
+              {props.options.map((option, i) => {
+                const selected = option.value === props.value;
+                return (
+                  <div
+                    key={option.value}
+                    role="option"
+                    tabIndex={-1}
+                    aria-selected={selected}
+                    lang={option.lang}
+                    className={`select-option${selected ? " is-checked" : ""}${i === active ? " is-active" : ""}`}
+                    onMouseEnter={() => setActive(i)}
+                    onClick={() => pick(i)}
+                  >
+                    <span>{option.label}</span>
+                    {selected && <Check size={15} strokeWidth={2.25} aria-hidden="true" />}
+                  </div>
+                );
+              })}
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
 /** Pill button that opens a list of choices under itself. */
 export function Dropdown<T extends string>(props: {
   label: string;
@@ -757,35 +1015,35 @@ export function Dropdown<T extends string>(props: {
 /** Every action that applies to one download, in menu order. */
 export function downloadMenu(d: Download, a: Actions): MenuItem[] {
   const items: MenuItem[] = [];
-  if (canPause(d)) items.push({ label: "Pause", icon: Pause, onSelect: () => a.pause([d.id]) });
-  if (d.status === "paused") items.push({ label: "Resume", icon: Play, onSelect: () => a.resume([d.id]) });
-  if (d.status === "failed") items.push({ label: "Retry", icon: RotateCw, onSelect: () => a.resume([d.id]) });
+  if (canPause(d)) items.push({ label: t.ui.menu.pause, icon: Pause, onSelect: () => a.pause([d.id]) });
+  if (d.status === "paused") items.push({ label: t.ui.menu.resume, icon: Play, onSelect: () => a.resume([d.id]) });
+  if (d.status === "failed") items.push({ label: t.ui.menu.retry, icon: RotateCw, onSelect: () => a.resume([d.id]) });
   if (d.status === "failed" && d.media && !d.profile && /^https?:/i.test(d.url)) {
-    items.push({ label: "Open on Browser page", icon: Globe, onSelect: () => a.browse(d.url) });
-    items.push({ label: "Find media on this page", icon: ScanSearch, onSelect: () => a.scan(d.url) });
+    items.push({ label: t.ui.menu.openOnBrowser, icon: Globe, onSelect: () => a.browse(d.url) });
+    items.push({ label: t.ui.menu.findMedia, icon: ScanSearch, onSelect: () => a.scan(d.url) });
   }
   // A file that is gone cannot be opened, shown or deleted; it can be fetched again.
   const gone = isDeleted(d);
   if (gone && /^(https?|magnet):/i.test(d.url)) {
-    items.push({ label: "Download again", icon: RotateCw, onSelect: () => a.again(d) });
+    items.push({ label: t.ui.menu.downloadAgain, icon: RotateCw, onSelect: () => a.again(d) });
   }
   if (d.status === "completed" && !gone) {
-    items.push({ label: "Open file", icon: SquareArrowOutUpRight, onSelect: () => a.open(d) });
-    items.push({ label: "Show in folder", icon: FolderOpen, onSelect: () => a.reveal(d) });
+    items.push({ label: t.ui.menu.openFile, icon: SquareArrowOutUpRight, onSelect: () => a.open(d) });
+    items.push({ label: t.ui.menu.showInFolder, icon: FolderOpen, onSelect: () => a.reveal(d) });
   }
   items.push("separator");
-  items.push({ label: "Copy link", icon: LinkGlyph, onSelect: () => a.copy(d.url, "Link") });
+  items.push({ label: t.ui.menu.copyLink, icon: LinkGlyph, onSelect: () => a.copy(d.url, t.ui.copyWhat.link) });
   if (d.status === "completed" && !gone) {
-    items.push({ label: "Copy file path", icon: Copy, onSelect: () => a.copy(d.path, "File path") });
+    items.push({ label: t.ui.menu.copyPath, icon: Copy, onSelect: () => a.copy(d.path, t.ui.copyWhat.path) });
   }
   items.push("separator");
   items.push({
-    label: gone ? "Remove from history" : d.status === "completed" ? "Remove from list" : "Cancel and remove",
+    label: gone ? t.ui.menu.removeFromHistory : d.status === "completed" ? t.ui.menu.removeFromList : t.ui.menu.cancelAndRemove,
     icon: X,
     onSelect: () => a.remove([d.id]),
   });
   if (d.status === "completed" && !gone) {
-    items.push({ label: "Delete file from disk", icon: Trash2, danger: true, onSelect: () => a.deleteFile(d) });
+    items.push({ label: t.ui.menu.deleteFile, icon: Trash2, danger: true, onSelect: () => a.deleteFile(d) });
   }
   return items;
 }
@@ -802,8 +1060,8 @@ function RowAction({ d }: { d: Download }) {
       <button
         type="button"
         className="round round-deleted"
-        title={again ? "Deleted. Download again" : "Deleted"}
-        aria-label={again ? "Deleted. Download again" : "Deleted"}
+        title={again ? t.ui.row.deletedAgain : t.ui.row.deleted}
+        aria-label={again ? t.ui.row.deletedAgain : t.ui.row.deleted}
         disabled={!again}
         onClick={() => actions.again(d)}
       >
@@ -813,27 +1071,27 @@ function RowAction({ d }: { d: Download }) {
   }
   if (d.status === "completed") {
     return (
-      <button type="button" className="round round-ok" title="Open file" aria-label="Completed. Open file" onClick={() => actions.open(d)}>
+      <button type="button" className="round round-ok" title={t.ui.row.openFile} aria-label={t.ui.row.completedOpen} onClick={() => actions.open(d)}>
         <Check size={15} strokeWidth={3} aria-hidden="true" />
       </button>
     );
   }
   if (d.status === "failed") {
     return (
-      <button type="button" className="round round-err" title="Retry" aria-label="Failed. Retry" onClick={() => actions.resume([d.id])}>
+      <button type="button" className="round round-err" title={t.ui.row.retry} aria-label={t.ui.row.failedRetry} onClick={() => actions.resume([d.id])}>
         <span aria-hidden="true">!</span>
       </button>
     );
   }
   if (d.status === "paused") {
     return (
-      <button type="button" className="round" title="Resume" aria-label="Resume" onClick={() => actions.resume([d.id])}>
+      <button type="button" className="round" title={t.ui.row.resume} aria-label={t.ui.row.resume} onClick={() => actions.resume([d.id])}>
         <Play size={15} strokeWidth={0} fill="currentColor" aria-hidden="true" />
       </button>
     );
   }
   return (
-    <button type="button" className="round" title="Pause" aria-label="Pause" onClick={() => actions.pause([d.id])}>
+    <button type="button" className="round" title={t.ui.row.pause} aria-label={t.ui.row.pause} onClick={() => actions.pause([d.id])}>
       <Pause size={15} strokeWidth={0} fill="currentColor" aria-hidden="true" />
     </button>
   );
@@ -874,7 +1132,7 @@ export function DownloadRow(props: {
         <RowAction d={d} />
         <IconBtn
           icon={Ellipsis}
-          label="More actions"
+          label={t.ui.row.more}
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
             props.onMenu(r.right - 210, r.bottom + 4);
@@ -896,15 +1154,15 @@ export interface Toast {
 export function Toasts(props: { toasts: Toast[]; dismiss: (id: number) => void }) {
   return (
     <div className="toasts" aria-live="polite">
-      {props.toasts.map((t) => (
-        <div key={t.id} className={`toast toast-${t.tone}`} role={t.tone === "error" ? "alert" : "status"}>
-          {t.tone === "error" ? (
+      {props.toasts.map((item) => (
+        <div key={item.id} className={`toast toast-${item.tone}`} role={item.tone === "error" ? "alert" : "status"}>
+          {item.tone === "error" ? (
             <CircleAlert size={17} strokeWidth={2} aria-hidden="true" />
           ) : (
             <CircleCheck size={17} strokeWidth={2} aria-hidden="true" />
           )}
-          <span>{t.message}</span>
-          <IconBtn icon={X} label="Dismiss" onClick={() => props.dismiss(t.id)} />
+          <span>{item.message}</span>
+          <IconBtn icon={X} label={t.ui.dismiss} onClick={() => props.dismiss(item.id)} />
         </div>
       ))}
     </div>
@@ -978,7 +1236,7 @@ export function Modal(props: {
             {!props.bare && <h2>{props.title}</h2>}
             {props.subtitle && <p title={props.subtitle}>{props.subtitle}</p>}
           </div>
-          <IconBtn icon={X} label="Close" onClick={props.onClose} />
+          <IconBtn icon={X} label={t.ui.close} onClick={props.onClose} />
         </div>
         <div className="dialog-body">{props.children}</div>
         {props.footer && <div className="dialog-foot">{props.footer}</div>}

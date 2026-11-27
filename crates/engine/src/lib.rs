@@ -11,6 +11,8 @@ mod probe;
 mod profile;
 mod scan;
 mod torrent;
+mod torrent_split;
+mod webseed;
 mod task;
 
 use std::path::{Path, PathBuf};
@@ -62,6 +64,10 @@ pub struct Settings {
     /// the network's own resolver. On unless the user turns it off.
     #[serde(default = "on")]
     pub secure_dns: bool,
+    /// Download each file of a torrent of several files on a torrent engine
+    /// of its own, side by side, instead of the whole torrent on one.
+    #[serde(default = "on")]
+    pub torrent_files_apart: bool,
 }
 
 fn on() -> bool {
@@ -80,6 +86,7 @@ impl Settings {
             speed_limit: 0,
             cookies_browser: None,
             secure_dns: true,
+            torrent_files_apart: true,
         }
     }
 
@@ -173,6 +180,9 @@ pub struct TaskInfo {
     /// When a finished download's file was found to be gone, in seconds
     /// since 1970; `None` while it is where it was saved.
     pub deleted_at: Option<u64>,
+    /// While what is already on disk is being checked before the download
+    /// carries on: how many bytes of `total` have been checked.
+    pub checking: Option<u64>,
 }
 
 /// One video or file of a profile or playlist download, for display.
@@ -194,6 +204,43 @@ pub struct ItemInfo {
     pub channel: Option<String>,
     /// Its own page on the site.
     pub url: Option<String>,
+    /// How much of it is downloaded, while it is not finished, for the
+    /// files of a torrent, which all download at once; `size` is then its
+    /// full size.
+    #[serde(default)]
+    pub downloaded: Option<u64>,
+    /// For a torrent's file on an engine of its own: its peers and speeds.
+    #[serde(default)]
+    pub net: Option<FileNet>,
+}
+
+/// One file of a torrent and how much of it is downloaded. Kept with the
+/// download, so a paused or finished torrent still lists its files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TorrentFileProgress {
+    /// Where it goes inside the torrent's folder: folders, then its name.
+    pub path: Vec<String>,
+    pub len: u64,
+    pub done: u64,
+    /// Its own engine's peers and speeds, while it downloads on one (see
+    /// torrent_split.rs).
+    #[serde(default, skip_serializing)]
+    pub net: Option<FileNet>,
+}
+
+/// How one file's own torrent engine is doing: whom it is connected to and
+/// how fast data moves, to see where a torrent's speed goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileNet {
+    /// Peers it is connected to and exchanging with.
+    pub peers: u32,
+    /// Of those, the ones that have the whole torrent.
+    pub seeders: u32,
+    /// Peers it has heard of, connected or not.
+    pub found: u32,
+    /// Bytes per second coming in, and going out to other peers.
+    pub down: u64,
+    pub up: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +331,9 @@ pub(crate) struct Record {
     /// program fetches it. Kept, so a resumed download fetches it the same way.
     #[serde(default)]
     pub collection: Option<profile::ProfileRef>,
+    /// The files of a torrent (only those chosen), with how far each is.
+    #[serde(default)]
+    pub files: Vec<TorrentFileProgress>,
 }
 
 struct Entry {
@@ -291,6 +341,8 @@ struct Entry {
     live: Option<Arc<Live>>,
     speed: f64,
     last_bytes: u64,
+    /// Network bytes counted at the last tick; each run counts from zero.
+    last_received: u64,
 }
 
 impl Entry {
@@ -300,6 +352,12 @@ impl Entry {
             self.rec.downloaded = live.downloaded.load(Relaxed);
             if self.rec.profile {
                 self.rec.items = live.items.load(Relaxed);
+            }
+            if self.rec.torrent {
+                let files = live.files.lock().unwrap();
+                if !files.is_empty() {
+                    self.rec.files = files.clone();
+                }
             }
             let hint = live.total_hint.load(Relaxed);
             if hint > 0 {
@@ -338,6 +396,11 @@ impl Entry {
             current: self.live.as_ref().and_then(|l| l.current.lock().unwrap().clone()),
             thumbnail: r.thumbnail.clone(),
             deleted_at: r.deleted_at,
+            checking: self
+                .live
+                .as_ref()
+                .filter(|l| l.checking.load(Relaxed))
+                .map(|l| l.checked.load(Relaxed)),
         }
     }
 }
@@ -406,6 +469,7 @@ impl Engine {
                             live: None,
                             speed: 0.0,
                             last_bytes: 0,
+                            last_received: 0,
                         }
                     })
                     .collect();
@@ -676,12 +740,14 @@ impl Engine {
                 thumbnail: None,
                 deleted_at: None,
                 collection: profile.clone().filter(|p| p.by.is_some()),
+                files: Vec::new(),
             };
             st.entries.push(Entry {
                 rec,
                 live: None,
                 speed: 0.0,
                 last_bytes: 0,
+                last_received: 0,
             });
             id
         };
@@ -1006,6 +1072,9 @@ impl Inner {
     /// remembered: a file that has since been deleted is still listed, as
     /// deleted.
     fn items(&self, id: u64) -> Vec<ItemInfo> {
+        if let Some(files) = self.torrent_items(id) {
+            return files;
+        }
         let (folder, current, finished) = {
             let st = self.state.lock().unwrap();
             let Some(e) = st.entries.iter().find(|e| e.rec.id == id && e.rec.profile) else {
@@ -1035,6 +1104,8 @@ impl Inner {
                         duration: None,
                         channel: None,
                         url: None,
+                        downloaded: None,
+                        net: None,
                     });
                 }
                 items
@@ -1044,6 +1115,23 @@ impl Inner {
             items = with_remembered(items, self.remembered_items(id));
         }
         items
+    }
+
+    /// The files of a torrent download, each with how much of it is
+    /// downloaded; `None` for any other download.
+    fn torrent_items(&self, id: u64) -> Option<Vec<ItemInfo>> {
+        let st = self.state.lock().unwrap();
+        let e = st.entries.iter().find(|e| e.rec.id == id && e.rec.torrent)?;
+        let running = e.live.is_some();
+        let files = match &e.live {
+            Some(live) => {
+                let files = live.files.lock().unwrap();
+                if files.is_empty() { e.rec.files.clone() } else { files.clone() }
+            }
+            None => e.rec.files.clone(),
+        };
+        let folder = e.rec.dir.join(&e.rec.filename);
+        Some(torrent_files_as_items(&files, &folder, running))
     }
 
     /// Where the list of what a finished profile or playlist download
@@ -1158,6 +1246,7 @@ impl Inner {
                 e.live = Some(live.clone());
                 e.speed = 0.0;
                 e.last_bytes = e.rec.downloaded;
+                e.last_received = 0;
                 running += 1;
                 started = true;
                 let inner = self.clone();
@@ -1235,9 +1324,16 @@ async fn ticker(inner: Weak<Inner>) {
             for e in st.entries.iter_mut() {
                 let Some(live) = &e.live else { continue };
                 active = true;
-                let bytes = live.downloaded.load(Relaxed);
-                let inst = bytes.saturating_sub(e.last_bytes) as f64 * 2.0;
-                e.last_bytes = bytes;
+                // Bytes as they arrive where the download counts them (a
+                // torrent, whose progress only grows a whole piece at a
+                // time); otherwise what has been written.
+                let (bytes, last) = if live.counts_received.load(Relaxed) {
+                    (live.received.load(Relaxed), &mut e.last_received)
+                } else {
+                    (live.downloaded.load(Relaxed), &mut e.last_bytes)
+                };
+                let inst = bytes.saturating_sub(*last) as f64 * 2.0;
+                *last = bytes;
                 e.speed = if e.speed == 0.0 {
                     inst
                 } else {
@@ -1259,6 +1355,64 @@ async fn ticker(inner: Weak<Inner>) {
     }
 }
 
+/// A torrent's files as items: finished ones as done; while the torrent
+/// runs, one with some of it in as downloading; the rest as waiting.
+fn torrent_files_as_items(files: &[TorrentFileProgress], folder: &Path, running: bool) -> Vec<ItemInfo> {
+    files
+        .iter()
+        .map(|f| {
+            let done = f.len > 0 && f.done >= f.len;
+            let name = f.path.last().cloned().unwrap_or_default();
+            ItemInfo {
+                title: f.path.join("/"),
+                state: if done {
+                    ItemState::Done
+                } else if running && f.done > 0 {
+                    ItemState::Downloading
+                } else {
+                    ItemState::Waiting
+                },
+                size: Some(f.len),
+                file: done.then(|| name.clone()),
+                path: done.then(|| f.path.iter().fold(folder.to_path_buf(), |p, part| p.join(part))),
+                thumbnail: None,
+                duration: None,
+                channel: None,
+                url: None,
+                downloaded: (!done).then_some(f.done.min(f.len)),
+                net: if running && !done { f.net } else { None },
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod torrent_item_tests {
+    use super::*;
+
+    fn file(path: &[&str], len: u64, done: u64) -> TorrentFileProgress {
+        TorrentFileProgress { path: path.iter().map(|p| p.to_string()).collect(), len, done, net: None }
+    }
+
+    #[test]
+    fn each_file_shows_how_far_it_is() {
+        let files = [file(&["a.mkv"], 100, 100), file(&["extras", "b.srt"], 50, 20), file(&["c.txt"], 10, 0)];
+        let items = torrent_files_as_items(&files, Path::new("folder"), true);
+        assert_eq!(items[0].state, ItemState::Done);
+        assert_eq!(items[0].downloaded, None);
+        assert_eq!(items[0].path, Some(PathBuf::from("folder").join("a.mkv")));
+        assert_eq!(items[1].title, "extras/b.srt");
+        assert_eq!(items[1].state, ItemState::Downloading);
+        assert_eq!(items[1].downloaded, Some(20));
+        assert_eq!(items[1].size, Some(50));
+        // nothing of it in yet
+        assert_eq!(items[2].state, ItemState::Waiting);
+        let paused = torrent_files_as_items(&files, Path::new("folder"), false);
+        assert_eq!(paused[1].state, ItemState::Waiting);
+        assert_eq!(paused[0].state, ItemState::Done);
+    }
+}
+
 #[cfg(test)]
 mod history_tests {
     use super::*;
@@ -1274,6 +1428,8 @@ mod history_tests {
             duration: None,
             channel: None,
             url: None,
+            downloaded: None,
+            net: None,
         }
     }
 

@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "RushDownload",
+  "version": "0.1.0",
+  "description": "Finds the videos on a page and sends them to the RushDownload app on this computer.",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "webRequest", "storage", "contextMenus"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Send videos to RushDownload",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "32": "icons/32.png",
+      "64": "icons/64.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "32": "icons/32.png",
+    "64": "icons/64.png",
+    "128": "icons/128.png"
+  }
+}

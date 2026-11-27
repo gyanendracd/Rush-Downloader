@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { dateText, isRtl, num, t } from "./i18n";
 
 /** False when the interface is opened in a plain browser for development. */
 export const isTauri = "__TAURI_INTERNALS__" in window;
@@ -62,6 +64,9 @@ export interface Download {
    *  away outside the app), in seconds since 1970; null while it is there. */
   deleted_at: number | null;
   created_at: number;
+  /** While what is already on disk is being checked before the download
+   *  carries on (a resumed torrent): bytes of `total` checked so far. */
+  checking?: number | null;
   /** [start, position, end] per segment */
   segments: [number, number, number][];
 }
@@ -98,6 +103,22 @@ export interface DownloadItem {
   channel: string | null;
   /** Its own page on the site. */
   url: string | null;
+  /** For a file of a torrent that is not finished: how much of it is in;
+   *  `size` is then its full size. */
+  downloaded?: number | null;
+  /** For a torrent's file on an engine of its own: its peers and speeds. */
+  net?: FileNet | null;
+}
+
+/** How one file's own torrent engine is doing. */
+export interface FileNet {
+  /** Peers connected; of those, the ones with the whole torrent; peers heard of. */
+  peers: number;
+  seeders: number;
+  found: number;
+  /** Bytes per second in, and out to other peers. */
+  down: number;
+  up: number;
 }
 
 /** What to take from a video page; ignored for direct file links. */
@@ -164,6 +185,20 @@ export interface Settings {
   cookies_browser: string | null;
   /** Look site names up at Cloudflare (1.1.1.1) instead of the network's own resolver. */
   secure_dns: boolean;
+  /** Download each file of a torrent of several files on its own, side by side. */
+  torrent_files_apart: boolean;
+}
+
+/** How the app sits on the desktop (src-tauri/src/shell.rs). */
+export interface AppPrefs {
+  /** Start when the user signs in to the computer. */
+  start_with_system: boolean;
+  /** Closing the window leaves the app running in the tray. */
+  close_to_tray: boolean;
+  /** A system notification when a download finishes or fails. */
+  notifications: boolean;
+  /** Draw the window with the graphics card; read when the app starts. */
+  hardware_acceleration: boolean;
 }
 
 export const COOKIE_BROWSERS: { value: string; label: string }[] = [
@@ -358,6 +393,16 @@ export const api = {
   openDownloadDir: () => invoke<void>("open_download_dir"),
   tools: () => invoke<ToolStatus>("tool_status"),
   getSettings: () => invoke<Settings>("get_settings"),
+  getAppPrefs: () => invoke<AppPrefs>("get_app_prefs"),
+  setAppPrefs: (prefs: AppPrefs) => invoke<void>("set_app_prefs", { prefs }),
+  /** The tray menu's two lines, in the interface's language. */
+  setTrayText: (show: string, quit: string) => invoke<void>("set_tray_text", { show, quit }),
+  /** A system notification; asks for permission the first time. */
+  notify: async (title: string, body: string): Promise<void> => {
+    let allowed = await isPermissionGranted();
+    if (!allowed) allowed = (await requestPermission()) === "granted";
+    if (allowed) sendNotification({ title, body });
+  },
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),
   /** Shows a site's sign-in page inside the window, over the given area. */
   signinOpen: (url: string, area: Area, browse = false) =>
@@ -394,11 +439,15 @@ export const api = {
   onClipboardLink: (cb: (link: string) => void) => listen<string>("clipboard-link", (e) => cb(e.payload)),
   /** Turns picking up copied links on or off. */
   setClipboardWatch: (on: boolean) => invoke<void>("set_clipboard_watch", { on }),
+  /** Calls back with a page link sent from the browser extension, for the app to look up. */
+  onExtensionLink: (cb: (link: string) => void) => listen<string>("extension-link", (e) => cb(e.payload)),
+  /** Calls back with how many downloads the browser extension just started. */
+  onExtensionAdded: (cb: (count: number) => void) => listen<number>("extension-added", (e) => cb(e.payload)),
   /** Picks a cookies file exported from a browser; null when cancelled. */
   pickCookiesFile: async (): Promise<string | null> => {
     const picked = await openDialog({
       multiple: false,
-      filters: [{ name: "Cookies file", extensions: ["txt"] }],
+      filters: [{ name: t.common.fileFilters.cookies, extensions: ["txt"] }],
     });
     return typeof picked === "string" ? picked : null;
   },
@@ -413,8 +462,8 @@ export const api = {
     const picked = await openDialog({
       multiple: false,
       filters: [
-        { name: "Torrents and link lists", extensions: ["torrent", "txt", "csv", "list", "md", "html"] },
-        { name: "Torrent files", extensions: ["torrent"] },
+        { name: t.common.fileFilters.linkLists, extensions: ["torrent", "txt", "csv", "list", "md", "html"] },
+        { name: t.common.fileFilters.torrents, extensions: ["torrent"] },
       ],
     });
     return typeof picked === "string" ? picked : null;
@@ -432,32 +481,54 @@ export const api = {
 
 /* ---------- formatting ---------- */
 
-const UNITS = ["B", "KB", "MB", "GB", "TB"];
-
 export function formatBytes(n: number): string {
+  const units = t.common.units;
   let i = 0;
-  while (n >= 1024 && i < UNITS.length - 1) {
+  while (n >= 1024 && i < units.length - 1) {
     n /= 1024;
     i++;
   }
-  return `${i === 0 ? Math.round(n) : n.toFixed(n >= 100 ? 0 : 1)} ${UNITS[i]}`;
+  return isolate(`${i === 0 ? num(Math.round(n)) : num(n, n >= 100 ? 0 : 1)} ${units[i]}`);
 }
 
 export function formatSpeed(n: number): string {
-  return `${formatBytes(n)}/s`;
+  return isolate(t.common.perSecond(formatBytes(n)));
+}
+
+/** In right-to-left text, keeps a size such as "12 MB" in one piece, read
+ *  left to right, instead of letting its number and unit trade places. */
+const FSI = String.fromCharCode(0x2068); // first strong isolate
+const PDI = String.fromCharCode(0x2069); // pop directional isolate
+
+function isolate(text: string): string {
+  return isRtl() ? FSI + text + PDI : text;
 }
 
 export function formatEta(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return "";
-  const s = Math.ceil(seconds);
-  if (s < 60) return `${s}s left`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s left`;
-  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m left`;
+  // Years, days, hours, minutes and seconds, starting at the largest one
+  // there is: "45s left", "3h 0m 12s left", "1y 20d 4h 5m 6s left".
+  let rest = Math.ceil(seconds);
+  const parts: string[] = [];
+  for (const [unit, size] of ETA_UNITS) {
+    const count = Math.floor(rest / size);
+    rest -= count * size;
+    if (count > 0 || parts.length > 0 || unit === "s") parts.push(t.common.eta[unit](count));
+  }
+  return t.common.eta.left(parts.join(t.common.eta.join));
 }
 
+const ETA_UNITS: ["y" | "d" | "h" | "m" | "s", number][] = [
+  ["y", 365 * 86400],
+  ["d", 86400],
+  ["h", 3600],
+  ["m", 60],
+  ["s", 1],
+];
+
 export function formatDate(unixSeconds: number): string {
-  if (!unixSeconds) return "Unknown";
-  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
+  if (!unixSeconds) return t.common.unknownDate;
+  return dateText(new Date(unixSeconds * 1000), {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -482,6 +553,19 @@ export function percentOf(d: Download): number | null {
   return Math.min(100, Math.floor((d.downloaded / d.total) * 100));
 }
 
+/** How far the check of what is already downloaded has got, 0 to 100, or
+ *  null when nothing is being checked. */
+export function checkPercent(d: Download): number | null {
+  if (d.checking == null) return null;
+  return d.total ? Math.min(100, Math.floor((d.checking / d.total) * 100)) : 0;
+}
+
+/** "Checking downloaded data · 42%" while that happens, else null. */
+export function checkingText(d: Download): string | null {
+  const pct = checkPercent(d);
+  return pct == null ? null : t.common.checking(pct);
+}
+
 export function etaOf(d: Download): string {
   if (d.status !== "downloading" || !d.total || d.speed <= 0) return "";
   return formatEta((d.total - d.downloaded) / d.speed);
@@ -489,13 +573,26 @@ export function etaOf(d: Download): string {
 
 /* ---------- status ---------- */
 
-export const STATUS_LABEL: Record<Status, string> = {
-  queued: "Queued",
-  connecting: "Connecting",
-  downloading: "Downloading",
-  paused: "Paused",
-  completed: "Completed",
-  failed: "Failed",
+/** Each status in the language switched on now (read when used). */
+export const STATUS_LABEL: Readonly<Record<Status, string>> = {
+  get queued() {
+    return t.common.status.queued;
+  },
+  get connecting() {
+    return t.common.status.connecting;
+  },
+  get downloading() {
+    return t.common.status.downloading;
+  },
+  get paused() {
+    return t.common.status.paused;
+  },
+  get completed() {
+    return t.common.status.completed;
+  },
+  get failed() {
+    return t.common.status.failed;
+  },
 };
 
 /** A finished download whose file is no longer where it was saved. */
@@ -515,7 +612,8 @@ export function onDownloadsPage(d: Download, now = Date.now()): boolean {
 /** "today", "yesterday", "3 days ago": how long ago a file was found deleted. */
 export function deletedAgo(d: Download, now = Date.now()): string {
   const days = Math.floor((now / 1000 - (d.deleted_at ?? 0)) / 86400);
-  return days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+  const ago = t.common.deletedAgo;
+  return days <= 0 ? ago.today : days === 1 ? ago.yesterday : ago.days(days);
 }
 
 export const isRunning = (d: Download) =>
@@ -534,15 +632,15 @@ export type Category =
   | "software"
   | "other";
 
-export const CATEGORIES: { id: Category; label: string }[] = [
-  { id: "video", label: "Videos" },
-  { id: "audio", label: "Music" },
-  { id: "image", label: "Images" },
-  { id: "document", label: "Documents" },
-  { id: "archive", label: "Archives" },
-  { id: "software", label: "Software" },
-  { id: "other", label: "Other" },
-];
+/** The categories in order; each `label` is read in the language switched on now. */
+export const CATEGORIES: readonly { readonly id: Category; readonly label: string }[] = (
+  ["video", "audio", "image", "document", "archive", "software", "other"] as const
+).map((id) => ({
+  id,
+  get label() {
+    return t.common.category[id];
+  },
+}));
 
 const EXTENSIONS: Record<Exclude<Category, "other">, string[]> = {
   video: ["mp4", "mkv", "avi", "mov", "webm", "m4v", "flv", "wmv", "mpg", "mpeg", "3gp", "ts"],
@@ -567,14 +665,29 @@ export function categoryOf(d: Download): Category {
 
 /* ---------- media quality ---------- */
 
-export const QUALITIES: { value: string; label: string; options: MediaOptions }[] = [
-  { value: "best", label: "Best quality", options: { max_height: null, audio_only: false } },
+/** The qualities on offer; each `label` is read in the language switched on now. */
+export const QUALITIES: readonly { readonly value: string; readonly label: string; readonly options: MediaOptions }[] = [
+  {
+    value: "best",
+    get label() {
+      return t.common.quality.best;
+    },
+    options: { max_height: null, audio_only: false },
+  },
   ...[2160, 1440, 1080, 720, 480, 360].map((h) => ({
     value: String(h),
-    label: h === 2160 ? "2160p (4K)" : `${h}p`,
+    get label() {
+      return h === 2160 ? t.common.quality.fourK(String(h)) : t.common.quality.height(String(h));
+    },
     options: { max_height: h, audio_only: false },
   })),
-  { value: "audio", label: "Audio only (MP3)", options: { max_height: null, audio_only: true } },
+  {
+    value: "audio",
+    get label() {
+      return t.common.quality.audio;
+    },
+    options: { max_height: null, audio_only: true },
+  },
 ];
 
 export function qualityOptions(value: string): MediaOptions {

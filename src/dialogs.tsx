@@ -14,7 +14,8 @@ import {
   type TorrentFile,
   type TorrentPreview,
 } from "./api";
-import { FileIcon, Modal, StatusText, useApp } from "./ui";
+import { FileIcon, Modal, StatusText, useApp, Select } from "./ui";
+import { t } from "./i18n";
 
 /* ---------- add download ---------- */
 
@@ -77,15 +78,15 @@ export function AddDialog(props: {
 
   return (
     <Modal
-      title={scanMode ? "Add from a web page" : "Add download"}
+      title={scanMode ? t.dialogs.add.scanTitle : t.dialogs.add.title}
       onClose={props.onClose}
       footer={
         scanMode ? (
           <>
             <span className="spacer" />
-            <button type="button" className="btn" onClick={props.onClose}>Cancel</button>
+            <button type="button" className="btn" onClick={props.onClose}>{t.dialogs.cancel}</button>
             <button type="submit" form="add-form" className="btn btn-primary" disabled={!valid}>
-              Find media
+              {t.dialogs.add.findMedia}
             </button>
           </>
         ) : (
@@ -94,18 +95,18 @@ export function AddDialog(props: {
             type="button"
             className="btn"
             disabled={!valid}
-            title="List the video, audio and stream links found on this page"
+            title={t.dialogs.add.scanPageHint}
             onClick={() => {
               props.onClose();
               actions.scan(url.trim());
             }}
           >
-            Scan page for media
+            {t.dialogs.add.scanPage}
           </button>
           <span className="spacer" />
-          <button type="button" className="btn" onClick={props.onClose}>Cancel</button>
+          <button type="button" className="btn" onClick={props.onClose}>{t.dialogs.cancel}</button>
           <button type="submit" form="add-form" className="btn btn-primary" disabled={!valid || busy}>
-            Download
+            {t.dialogs.download}
           </button>
         </>
         )
@@ -113,7 +114,7 @@ export function AddDialog(props: {
     >
       <form id="add-form" className="form" onSubmit={submit}>
         <label className="field">
-          <span>{scanMode ? "Page link" : "Link"}</span>
+          <span>{scanMode ? t.dialogs.add.pageLink : t.dialogs.add.link}</span>
           <input
             data-autofocus
             type="text"
@@ -128,7 +129,7 @@ export function AddDialog(props: {
           />
           {url.trim() !== "" && !valid && (
             <small className="field-error">
-              Enter a full link: one starting with http:// or https://, or a magnet link
+              {t.dialogs.add.invalidLink}
             </small>
           )}
           {error && <small className="field-error">{error}</small>}
@@ -136,20 +137,20 @@ export function AddDialog(props: {
 
         {scanMode && (
           <small className="form-note">
-            Paste the address of a page from your browser. Every video, audio and stream link in
-            it is listed so you can pick what to download.
+            {t.dialogs.add.scanNote}
           </small>
         )}
         {!scanMode && (
         <>
         <label className="field">
-          <span>Quality for video pages</span>
-          <select value={props.quality} onChange={(e) => props.onQuality(e.target.value)}>
-            {QUALITIES.map((q) => (
-              <option key={q.value} value={q.value}>{q.label}</option>
-            ))}
-          </select>
-          <small>Applies to site links such as YouTube. Direct file links ignore it.</small>
+          <span>{t.dialogs.add.quality}</span>
+          <Select
+            aria-label={t.dialogs.add.quality}
+            value={props.quality}
+            onChange={props.onQuality}
+            options={QUALITIES.map((q) => ({ value: q.value, label: q.label }))}
+          />
+          <small>{t.dialogs.add.qualityHint}</small>
         </label>
 
         <button
@@ -159,23 +160,23 @@ export function AddDialog(props: {
           onClick={() => setAdvanced((v) => !v)}
         >
           {advanced ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
-          More options
+          {t.dialogs.add.moreOptions}
         </button>
 
         {advanced && (
           <>
             <label className="field">
-              <span>File name</span>
+              <span>{t.dialogs.add.fileName}</span>
               <input
                 type="text"
                 value={filename}
                 onChange={(e) => setFilename(e.target.value)}
-                placeholder="Use the name the server gives"
+                placeholder={t.dialogs.add.fileNamePlaceholder}
                 spellCheck={false}
               />
             </label>
             <div className="field">
-              <span id="add-dir-label">Save to</span>
+              <span id="add-dir-label">{t.dialogs.saveTo}</span>
               <div className="field-row">
                 <input
                   type="text"
@@ -183,11 +184,11 @@ export function AddDialog(props: {
                   aria-labelledby="add-dir-label"
                   value={dir || settings?.download_dir || ""}
                 />
-                <button type="button" className="btn" onClick={browse}>Browse</button>
+                <button type="button" className="btn" onClick={browse}>{t.dialogs.browse}</button>
               </div>
             </div>
             <label className="field field-narrow">
-              <span>Connections</span>
+              <span>{t.dialogs.add.connections}</span>
               <input
                 type="number"
                 min={1}
@@ -196,7 +197,7 @@ export function AddDialog(props: {
                 onChange={(e) => setConnections(e.target.value)}
                 placeholder={String(settings?.connections ?? 16)}
               />
-              <small>1 to 32. More helps only when the server allows it.</small>
+              <small>{t.dialogs.add.connectionsHint}</small>
             </label>
           </>
         )}
@@ -208,13 +209,6 @@ export function AddDialog(props: {
 }
 
 /* ---------- scan a page for media ---------- */
-
-const KIND_LABEL: Record<Found["kind"], string> = {
-  video: "Video",
-  stream: "Stream",
-  audio: "Audio",
-  embed: "Player",
-};
 
 export function ScanDialog(props: { url: string; media: MediaOptions; onClose: () => void }) {
   const [found, setFound] = useState<Found[] | null>(null);
@@ -251,13 +245,13 @@ export function ScanDialog(props: { url: string; media: MediaOptions; onClose: (
   return (
     <Modal
       wide
-      title="Media found on this page"
+      title={t.dialogs.scan.title}
       subtitle={props.url}
       onClose={props.onClose}
       footer={
         <>
           <span className="spacer" />
-          <button type="button" className="btn" onClick={props.onClose}>Close</button>
+          <button type="button" className="btn" onClick={props.onClose}>{t.dialogs.close}</button>
           {found && found.length > 1 && (
             <button
               type="button"
@@ -265,7 +259,7 @@ export function ScanDialog(props: { url: string; media: MediaOptions; onClose: (
               disabled={pending.length === 0}
               onClick={() => pending.forEach(download)}
             >
-              Download all ({pending.length})
+              {t.dialogs.scan.downloadAll(pending.length)}
             </button>
           )}
         </>
@@ -273,7 +267,7 @@ export function ScanDialog(props: { url: string; media: MediaOptions; onClose: (
     >
       {error && <p className="note note-error">{error}</p>}
       {!found && !error && (
-        <ul className="found" aria-busy="true" aria-label="Searching the page">
+        <ul className="found" aria-busy="true" aria-label={t.dialogs.scan.searching}>
           {[0, 1, 2].map((i) => (
             <li key={i} className="skeleton-row">
               <span className="skeleton skeleton-chip" />
@@ -284,15 +278,14 @@ export function ScanDialog(props: { url: string; media: MediaOptions; onClose: (
       )}
       {found && found.length === 0 && (
         <p className="note">
-          No video or audio links are in this page's code. Some sites only load them after you
-          press play, or keep them behind a login or another page.
+          {t.dialogs.scan.nothingFound}
         </p>
       )}
       {found && found.length > 0 && (
         <ul className="found">
           {found.map((item) => (
             <li key={item.url}>
-              <span className={`kind kind-${item.kind}`}>{KIND_LABEL[item.kind]}</span>
+              <span className={`kind kind-${item.kind}`}>{t.dialogs.scan.kind[item.kind]}</span>
               <div className="found-main">
                 <div className="found-name" title={item.url}>{item.name}</div>
                 <div className="found-meta">
@@ -300,9 +293,9 @@ export function ScanDialog(props: { url: string; media: MediaOptions; onClose: (
                 </div>
               </div>
               {added.has(item.url) ? (
-                <span className="found-added">Added</span>
+                <span className="found-added">{t.dialogs.scan.added}</span>
               ) : (
-                <button type="button" className="btn" onClick={() => download(item)}>Download</button>
+                <button type="button" className="btn" onClick={() => download(item)}>{t.dialogs.download}</button>
               )}
             </li>
           ))}
@@ -319,27 +312,55 @@ interface TreeFolder {
   name: string;
   folders: Map<string, TreeFolder>;
   files: TorrentFile[];
+  /** Every file under it, at any depth, and their size: worked out once. */
+  all: TorrentFile[];
+  size: number;
 }
 
+/** A torrent with more files than this opens with its folders closed. */
+const MANY_FILES = 200;
+/** Files listed at first in an open folder, and how many more each click adds.
+ *  A data set can hold tens of thousands; a row for each at once would hold
+ *  up the window (and every click in it) for a long time. */
+const FILES_SHOWN = 200;
+const FILES_STEP = 500;
+
 function buildTree(files: TorrentFile[]): TreeFolder {
-  const root: TreeFolder = { key: "", name: "", folders: new Map(), files: [] };
+  const root: TreeFolder = { key: "", name: "", folders: new Map(), files: [], all: [], size: 0 };
   for (const file of files) {
     let node = root;
     for (const part of file.path.slice(0, -1)) {
       let next = node.folders.get(part);
       if (!next) {
-        next = { key: `${node.key}/${part}`, name: part, folders: new Map(), files: [] };
+        next = { key: `${node.key}/${part}`, name: part, folders: new Map(), files: [], all: [], size: 0 };
         node.folders.set(part, next);
       }
       node = next;
     }
     node.files.push(file);
   }
+  gather(root);
   return root;
 }
 
-function filesUnder(folder: TreeFolder): TorrentFile[] {
-  return [...folder.files, ...[...folder.folders.values()].flatMap(filesUnder)];
+/** Fills in each folder's `all` and `size`, from the bottom up. */
+function gather(folder: TreeFolder): void {
+  const all = [...folder.files];
+  for (const child of folder.folders.values()) {
+    gather(child);
+    for (const f of child.all) all.push(f);
+  }
+  folder.all = all;
+  folder.size = all.reduce((sum, f) => sum + f.size, 0);
+}
+
+/** Every folder's key, for closing them all. */
+function folderKeys(folder: TreeFolder, into: string[] = []): string[] {
+  for (const child of folder.folders.values()) {
+    into.push(child.key);
+    folderKeys(child, into);
+  }
+  return into;
 }
 
 /** Checkbox that can also show "some but not all". */
@@ -364,6 +385,8 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
   const [dir, setDir] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  /** How many files each open folder lists, where more than the first few. */
+  const [shown, setShown] = useState<Map<string, number>>(new Map());
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -374,6 +397,8 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
         if (cancelled) return;
         setPreview(p);
         setSelected(new Set(p.files.map((f) => f.index)));
+        // A large torrent opens folded: its folders closed, to be opened one at a time.
+        if (p.files.length > MANY_FILES) setCollapsed(new Set(folderKeys(buildTree(p.files))));
       })
       .catch((e) => !cancelled && setError(String(e)));
     return () => {
@@ -415,7 +440,7 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
         torrent_files:
           selected.size === preview.files.length ? undefined : [...selected].sort((a, b) => a - b),
       });
-      actions.toast("Torrent added");
+      actions.toast(t.dialogs.torrent.added);
       props.onClose();
       props.onAdded();
     } catch (e) {
@@ -427,15 +452,16 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
   function renderFolder(folder: TreeFolder, depth: number): ReactNode[] {
     const rows: ReactNode[] = [];
     for (const child of folder.folders.values()) {
-      const inside = filesUnder(child);
-      const picked = inside.filter((f) => selected.has(f.index)).length;
+      const inside = child.all;
+      let picked = 0;
+      for (const f of inside) if (selected.has(f.index)) picked++;
       const open = !collapsed.has(child.key);
       rows.push(
         <li key={`d${child.key}`} className="tree-row tree-folder" style={{ paddingLeft: 8 + depth * 20 }}>
           <button
             type="button"
             className="tree-toggle"
-            aria-label={open ? `Collapse ${child.name}` : `Expand ${child.name}`}
+            aria-label={open ? t.dialogs.torrent.collapse(child.name) : t.dialogs.torrent.expand(child.name)}
             aria-expanded={open}
             onClick={() =>
               setCollapsed((prev) => {
@@ -449,18 +475,19 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
             {open ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
           </button>
           <Check
-            label={`Everything in ${child.name}`}
+            label={t.dialogs.torrent.everythingIn(child.name)}
             state={picked === 0 ? "none" : picked === inside.length ? "all" : "some"}
             onChange={(on) => setMany(inside, on)}
           />
           <Folder size={16} strokeWidth={2} aria-hidden="true" className="tree-icon" />
           <span className="tree-name" title={child.name}>{child.name}</span>
-          <span className="tree-size">{formatBytes(inside.reduce((sum, f) => sum + f.size, 0))}</span>
+          <span className="tree-size">{formatBytes(child.size)}</span>
         </li>,
       );
       if (open) rows.push(...renderFolder(child, depth + 1));
     }
-    for (const file of folder.files) {
+    const limit = shown.get(folder.key) ?? FILES_SHOWN;
+    for (const file of folder.files.slice(0, limit)) {
       const name = file.path[file.path.length - 1] ?? "";
       rows.push(
         <li key={`f${file.index}`} className="tree-row" style={{ paddingLeft: 8 + depth * 20 + (depth > 0 ? 22 : 0) }}>
@@ -475,24 +502,38 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
         </li>,
       );
     }
+    const rest = folder.files.length - limit;
+    if (rest > 0) {
+      rows.push(
+        <li key={`m${folder.key}`} className="tree-row tree-more" style={{ paddingLeft: 8 + depth * 20 + (depth > 0 ? 22 : 0) }}>
+          <button
+            type="button"
+            className="link"
+            onClick={() => setShown((prev) => new Map(prev).set(folder.key, limit + FILES_STEP))}
+          >
+            {t.dialogs.torrent.showMore(Math.min(rest, FILES_STEP), rest)}
+          </button>
+        </li>,
+      );
+    }
     return rows;
   }
 
   return (
     <Modal
       wide
-      title="Add torrent"
+      title={t.dialogs.torrent.title}
       subtitle={preview ? undefined : props.source}
       onClose={props.onClose}
       footer={
         <>
           <span className="tree-summary">
             {preview
-              ? `${selected.size} of ${preview.files.length} file${preview.files.length === 1 ? "" : "s"} · ${formatBytes(chosenSize)} of ${formatBytes(preview.total)}`
+              ? t.dialogs.torrent.summary(selected.size, preview.files.length, formatBytes(chosenSize), formatBytes(preview.total))
               : ""}
           </span>
           <span className="spacer" />
-          <button type="button" className="btn" onClick={props.onClose}>Cancel</button>
+          <button type="button" className="btn" onClick={props.onClose}>{t.dialogs.cancel}</button>
           <button
             type="button"
             className="btn btn-primary"
@@ -500,7 +541,7 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
             disabled={!preview || selected.size === 0 || busy}
             onClick={download}
           >
-            Download
+            {t.dialogs.download}
           </button>
         </>
       }
@@ -509,10 +550,9 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
       {!preview && !error && (
         <>
           <p className="note">
-            Reading the torrent. For a magnet link this can take up to a minute while people
-            sharing it are found.
+            {t.dialogs.torrent.reading}
           </p>
-          <ul className="found" aria-busy="true" aria-label="Reading the torrent">
+          <ul className="found" aria-busy="true" aria-label={t.dialogs.torrent.readingLabel}>
             {[0, 1, 2].map((i) => (
               <li key={i} className="skeleton-row">
                 <span className="skeleton skeleton-chip" />
@@ -526,22 +566,22 @@ export function TorrentDialog(props: { source: string; onClose: () => void; onAd
         <div className="form">
           <div className="torrent-name" title={preview.name}>{preview.name}</div>
           <div className="field">
-            <span id="torrent-dir">Save to</span>
+            <span id="torrent-dir">{t.dialogs.saveTo}</span>
             <div className="field-row">
               <input type="text" readOnly aria-labelledby="torrent-dir" value={saveTo} />
-              <button type="button" className="btn" onClick={browse}>Browse</button>
+              <button type="button" className="btn" onClick={browse}>{t.dialogs.browse}</button>
             </div>
-            <small>A folder named "{preview.name}" is created inside it for this torrent.</small>
+            <small>{t.dialogs.torrent.folderNote(preview.name)}</small>
           </div>
           <div className="field">
             <div className="tree-head">
-              <span>Files to download</span>
+              <span>{t.dialogs.torrent.files}</span>
               <span className="spacer" />
-              <button type="button" className="link" onClick={() => setMany(preview.files, true)}>Select all</button>
-              <button type="button" className="link" onClick={() => setMany(preview.files, false)}>Select none</button>
+              <button type="button" className="link" onClick={() => setMany(preview.files, true)}>{t.dialogs.torrent.selectAll}</button>
+              <button type="button" className="link" onClick={() => setMany(preview.files, false)}>{t.dialogs.torrent.selectNone}</button>
             </div>
-            <ul className="tree" aria-label="Files in this torrent">{renderFolder(tree, 0)}</ul>
-            {selected.size === 0 && <small className="field-error">Choose at least one file.</small>}
+            <ul className="tree" aria-label={t.dialogs.torrent.filesLabel}>{renderFolder(tree, 0)}</ul>
+            {selected.size === 0 && <small className="field-error">{t.dialogs.torrent.chooseOne}</small>}
           </div>
         </div>
       )}
@@ -604,7 +644,7 @@ export function Palette(props: { commands: Command[]; onClose: () => void }) {
         className="palette"
         role="dialog"
         aria-modal="true"
-        aria-label="Search commands and downloads"
+        aria-label={t.dialogs.palette.label}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="palette-input">
@@ -613,8 +653,8 @@ export function Palette(props: { commands: Command[]; onClose: () => void }) {
             autoFocus
             type="text"
             value={query}
-            placeholder="Search commands and downloads"
-            aria-label="Search commands and downloads"
+            placeholder={t.dialogs.palette.label}
+            aria-label={t.dialogs.palette.label}
             spellCheck={false}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -643,11 +683,11 @@ export function Palette(props: { commands: Command[]; onClose: () => void }) {
         <div className="palette-list" ref={listRef} role="listbox">
           {entries.length === 0 && (
             <p className="note">
-              {looksLikeUrl(query) ? "Press Enter to download this link." : "Nothing matches that."}
+              {looksLikeUrl(query) ? t.dialogs.palette.pressEnter : t.dialogs.palette.noMatch}
             </p>
           )}
           {entries.map((entry, i) => {
-            const group = entry.kind === "command" ? entry.command.group : "Downloads";
+            const group = entry.kind === "command" ? entry.command.group : t.dialogs.palette.downloads;
             const heading = group !== lastGroup ? group : null;
             lastGroup = group;
             return (

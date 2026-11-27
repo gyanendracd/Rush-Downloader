@@ -23,6 +23,7 @@ import {
   api,
   canPause,
   canResume,
+  displayName,
   isRunning,
   isTauri,
   isTorrentSource,
@@ -31,6 +32,7 @@ import {
   QUALITIES,
   qualityOptions,
   savePref,
+  type AppPrefs,
   type Download,
   type Settings,
 } from "./api";
@@ -80,18 +82,21 @@ import {
   type Theme,
 } from "./views";
 import { HistoryView } from "./History";
+import { locale, t } from "./i18n";
+import { useLocale } from "./i18n/react";
 import "./styles.css";
 
 const HISTORY_LENGTH = 60;
 /** How long a page takes to fade out before the next one is shown; the stylesheet uses the same time. */
 const PAGE_FADE_OUT = 170;
-const MAIN_NAV: { nav: Nav; label: string; icon: LucideIcon }[] = [
-  { nav: "home", label: "Home", icon: House },
-  { nav: "downloads", label: "Downloads", icon: DownloadGlyph },
-  { nav: "history", label: "History", icon: HistoryGlyph },
-  { nav: "browser", label: "Browser", icon: Globe },
-  { nav: "signin", label: "Sign in", icon: KeyRound },
-  { nav: "settings", label: "Settings", icon: SettingsGlyph },
+/** The sidebar's pages; each label is read from `t.app.nav` when drawn. */
+const MAIN_NAV: { nav: Nav; icon: LucideIcon }[] = [
+  { nav: "home", icon: House },
+  { nav: "downloads", icon: DownloadGlyph },
+  { nav: "history", icon: HistoryGlyph },
+  { nav: "browser", icon: Globe },
+  { nav: "signin", icon: KeyRound },
+  { nav: "settings", icon: SettingsGlyph },
 ];
 
 function isTyping(target: EventTarget | null) {
@@ -100,8 +105,16 @@ function isTyping(target: EventTarget | null) {
 }
 
 export default function App() {
+  // Renders the whole interface again when the language changes in Settings.
+  useLocale();
   const [downloads, setDownloads] = useState<Download[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  /** Starting with the system, the tray, notifications, graphics. */
+  const [appPrefs, setAppPrefs] = useState<AppPrefs | null>(null);
+  const appPrefsRef = useRef<AppPrefs | null>(null);
+  appPrefsRef.current = appPrefs;
+  /** Each download's status at the last update, to notice one finishing. */
+  const lastStatus = useRef<Map<number, Download["status"]> | null>(null);
   const [nav, setNavState] = useState<Nav>(() => loadPref<Nav>("nav", "home", NAVS));
   /** The page on screen. It trails `nav` by a moment: the old page fades
    *  out first, then this changes and the new page fades in. */
@@ -139,6 +152,8 @@ export default function App() {
   const fromLinkBox = useRef<Set<number>>(new Set());
   /** A page to open as soon as the Browser page shows. */
   const [browseStart, setBrowseStart] = useState<{ url: string; fetch: boolean } | null>(null);
+  /** A site whose sign-in page the Sign in page opens as it appears. */
+  const [signInStart, setSignInStart] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [theme, setTheme] = useState<Theme>(() =>
@@ -178,17 +193,35 @@ export default function App() {
       if (samples.length > HISTORY_LENGTH) samples.shift();
       h.set(d.id, samples);
     }
+    // A system notification when a download finishes or fails, while the
+    // app is not in front (in front, the list shows it already).
+    const was = lastStatus.current;
+    if (was && appPrefsRef.current?.notifications && !document.hasFocus()) {
+      for (const d of list) {
+        const before = was.get(d.id);
+        if (before == null || before === d.status) continue;
+        if (d.status === "completed") api.notify(t.app.notify.done, displayName(d)).catch(() => {});
+        else if (d.status === "failed") api.notify(t.app.notify.failed, displayName(d)).catch(() => {});
+      }
+    }
+    lastStatus.current = new Map(list.map((d) => [d.id, d.status]));
     setDownloads(list);
   }, []);
 
   useEffect(() => {
     api.list().then(receive);
     api.getSettings().then(setSettings);
+    api.getAppPrefs().then(setAppPrefs).catch(() => {});
     const unlisten = api.onChange(receive);
     return () => {
       unlisten.then((f) => f());
     };
   }, [receive]);
+
+  // The tray menu speaks the interface's language.
+  useEffect(() => {
+    if (isTauri) api.setTrayText(t.app.tray.show, t.app.tray.quit).catch(() => {});
+  }, [locale]);
 
   /* ---------- appearance ---------- */
 
@@ -205,9 +238,9 @@ export default function App() {
     document.documentElement.dataset.density = density;
   }, [dark, density]);
 
-  const chooseTheme = useCallback((t: Theme) => {
-    setTheme(t);
-    savePref("theme", t);
+  const chooseTheme = useCallback((next: Theme) => {
+    setTheme(next);
+    savePref("theme", next);
   }, []);
 
   const setQuality = useCallback((q: string) => {
@@ -221,7 +254,7 @@ export default function App() {
     const id = ++toastId.current;
     setToasts((list) => [...list.slice(-3), { id, message, tone }]);
     window.setTimeout(
-      () => setToasts((list) => list.filter((t) => t.id !== id)),
+      () => setToasts((list) => list.filter((item) => item.id !== id)),
       tone === "error" ? 8000 : 3000,
     );
   }, []);
@@ -261,39 +294,47 @@ export default function App() {
       const rank = (d: Download) => (d.status === "completed" ? 2 : d.status === "failed" ? 1 : 0);
       const twin = [...twins].sort((a, b) => rank(a) - rank(b))[0];
       if (!twin) return "go";
+      const text = t.app.duplicate;
       const percent =
-        twin.total && twin.total > 0 ? `, ${Math.floor((twin.downloaded / twin.total) * 100)}%` : "";
+        twin.total && twin.total > 0 ? Math.floor((twin.downloaded / twin.total) * 100) : null;
       const status =
         twin.status === "completed"
-          ? "Completed"
+          ? text.status.completed
           : twin.status === "failed"
-            ? "Failed"
+            ? text.status.failed
             : twin.status === "paused"
-              ? `Paused${percent}`
+              ? percent != null
+                ? text.status.pausedAt(percent)
+                : text.status.paused
               : twin.status === "queued"
-                ? "Waiting to start"
-                : `Downloading${percent}`;
+                ? text.status.waiting
+                : percent != null
+                  ? text.status.downloadingAt(percent)
+                  : text.status.downloading;
       const statusTone =
         twin.status === "completed" ? "done" : twin.status === "failed" ? "failed" : "active";
       const torrent = isTorrentSource(url);
-      const what = torrent ? "torrent" : "file";
       const title =
         twin.status === "completed"
-          ? `You already downloaded this ${what}`
+          ? torrent
+            ? text.title.doneTorrent
+            : text.title.doneFile
           : twin.status === "failed"
-            ? `This ${what} is already in your downloads`
-            : `This ${what} is already downloading`;
+            ? torrent
+              ? text.title.failedTorrent
+              : text.title.failedFile
+            : torrent
+              ? text.title.runningTorrent
+              : text.title.runningFile;
       const reply = await ask({
         title,
         message: twin.filename,
         status,
         statusTone,
-        detail: torrent
-          ? "Downloading a copy saves it again in a second, separate folder. The first one stays as it is."
-          : "Downloading a copy saves a second, separate file. The first one stays as it is.",
-        okLabel: "Download a copy",
-        altLabel: "Show it",
-        cancelLabel: "Cancel",
+        detail: torrent ? text.detailTorrent : text.detailFile,
+        okLabel: text.ok,
+        altLabel: text.show,
+        cancelLabel: text.cancel,
         tone: "primary",
       });
       if (reply === "alt") {
@@ -315,18 +356,15 @@ export default function App() {
           (d) => ids.includes(d.id) && d.status !== "completed",
         );
         if (unfinished.length > 0) {
+          const text = t.app.cancelDownload;
           const what =
-            unfinished.length === 1
-              ? unfinished[0].filename
-              : `${unfinished.length} unfinished downloads`;
+            unfinished.length === 1 ? unfinished[0].filename : text.unfinished(unfinished.length);
           const ok = await ask({
-            title: unfinished.length === 1 ? "Cancel this download?" : "Cancel these downloads?",
+            title: unfinished.length === 1 ? text.titleOne : text.titleMany,
             message: what,
-            detail: unfinished.every((d) => d.profile)
-              ? "Photos and videos already downloaded stay in the folder."
-              : "The part already downloaded will be deleted.",
-            okLabel: "Cancel download",
-            cancelLabel: "Keep downloading",
+            detail: unfinished.every((d) => d.profile) ? text.detailProfile : text.detailFile,
+            okLabel: text.ok,
+            cancelLabel: text.cancel,
           });
           if (!ok) return;
         }
@@ -336,11 +374,11 @@ export default function App() {
       },
       deleteFile: async (d) => {
         const ok = await ask({
-          title: "Delete this file from disk?",
+          title: t.app.deleteFile.title,
           message: d.filename,
-          detail: "This cannot be undone.",
-          okLabel: "Delete file",
-          cancelLabel: "Keep file",
+          detail: t.app.deleteFile.detail,
+          okLabel: t.app.deleteFile.ok,
+          cancelLabel: t.app.deleteFile.cancel,
         });
         if (!ok) return;
         api.remove(d.id, true).catch(fail);
@@ -352,8 +390,8 @@ export default function App() {
         ownCopy.current = text.trim();
         return navigator.clipboard
           .writeText(text)
-          .then(() => toast(`${what} copied`))
-          .catch(() => toast(`Could not copy the ${what.toLowerCase()}`, "error"));
+          .then(() => toast(t.app.toast.copied(what)))
+          .catch(() => toast(t.app.toast.copyFailed(what), "error"));
       },
       scan: (url) => setScanUrl(url),
       inspect,
@@ -418,7 +456,7 @@ export default function App() {
           // The app opens the page and starts the player so the video's
           // qualities show up; which one to download is the user's choice.
           actions.browse(d.url, true);
-          toast("This video has to be picked on its page. Choose a quality there");
+          toast(t.app.toast.pickOnPage);
         }
       }
     }
@@ -466,21 +504,21 @@ export default function App() {
       const items: MenuItem[] = [];
       if (chosen.some(canPause)) {
         items.push({
-          label: `Pause ${chosen.filter(canPause).length} downloads`,
+          label: t.app.menu.pause(chosen.filter(canPause).length),
           icon: Pause,
           onSelect: () => actions.pause(chosen.filter(canPause).map((c) => c.id)),
         });
       }
       if (chosen.some(canResume)) {
         items.push({
-          label: `Resume ${chosen.filter(canResume).length} downloads`,
+          label: t.app.menu.resume(chosen.filter(canResume).length),
           icon: Play,
           onSelect: () => actions.resume(chosen.filter(canResume).map((c) => c.id)),
         });
       }
       if (items.length > 0) items.push("separator");
       items.push({
-        label: `Remove ${chosen.length} from list`,
+        label: t.app.menu.remove(chosen.length),
         icon: X,
         onSelect: () => actions.remove(chosen.map((c) => c.id)),
       });
@@ -514,12 +552,32 @@ export default function App() {
       if (!text || text === ownCopy.current) return;
       setCopied((last) => ({ text, n: (last?.n ?? 0) + 1 }));
       if (!overlayNow.current) setNav("home");
-      toast("Copied link is ready on Home");
+      toast(t.app.toast.clipboardLink);
     });
     return () => {
       unlisten.then((f) => f());
     };
   }, [clipWatch, setNav, toast]);
+
+  // The browser extension: a page it sends lands in the Home box like a
+  // copied link (whether or not copied links are picked up), and files it
+  // sends start downloading straight away.
+  useEffect(() => {
+    const link = api.onExtensionLink((sent) => {
+      const text = sent.trim();
+      if (!text) return;
+      setCopied((last) => ({ text, n: (last?.n ?? 0) + 1 }));
+      if (!overlayNow.current) setNav("home");
+      toast(t.app.toast.extensionLink);
+    });
+    const added = api.onExtensionAdded((count) => {
+      toast(t.app.toast.extensionAdded(count));
+    });
+    return () => {
+      link.then((f) => f());
+      added.then((f) => f());
+    };
+  }, [setNav, toast]);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -589,7 +647,7 @@ export default function App() {
     const unlisten = api.onFileDrop((paths) => {
       const torrent = paths.find((p) => /\.torrent$/i.test(p));
       if (torrent) actions.openTorrent(torrent);
-      else if (paths.length > 0) toast("Only .torrent files can be dropped here", "error");
+      else if (paths.length > 0) toast(t.app.toast.onlyTorrents, "error");
     });
     return () => {
       unlisten.then((f) => f());
@@ -599,31 +657,35 @@ export default function App() {
   /* ---------- commands ---------- */
 
   const commands = useMemo<Command[]>(
-    () => [
-      { id: "add", group: "Actions", label: "Add download", icon: Plus, shortcut: "Ctrl N", run: () => setAdd({ url: "", mode: "download" }) },
-      { id: "scan", group: "Actions", label: "Find media on a web page", icon: ScanSearch, run: () => setAdd({ url: "", mode: "scan" }) },
-      { id: "pause-all", group: "Actions", label: "Pause all downloads", icon: Pause, shortcut: "Ctrl Shift P", run: pauseAll },
-      { id: "resume-all", group: "Actions", label: "Resume all downloads", icon: Play, shortcut: "Ctrl Shift R", run: resumeAll },
-      {
-        id: "folder",
-        group: "Actions",
-        label: "Open download folder",
-        icon: FolderOpen,
-        run: () => api.openDownloadDir().catch((e) => toast(String(e), "error")),
-      },
-      {
-        id: "theme",
-        group: "Actions",
-        label: dark ? "Switch to light theme" : "Switch to dark theme",
-        icon: dark ? Sun : Moon,
-        run: () => chooseTheme(dark ? "light" : "dark"),
-      },
-      { id: "nav-home", group: "Go to", label: "Home", icon: House, shortcut: "Ctrl 1", run: () => setNav("home") },
-      { id: "nav-downloads", group: "Go to", label: "Downloads", icon: DownloadGlyph, shortcut: "Ctrl 2", run: () => setNav("downloads") },
-      { id: "nav-settings", group: "Go to", label: "Settings", icon: SettingsGlyph, shortcut: "Ctrl ,", run: () => setNav("settings") },
-      { id: "about", group: "Go to", label: "About RushDownload", icon: Info, run: () => setAboutOpen(true) },
-    ],
-    [dark, pauseAll, resumeAll, chooseTheme, setNav, toast],
+    () => {
+      const c = t.app.commands;
+      return [
+        { id: "add", group: c.groupActions, label: c.add, icon: Plus, shortcut: "Ctrl N", run: () => setAdd({ url: "", mode: "download" }) },
+        { id: "scan", group: c.groupActions, label: c.scan, icon: ScanSearch, run: () => setAdd({ url: "", mode: "scan" }) },
+        { id: "pause-all", group: c.groupActions, label: c.pauseAll, icon: Pause, shortcut: "Ctrl Shift P", run: pauseAll },
+        { id: "resume-all", group: c.groupActions, label: c.resumeAll, icon: Play, shortcut: "Ctrl Shift R", run: resumeAll },
+        {
+          id: "folder",
+          group: c.groupActions,
+          label: c.folder,
+          icon: FolderOpen,
+          run: () => api.openDownloadDir().catch((e) => toast(String(e), "error")),
+        },
+        {
+          id: "theme",
+          group: c.groupActions,
+          label: dark ? c.lightTheme : c.darkTheme,
+          icon: dark ? Sun : Moon,
+          run: () => chooseTheme(dark ? "light" : "dark"),
+        },
+        { id: "nav-home", group: c.groupGoTo, label: c.home, icon: House, shortcut: "Ctrl 1", run: () => setNav("home") },
+        { id: "nav-downloads", group: c.groupGoTo, label: c.downloads, icon: DownloadGlyph, shortcut: "Ctrl 2", run: () => setNav("downloads") },
+        { id: "nav-settings", group: c.groupGoTo, label: c.settings, icon: SettingsGlyph, shortcut: "Ctrl ,", run: () => setNav("settings") },
+        { id: "about", group: c.groupGoTo, label: c.about, icon: Info, run: () => setAboutOpen(true) },
+      ];
+    },
+    // `t` changes when the language does, so the labels are built again.
+    [dark, pauseAll, resumeAll, chooseTheme, setNav, toast, t],
   );
 
   const context = { downloads, settings, history: history.current, actions, progressStyle };
@@ -632,7 +694,7 @@ export default function App() {
   return (
     <AppContext.Provider value={context}>
       <div className="app">
-        <nav className="sidebar" aria-label="Main">
+        <nav className="sidebar" aria-label={t.app.nav.label}>
           <div className="brand" data-tauri-drag-region>
             <Logo size={24} />
             <span>RushDownload</span>
@@ -645,12 +707,12 @@ export default function App() {
                 type="button"
                 className={`nav-item${nav === item.nav ? " is-active" : ""}`}
                 aria-current={nav === item.nav ? "page" : undefined}
-                aria-label={item.label}
-                title={item.label}
+                aria-label={t.app.nav[item.nav]}
+                title={t.app.nav[item.nav]}
                 onClick={() => setNav(item.nav)}
               >
                 <item.icon size={18} strokeWidth={2} aria-hidden="true" />
-                <span>{item.label}</span>
+                <span>{t.app.nav[item.nav]}</span>
               </button>
             ))}
           </div>
@@ -663,23 +725,23 @@ export default function App() {
               className="nav-item"
               role="switch"
               aria-checked={dark}
-              aria-label="Dark Mode"
-              title="Dark Mode"
+              aria-label={t.app.nav.darkMode}
+              title={t.app.nav.darkMode}
               onClick={() => chooseTheme(dark ? "light" : "dark")}
             >
               <Moon size={18} strokeWidth={2} aria-hidden="true" />
-              <span>Dark Mode</span>
+              <span>{t.app.nav.darkMode}</span>
               <span className="switch" aria-hidden="true" />
             </button>
             <button
               type="button"
               className="nav-item"
-              aria-label="About"
-              title="About"
+              aria-label={t.app.nav.about}
+              title={t.app.nav.about}
               onClick={() => setAboutOpen(true)}
             >
               <Info size={18} strokeWidth={2} aria-hidden="true" />
-              <span>About</span>
+              <span>{t.app.nav.about}</span>
             </button>
           </div>
         </nav>
@@ -688,20 +750,28 @@ export default function App() {
           <div className="titlebar" data-tauri-drag-region>
             {isTauri && (
               <div className="window-controls">
-                <button type="button" aria-label="Minimize" title="Minimize" onClick={() => api.windowMinimize()}>
+                <button type="button" aria-label={t.app.window.minimize} title={t.app.window.minimize} onClick={() => api.windowMinimize()}>
                   <Minus size={16} strokeWidth={2} aria-hidden="true" />
                 </button>
-                <button type="button" aria-label="Maximize" title="Maximize" onClick={() => api.windowToggleMaximize()}>
+                <button type="button" aria-label={t.app.window.maximize} title={t.app.window.maximize} onClick={() => api.windowToggleMaximize()}>
                   <Square size={13} strokeWidth={2} aria-hidden="true" />
                 </button>
-                <button type="button" className="is-close" aria-label="Close" title="Close" onClick={() => api.windowClose()}>
+                <button type="button" className="is-close" aria-label={t.app.window.close} title={t.app.window.close} onClick={() => api.windowClose()}>
                   <X size={17} strokeWidth={2} aria-hidden="true" />
                 </button>
               </div>
             )}
           </div>
 
-          {shownNav === "home" && <HomeView quality={quality} go={setNav} copied={copied} />}
+          {shownNav === "home" && <HomeView
+              quality={quality}
+              go={setNav}
+              signIn={(site) => {
+                setSignInStart(site);
+                setNav("signin");
+              }}
+              copied={copied}
+            />}
           {shownNav === "downloads" && (
             <DownloadsView {...rowHandlers} clearSelection={() => setSelection(new Set())} go={setNav} />
           )}
@@ -709,7 +779,7 @@ export default function App() {
           {shownNav === "browser" && (
             <BrowserView quality={quality} go={setNav} start={browseStart} onStarted={() => setBrowseStart(null)} />
           )}
-          {shownNav === "signin" && <SignInView />}
+          {shownNav === "signin" && <SignInView start={signInStart} onStarted={() => setSignInStart(null)} />}
           {shownNav === "settings" && (
             <SettingsView
               theme={theme}
@@ -738,6 +808,15 @@ export default function App() {
               onQuality={setQuality}
               section={settingsSection}
               onSection={setSettingsSection}
+              appPrefs={appPrefs}
+              onAppPrefs={(next) => {
+                const before = appPrefs;
+                setAppPrefs(next);
+                api.setAppPrefs(next).catch((e) => {
+                  setAppPrefs(before);
+                  toast(String(e), "error");
+                });
+              }}
               onSettings={(s) => {
                 setSettings(s);
                 api.setSettings(s).catch((e) => toast(String(e), "error"));
@@ -815,7 +894,7 @@ export default function App() {
             {question.detail && <p className="confirm-detail">{question.detail}</p>}
           </Modal>
         )}
-        <Toasts toasts={toasts} dismiss={(id) => setToasts((list) => list.filter((t) => t.id !== id))} />
+        <Toasts toasts={toasts} dismiss={(id) => setToasts((list) => list.filter((item) => item.id !== id))} />
       </div>
     </AppContext.Provider>
   );

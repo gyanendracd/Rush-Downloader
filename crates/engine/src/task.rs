@@ -60,6 +60,17 @@ pub(crate) struct Live {
     pub items: AtomicU64,
     /// The file being fetched right now, for profile and playlist downloads.
     pub current: Mutex<Option<crate::CurrentFile>>,
+    /// Bytes received over the network since this run started, for downloads
+    /// whose progress only grows in large checked steps (torrents). The speed
+    /// shown is taken from this when `counts_received` is set.
+    pub received: AtomicU64,
+    pub counts_received: AtomicBool,
+    /// Set while what is already on disk is being checked before the
+    /// download carries on (a torrent's pieces); `checked` is how far along.
+    pub checking: AtomicBool,
+    pub checked: AtomicU64,
+    /// A torrent's files with how far each is, refreshed while it runs.
+    pub files: Mutex<Vec<crate::TorrentFileProgress>>,
     fatal: Mutex<Option<String>>,
 }
 
@@ -75,6 +86,11 @@ impl Live {
             connect_failures: AtomicU64::new(0),
             items: AtomicU64::new(0),
             current: Mutex::new(None),
+            received: AtomicU64::new(0),
+            counts_received: AtomicBool::new(false),
+            checking: AtomicBool::new(false),
+            checked: AtomicU64::new(0),
+            files: Mutex::new(Vec::new()),
             fatal: Mutex::new(None),
         }
     }
@@ -94,7 +110,7 @@ impl Drop for ConnGuard<'_> {
 }
 
 #[cfg(windows)]
-fn write_all_at(f: &File, mut buf: &[u8], mut off: u64) -> io::Result<()> {
+pub(crate) fn write_all_at(f: &File, mut buf: &[u8], mut off: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         let n = f.seek_write(buf, off)?;
@@ -108,7 +124,7 @@ fn write_all_at(f: &File, mut buf: &[u8], mut off: u64) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn write_all_at(f: &File, buf: &[u8], off: u64) -> io::Result<()> {
+pub(crate) fn write_all_at(f: &File, buf: &[u8], off: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     f.write_all_at(buf, off)
 }

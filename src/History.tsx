@@ -17,6 +17,7 @@ import {
 } from "./api";
 import { ItemPicture } from "./Detail";
 import { fileCount, FileIcon, useApp } from "./ui";
+import { t } from "./i18n";
 
 /** More item rows than this are counted, not drawn. */
 const ITEMS_SHOWN = 500;
@@ -30,16 +31,16 @@ function shortLink(link: string): string {
 function Outcome({ d }: { d: Download }) {
   if (isDeleted(d)) {
     return (
-      <span className="tone-deleted" title="Its file is no longer where it was saved">
-        Deleted · {deletedAgo(d)}
+      <span className="tone-deleted" title={t.history.outcome.deletedHint}>
+        {t.history.outcome.deleted(deletedAgo(d))}
       </span>
     );
   }
-  if (d.status === "completed") return <span className="tone-ok">Completed</span>;
+  if (d.status === "completed") return <span className="tone-ok">{t.common.status.completed}</span>;
   if (d.status === "failed") {
     return (
       <span className="tone-err" title={d.error ?? undefined}>
-        Failed
+        {t.common.status.failed}
       </span>
     );
   }
@@ -103,14 +104,6 @@ function useSeen<T extends Element>(): [React.RefObject<T | null>, boolean] {
   return [place, seen];
 }
 
-const ITEM_OUTCOME: Record<DownloadItem["state"], string> = {
-  done: "Downloaded",
-  downloading: "Downloading",
-  waiting: "Waiting",
-  missed: "Not available",
-  deleted: "Deleted",
-};
-
 /** Everything a profile or playlist download fetched, one line each. */
 function HistoryItems({ d }: { d: Download }) {
   const [items, setItems] = useState<DownloadItem[] | null>(null);
@@ -141,13 +134,13 @@ function HistoryItems({ d }: { d: Download }) {
     return (
       <p ref={place as React.RefObject<HTMLParagraphElement | null>} className="history-items is-empty">
         {isDeleted(d)
-          ? "Its files are gone, and their names were not kept: it was downloaded before History began keeping them."
-          : "Nothing has been fetched for it yet."}
+          ? t.history.items.goneUnknown
+          : t.history.items.nothingYet}
       </p>
     );
   }
   return (
-    <div ref={place} className="history-items" role="rowgroup" aria-label={`What ${displayName(d)} holds`}>
+    <div ref={place} className="history-items" role="rowgroup" aria-label={t.history.items.label(displayName(d))}>
       {items.slice(0, ITEMS_SHOWN).map((item, i) => (
         <div key={i} className={`history-item${item.state === "deleted" ? " is-deleted" : ""}`} role="row">
           <span className="history-name" role="cell" title={item.title}>
@@ -174,12 +167,12 @@ function HistoryItems({ d }: { d: Download }) {
                       : undefined
               }
             >
-              {ITEM_OUTCOME[item.state]}
+              {t.history.items.state[item.state]}
             </span>
           </span>
         </div>
       ))}
-      {items.length > ITEMS_SHOWN && <p className="history-more">and {items.length - ITEMS_SHOWN} more</p>}
+      {items.length > ITEMS_SHOWN && <p className="history-more">{t.history.items.more(items.length - ITEMS_SHOWN)}</p>}
     </div>
   );
 }
@@ -190,7 +183,7 @@ function HistoryGroup(props: { d: Download; onMenu: (d: Download, x: number, y: 
   const { actions } = useApp();
   const { d } = props;
   const [open, setOpen] = useState(true);
-  const kind = /[?&]list=/.test(d.url) ? "Playlist" : "Profile";
+  const kind = /[?&]list=/.test(d.url) ? t.history.group.playlist : t.history.group.profile;
   return (
     <section className={`history-group${isDeleted(d) ? " is-deleted" : ""}`} aria-label={displayName(d)}>
       <div
@@ -210,7 +203,7 @@ function HistoryGroup(props: { d: Download; onMenu: (d: Download, x: number, y: 
           <FileIcon d={d} />
           <span>{displayName(d)}</span>
           <span className="history-kind">
-            {kind} · {fileCount(d.items)}
+            {t.history.group.kindCount(kind, fileCount(d.items))}
           </span>
         </span>
         <span className="history-link" role="cell" title={d.url}>
@@ -228,8 +221,8 @@ function HistoryGroup(props: { d: Download; onMenu: (d: Download, x: number, y: 
             type="button"
             className="history-fold"
             aria-expanded={open}
-            aria-label={open ? "Hide its items" : "Show its items"}
-            title={open ? "Hide its items" : "Show its items"}
+            aria-label={open ? t.history.group.hideItems : t.history.group.showItems}
+            title={open ? t.history.group.hideItems : t.history.group.showItems}
             onClick={(e) => {
               e.stopPropagation();
               setOpen((was) => !was);
@@ -259,10 +252,11 @@ export function HistoryView(props: { onMenu: (d: Download, x: number, y: number)
   return (
     <div className="page page-history">
       <header className="page-head">
-        <h1>History</h1>
+        <h1>{t.history.title}</h1>
         <span className="history-count">
-          {downloads.length === 1 ? "1 link" : `${downloads.length} links`}
-          {gone > 0 ? ` · ${gone} deleted` : ""}
+          {gone > 0
+            ? t.history.linksDeleted(t.history.links(downloads.length), gone)
+            : t.history.links(downloads.length)}
         </span>
         <label className="search">
           <Search size={16} strokeWidth={2} aria-hidden="true" />
@@ -270,12 +264,12 @@ export function HistoryView(props: { onMenu: (d: Download, x: number, y: number)
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search history..."
-            aria-label="Search history"
+            placeholder={t.history.search.placeholder}
+            aria-label={t.history.search.label}
             spellCheck={false}
           />
           {query && (
-            <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>
+            <button type="button" className="search-clear" aria-label={t.history.search.clear} onClick={() => setQuery("")}>
               <X size={14} strokeWidth={2.25} aria-hidden="true" />
             </button>
           )}
@@ -284,23 +278,23 @@ export function HistoryView(props: { onMenu: (d: Download, x: number, y: number)
 
       {downloads.length === 0 ? (
         <div className="empty">
-          <h2>No history yet</h2>
-          <p>Every link you download is kept here, even after its file is deleted.</p>
+          <h2>{t.history.empty.title}</h2>
+          <p>{t.history.empty.text}</p>
         </div>
       ) : (
-        <div className="history" role="table" aria-label="Download history">
+        <div className="history" role="table" aria-label={t.history.table}>
           <div className="history-head" role="row">
-            <span role="columnheader">Name</span>
-            <span role="columnheader">Link</span>
+            <span role="columnheader">{t.history.columns.name}</span>
+            <span role="columnheader">{t.history.columns.link}</span>
             <span role="columnheader" className="history-size">
-              Size
+              {t.history.columns.size}
             </span>
-            <span role="columnheader">Added</span>
-            <span role="columnheader">Status</span>
+            <span role="columnheader">{t.history.columns.added}</span>
+            <span role="columnheader">{t.history.columns.status}</span>
           </div>
           <div className="history-body" role="rowgroup">
             {shown.length === 0 ? (
-              <p className="history-none">Nothing in History matches “{query.trim()}”.</p>
+              <p className="history-none">{t.history.noMatch(query.trim())}</p>
             ) : (
               shown.map((d) =>
                 d.profile ? (

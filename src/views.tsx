@@ -17,6 +17,7 @@ import {
   Image as ImageGlyph,
   Info,
   KeyRound,
+  Languages,
   LayoutGrid,
   ListFilter,
   Music,
@@ -36,6 +37,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  type AppPrefs,
   api,
   canPause,
   canResume,
@@ -51,6 +53,7 @@ import {
   needsSignIn,
   onDownloadsPage,
   percentOf,
+  checkPercent,
   looksLikePage,
   looksLikeUrl,
   QUALITIES,
@@ -70,7 +73,8 @@ import {
   type ToolStatus,
 } from "./api";
 import { SITE_LOGOS } from "./siteLogos";
-import { DownloadRow, Dropdown, FileIcon, IconBtn, Modal, useApp, type ProgressStyle } from "./ui";
+import { DownloadRow, Dropdown, FileIcon, IconBtn, Modal, useApp, type ProgressStyle, Select } from "./ui";
+import { changeLanguageLabel, dateText, ENGLISH_CHANGE_LANGUAGE, formatLocale, languageOptionLabel, listText, type Locale, locale, LOCALES, num, pct, setLocale, t } from "./i18n";
 
 export type Nav = "home" | "downloads" | "history" | "browser" | "signin" | "settings";
 export const NAVS: readonly Nav[] = ["home", "downloads", "history", "browser", "signin", "settings"];
@@ -100,6 +104,8 @@ interface CaughtChoice {
   /** The quality picked from a stream's list; none for a plain file. */
   height: number | null;
   label: string;
+  /** A very small video, most likely a preview clip. */
+  preview?: boolean;
 }
 
 /**
@@ -118,13 +124,21 @@ function caughtChoices(found: CaughtMedia[], sizes: Map<string, number | null>):
   const listed = [...pool].sort((a, b) => Number(preview(a)) - Number(preview(b)) || rank(b) - rank(a));
   return listed.flatMap((item) => {
     if (item.kind === "stream" && item.heights.length > 0) {
-      return item.heights.map((h) => ({ key: `${item.url}|${h}`, item, height: h as number | null, label: `${h}p` }));
+      return item.heights.map((h) => ({
+        key: `${item.url}|${h}`,
+        item,
+        height: h as number | null,
+        label: t.common.quality.height(String(h)),
+      }));
     }
     const size = sizes.get(item.url);
-    const what = item.kind === "stream" ? "Stream" : item.label || (item.kind === "audio" ? "Audio" : "Video");
+    const what =
+      item.kind === "stream"
+        ? t.views.browser.stream
+        : item.label || (item.kind === "audio" ? t.views.browser.audio : t.views.browser.video);
     const detail = item.kind === "stream" ? "" : size != null ? formatBytes(size) : "";
-    const label = [what, detail, preview(item) ? "preview clip" : ""].filter(Boolean).join(" · ");
-    return [{ key: `${item.url}|`, item, height: null as number | null, label }];
+    const label = [what, detail, preview(item) ? t.views.browser.previewClip : ""].filter(Boolean).join(" · ");
+    return [{ key: `${item.url}|`, item, height: null as number | null, label, preview: preview(item) }];
   });
 }
 
@@ -268,7 +282,7 @@ export function BrowserView(props: {
             : { max_height: pageChoice === "best" ? null : Number(pageChoice), audio_only: false },
       });
       setStarted((set) => new Set(set).add(pageUrl));
-      actions.toast("Download started");
+      actions.toast(t.views.downloadStarted);
     } catch (e) {
       actions.toast(String(e), "error");
     }
@@ -290,17 +304,30 @@ export function BrowserView(props: {
   const optionLabel = (item: CaughtMedia) => {
     const size = sizes.get(item.url);
     const what =
-      item.kind === "stream" ? "Stream" : item.label || (item.kind === "audio" ? "Audio" : "Video");
+      item.kind === "stream"
+        ? t.views.browser.stream
+        : item.label || (item.kind === "audio" ? t.views.browser.audio : t.views.browser.video);
     const detail =
-      item.kind === "stream" ? "every quality" : size != null ? formatBytes(size) : sizes.has(item.url) ? "" : "…";
+      item.kind === "stream"
+        ? t.views.browser.everyQuality
+        : size != null
+          ? formatBytes(size)
+          : sizes.has(item.url)
+            ? ""
+            : "…";
     // A very small video is most likely a preview clip; say so, last.
-    return [what, detail, isPreview(item) ? "preview clip" : ""].filter(Boolean).join(" · ");
+    return [what, detail, isPreview(item) ? t.views.browser.previewClip : ""].filter(Boolean).join(" · ");
   };
   // What the quality list offers: every quality a stream names, one line
   // each, or the file itself. Best first.
   const choices = listed.flatMap((item) =>
     item.kind === "stream" && item.heights.length > 0
-      ? item.heights.map((h) => ({ key: `${item.url}|${h}`, item, height: h as number | null, label: `${h}p` }))
+      ? item.heights.map((h) => ({
+          key: `${item.url}|${h}`,
+          item,
+          height: h as number | null,
+          label: t.common.quality.height(String(h)),
+        }))
       : [{ key: `${item.url}|`, item, height: null as number | null, label: optionLabel(item) }],
   );
   // The one on show: the user's pick, else the best there is.
@@ -357,7 +384,7 @@ export function BrowserView(props: {
     );
     const giveUp = window.setTimeout(() => {
       setFetching(0);
-      actions.toast("Could not start this video by itself. Press play on the page to see its qualities", "error");
+      actions.toast(t.views.browser.autoplayFailed, "error");
     }, 40000);
     return () => {
       presses.forEach(window.clearTimeout);
@@ -370,7 +397,7 @@ export function BrowserView(props: {
     // A page the site downloader does read after all: its row is on show.
     if (pageVideo) {
       setFetching(0);
-      actions.toast("Video found. Choose a quality and press Download");
+      actions.toast(t.views.browser.videoFound);
       return;
     }
     const best = choices[0];
@@ -384,7 +411,7 @@ export function BrowserView(props: {
     // Then the choice is the user's: nothing downloads by itself.
     const timer = window.setTimeout(() => {
       setFetching(0);
-      actions.toast("Video found. Choose a quality and press Download");
+      actions.toast(t.views.browser.videoFound);
     }, 3500);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -402,7 +429,7 @@ export function BrowserView(props: {
         filename: title.trim() || undefined,
       });
       setStarted((set) => new Set(set).add(key));
-      actions.toast("Download started");
+      actions.toast(t.views.downloadStarted);
     } catch (e) {
       actions.toast(String(e), "error");
     }
@@ -417,78 +444,74 @@ export function BrowserView(props: {
           visit(address);
         }}
       >
-        <button type="button" className="icon-btn" aria-label="Back" title="Back" disabled={!open} onClick={() => api.browserGo("back")}>
+        <button type="button" className="icon-btn" aria-label={t.views.browser.back} title={t.views.browser.back} disabled={!open} onClick={() => api.browserGo("back")}>
           <ArrowLeft size={17} strokeWidth={2} aria-hidden="true" />
         </button>
-        <button type="button" className="icon-btn" aria-label="Forward" title="Forward" disabled={!open} onClick={() => api.browserGo("forward")}>
+        <button type="button" className="icon-btn" aria-label={t.views.browser.forward} title={t.views.browser.forward} disabled={!open} onClick={() => api.browserGo("forward")}>
           <ArrowRight size={17} strokeWidth={2} aria-hidden="true" />
         </button>
-        <button type="button" className="icon-btn" aria-label="Reload" title="Reload" disabled={!open} onClick={() => api.browserGo("reload")}>
+        <button type="button" className="icon-btn" aria-label={t.views.browser.reload} title={t.views.browser.reload} disabled={!open} onClick={() => api.browserGo("reload")}>
           <RotateCw size={16} strokeWidth={2} aria-hidden="true" />
         </button>
         <input
           type="text"
           value={address}
           onChange={(e) => setAddress(e.target.value)}
-          placeholder="Type a web address, open the page and play its video"
-          aria-label="Web address"
+          placeholder={t.views.browser.addressPlaceholder}
+          aria-label={t.views.browser.address}
           spellCheck={false}
           autoFocus
         />
         <button type="submit" className="btn btn-primary" disabled={!address.trim()}>
-          Go
+          {t.views.browser.go}
         </button>
       </form>
 
       {blocked && (
         <p className="browser-note" role="status">
-          <span>The page tried to open a new window: {mediaName(blocked)}</span>
+          <span>{t.views.browser.popup(mediaName(blocked))}</span>
           <button type="button" className="btn btn-small" onClick={() => visit(blocked)}>
-            Open it here
+            {t.views.browser.openHere}
           </button>
           <button type="button" className="btn btn-small" onClick={() => setBlocked(null)}>
-            Ignore
+            {t.views.browser.ignore}
           </button>
         </p>
       )}
 
       {fetching > 0 && (
         <p className="browser-note" role="status">
-          <span>
-            Finding this page's video: starting the player so its qualities show up. Nothing downloads
-            until you press Download.
-          </span>
+          <span>{t.views.browser.finding}</span>
           <button type="button" className="btn btn-small" onClick={() => setFetching(0)}>
-            Stop
+            {t.views.browser.stop}
           </button>
         </p>
       )}
       {open && (
-        <section className="browser-found" aria-label="Media found on this page">
+        <section className="browser-found" aria-label={t.views.browser.foundRegion}>
           {pageVideo && (
             <div className="browser-page-video">
-              <span className="browser-kind is-full">Full video</span>
+              <span className="browser-kind is-full">{t.views.browser.fullVideo}</span>
               <span className="browser-name" title={pageVideo.title}>
                 {pageVideo.title}
               </span>
-              <select
-                aria-label="Resolution"
+              <Select
+                aria-label={t.views.browser.resolution}
                 value={pageChoice}
-                onChange={(e) => setPageChoice(e.target.value)}
-              >
-                <option value="best">Best</option>
-                {pageVideo.heights.map((h) => (
-                  <option key={h} value={String(h)}>{h}p</option>
-                ))}
-                <option value="audio">Audio only</option>
-              </select>
+                onChange={setPageChoice}
+                options={[
+                  { value: "best", label: t.views.quality.best },
+                  ...pageVideo.heights.map((h) => ({ value: String(h), label: t.common.quality.height(String(h)) })),
+                  { value: "audio", label: t.views.quality.audioOnly },
+                ]}
+              />
               {started.has(pageUrl) ? (
                 <button type="button" className="btn btn-small" onClick={() => props.go("downloads")}>
-                  In downloads
+                  {t.views.browser.inDownloads}
                 </button>
               ) : (
                 <button type="button" className="btn btn-small btn-primary" onClick={downloadPage}>
-                  Download
+                  {t.views.browser.download}
                 </button>
               )}
             </div>
@@ -496,28 +519,26 @@ export function BrowserView(props: {
           {/* With the full video on offer, the files caught from the player
               (clips, pieces, previews) would only be clutter beside it. */}
           {pageVideo ? null : found.length === 0 ? (
-            <p className="browser-empty">
-              Nothing caught yet. Play the video on the page and it shows up here. To get another
-              quality, choose it in the page's own player.
-            </p>
+            <p className="browser-empty">{t.views.browser.nothingCaught}</p>
           ) : (
             // Everything caught from the player is one row: the best file is
             // chosen, the other qualities are in the list beside it.
             <div className="browser-page-video is-caught">
-              <span className="browser-kind">{chosen.item.kind === "audio" ? "Audio" : "Video"}</span>
+              <span className="browser-kind">
+                {chosen.item.kind === "audio" ? t.views.browser.audio : t.views.browser.video}
+              </span>
               <span className="browser-name" title={chosen.item.url}>
                 {title.trim() || mediaName(chosen.item.url)}
               </span>
-              <select aria-label="Quality" value={chosen.key} onChange={(e) => setPick(e.target.value)}>
-                {choices.map((choice) => (
-                  <option key={choice.key} value={choice.key}>
-                    {choice.label}
-                  </option>
-                ))}
-              </select>
+              <Select
+                aria-label={t.views.browser.qualityLabel}
+                value={chosen.key}
+                onChange={setPick}
+                options={choices.map((choice) => ({ value: choice.key, label: choice.label }))}
+              />
               {started.has(chosen.key) ? (
                 <button type="button" className="btn btn-small" onClick={() => props.go("downloads")}>
-                  In downloads
+                  {t.views.browser.inDownloads}
                 </button>
               ) : (
                 <button
@@ -525,7 +546,7 @@ export function BrowserView(props: {
                   className="btn btn-small btn-primary"
                   onClick={() => download(chosen.item, chosen.height, chosen.key)}
                 >
-                  Download
+                  {t.views.browser.download}
                 </button>
               )}
             </div>
@@ -535,13 +556,9 @@ export function BrowserView(props: {
 
       <div ref={stage} className={`signin-stage${open ? " is-open" : ""}`}>
         {open ? (
-          <p>The page is shown here inside the app.</p>
+          <p>{t.views.browser.shownHere}</p>
         ) : (
-          <p>
-            Open the page that has the video and press play. Every video or audio file the page
-            loads is caught and listed with a Download button. Sign-ins made on the Sign in page
-            work here too. Protected streaming services cannot be downloaded this way.
-          </p>
+          <p>{t.views.browser.intro}</p>
         )}
       </div>
     </div>
@@ -603,7 +620,11 @@ function SiteIcon({ site }: { site: string }) {
  * Sign in to a site without leaving the app. The site's own page is shown
  * inside this page; the sign-in made there is kept for downloads.
  */
-export function SignInView() {
+export function SignInView(props: {
+  /** A site (its label on this page) to open straight away, then forgotten. */
+  start?: string | null;
+  onStarted?: () => void;
+}) {
   const { actions } = useApp();
   const [signedIn, setSignedIn] = useState<string[]>([]);
   /** The site whose page is open, by its button label. */
@@ -618,8 +639,10 @@ export function SignInView() {
     const unlisten = api.onSignInPopup((host) =>
       setBlocked(
         /(^|\.)google\.com$|(^|\.)youtube\.com$/i.test(host)
-          ? "Google's sign-in opened in a small window of its own. If Google answers that this browser or app may not be secure, that is Google refusing to sign in inside other apps: sign in with your phone, email or username on this page instead, or import a cookies file."
-          : `${host || "Another site"} opened in a small window of its own to finish the sign-in. Close it when it is done.`,
+          ? t.views.signin.googlePopup
+          : host
+            ? t.views.signin.popup(host)
+            : t.views.signin.popupUnknown,
       ),
     );
     return () => {
@@ -656,6 +679,21 @@ export function SignInView() {
     };
   }, [open]);
 
+  // Sent here for one site (from the note on Home): its own sign-in page
+  // opens at once, once this page is laid out and its area is known.
+  useEffect(() => {
+    if (!props.start) return;
+    const site = SIGN_IN_SITES.find((s) => s.label === props.start);
+    const frame = requestAnimationFrame(() => {
+      // Asked once: the start is forgotten as soon as it is acted on.
+      props.onStarted?.();
+      if (site) void openSite(site);
+    });
+    return () => cancelAnimationFrame(frame);
+    // Only a new start matters, not the callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.start]);
+
   async function openSite(site: { label: string; url: string }) {
     try {
       await api.signinOpen(site.url, area());
@@ -670,7 +708,7 @@ export function SignInView() {
       const sites = await api.signinClose();
       setSignedIn(sites);
       setOpen(null);
-      actions.toast(sites.length > 0 ? "Sign-in saved" : "No sign-in was found");
+      actions.toast(sites.length > 0 ? t.views.signin.saved : t.views.signin.noneFound);
     } catch (e) {
       actions.toast(String(e), "error");
     }
@@ -681,7 +719,7 @@ export function SignInView() {
       const path = await api.pickCookiesFile();
       if (!path) return;
       setSignedIn(await api.importSignIn(path));
-      actions.toast("Sign-in imported");
+      actions.toast(t.views.signin.imported);
     } catch (e) {
       actions.toast(String(e), "error");
     }
@@ -700,8 +738,8 @@ export function SignInView() {
       const fresh = sites.filter((site) => !before.has(site)).length;
       actions.toast(
         fresh > 0
-          ? `Brought over ${fresh} sign-in${fresh === 1 ? "" : "s"} from ${browser.label}`
-          : `Sign-ins from ${browser.label} are up to date`,
+          ? t.views.signin.broughtOver(fresh, browser.label)
+          : t.views.signin.upToDate(browser.label),
       );
     } catch (e) {
       actions.toast(String(e), "error");
@@ -715,7 +753,7 @@ export function SignInView() {
       await api.forgetSignIns();
       setSignedIn([]);
       setOpen(null);
-      actions.toast("Sign-ins forgotten");
+      actions.toast(t.views.signin.forgotten);
     } catch (e) {
       actions.toast(String(e), "error");
     }
@@ -724,15 +762,17 @@ export function SignInView() {
   return (
     <div className={`page page-signin${open ? " is-open" : ""}`}>
       <div className="page-head">
-        <h1>Sign in</h1>
+        <h1>{t.views.signin.title}</h1>
         {open && (
           <>
             <span className="signin-where">
-              to <strong>{open}</strong>, then save
+              {t.views.signin.whereBefore}
+              <strong>{open}</strong>
+              {t.views.signin.whereAfter}
             </span>
             <span className="spacer" />
             <button type="button" className="btn btn-primary" onClick={done}>
-              Save sign-in and close
+              {t.views.signin.saveAndClose}
             </button>
           </>
         )}
@@ -746,11 +786,7 @@ export function SignInView() {
         )
       ) : (
         <div className="signin-intro">
-          <p>
-            Some sites only show a profile or a video to signed-in visitors. Pick a site, sign in
-            on its own page right here, then save. RushDownload keeps that sign-in on this
-            computer and downloads as you.
-          </p>
+          <p>{t.views.signin.intro}</p>
           <div className="signin-sites site-grid">
             {SIGN_IN_SITES.map((site) => (
               <button key={site.label} type="button" className="btn site-btn" onClick={() => openSite(site)}>
@@ -759,13 +795,9 @@ export function SignInView() {
               </button>
             ))}
           </div>
-          <section className="signin-browsers" aria-label="Bring sign-ins over from a browser">
-            <h2>Already signed in somewhere else?</h2>
-            <p>
-              Bring the sign-ins over from a browser on this computer, with nothing to type and no
-              file to export. Close that browser first. Every sign-in it holds is copied, not only
-              the ones for video sites.
-            </p>
+          <section className="signin-browsers" aria-label={t.views.signin.browsersRegion}>
+            <h2>{t.views.signin.elsewhereTitle}</h2>
+            <p>{t.views.signin.elsewhereText}</p>
             <div className="signin-sites">
               {COOKIE_BROWSERS.map((browser) => (
                 <button
@@ -777,28 +809,25 @@ export function SignInView() {
                   onClick={() => importBrowser(browser)}
                 >
                   <Globe size={16} strokeWidth={2} aria-hidden="true" />
-                  {reading === browser.value ? `Reading ${browser.label}` : browser.label}
+                  {reading === browser.value ? t.views.signin.reading(browser.label) : browser.label}
                 </button>
               ))}
               <button type="button" className="btn" disabled={reading != null} onClick={importFile}>
-                <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> Import a cookies file
+                <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> {t.views.signin.importFile}
               </button>
             </div>
-            <small className="form-note">
-              Firefox works best. Chrome, Edge, Brave, Opera and Vivaldi lock their sign-ins on
-              Windows, and often refuse.
-            </small>
+            <small className="form-note">{t.views.signin.browserNote}</small>
           </section>
           <p className="signin-status">
             {signedIn.length > 0 ? (
               <>
-                Signed in: <strong>{signedIn.join(", ")}</strong>
+                {t.views.signin.signedIn} <strong>{listText(signedIn)}</strong>
                 <button type="button" className="btn btn-small" onClick={forget}>
-                  Forget sign-ins
+                  {t.views.signin.forget}
                 </button>
               </>
             ) : (
-              "Not signed in to any site."
+              t.views.signin.notSignedIn
             )}
           </p>
         </div>
@@ -806,14 +835,9 @@ export function SignInView() {
 
       <div ref={stage} className={`signin-stage${open ? " is-open" : ""}`}>
         {open ? (
-          <p>The site's page is shown here inside the app.</p>
+          <p>{t.views.signin.shownHere}</p>
         ) : (
-          <p>
-            Google and YouTube do not allow signing in inside other apps, here included. For those,
-            sign in with your own browser, save that site's cookies as a cookies.txt file with a
-            browser extension made for it, and import the file with the button above. On sites
-            that offer "Sign in with Google", use the site's own password instead.
-          </p>
+          <p>{t.views.signin.googleNote}</p>
         )}
       </div>
     </div>
@@ -824,20 +848,21 @@ export function SignInView() {
 
 /** What the app is good at, in four marks along the foot of the Home page. */
 /** A profile's numbers: every digit for posts, "94.4K" for a following. */
-const WHOLE = new Intl.NumberFormat("en");
-const SHORT = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+const short = (n: number) =>
+  new Intl.NumberFormat(formatLocale(), { notation: "compact", maximumFractionDigits: 1 }).format(n);
 
 /** "Dec 2017", from the day a profile joined ("2017-12-14"). */
 function joinedIn(day: string): string {
   const at = new Date(`${day}T00:00:00`);
-  return Number.isNaN(at.getTime()) ? day : at.toLocaleDateString("en", { month: "short", year: "numeric" });
+  return Number.isNaN(at.getTime()) ? day : dateText(at, { month: "short", year: "numeric" });
 }
 
-const FEATURES: { icon: LucideIcon; title: string; detail: string }[] = [
-  { icon: Zap, title: "Ultra Fast", detail: "Multi-connection" },
-  { icon: ShieldCheck, title: "Safe & Secure", detail: "Encrypted DNS" },
-  { icon: Globe, title: "Built-in", detail: "Browser" },
-  { icon: LayoutGrid, title: "Smart", detail: "Queue & resume" },
+type Feature = "fast" | "safe" | "builtIn" | "smart";
+const FEATURES: { id: Feature; icon: LucideIcon }[] = [
+  { id: "fast", icon: Zap },
+  { id: "safe", icon: ShieldCheck },
+  { id: "builtIn", icon: Globe },
+  { id: "smart", icon: LayoutGrid },
 ];
 
 /** The link in the Home box, kept while the app is open: a visit to another
@@ -847,6 +872,8 @@ let keptLink = "";
 export function HomeView(props: {
   quality: string;
   go: (nav: Nav) => void;
+  /** Opens a site's own sign-in page on the Sign in page (by its label). */
+  signIn: (site: string) => void;
   /** A link the user just copied somewhere; it goes straight into the box. */
   copied?: { text: string; n: number } | null;
 }) {
@@ -874,6 +901,13 @@ export function HomeView(props: {
   const [face, setFace] = useState<ProfileFace | null>(null);
   /** The same, with its numbers, as the site itself answers a visitor who is not signed in. */
   const [stats, setStats] = useState<ProfileFace | null>(null);
+  /** Each part of the card is looked up on its own and shows the moment its
+   *  answer comes; until then it is a placeholder, and one that comes back
+   *  empty simply goes. */
+  const [faceLoading, setFaceLoading] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(false);
+  /** How long the count has been going, to say so when it is slow. */
+  const [countSeconds, setCountSeconds] = useState(0);
   const [bannerFailed, setBannerFailed] = useState<string | null>(null);
   /** A picture the site would not hand over; the card falls back to its plain badge. */
   const [pictureFailed, setPictureFailed] = useState<string | null>(null);
@@ -899,6 +933,8 @@ export function HomeView(props: {
     setPlaylist(null);
     setFace(null);
     setStats(null);
+    setFaceLoading(false);
+    setStatsLoading(false);
     setListHeights(null);
     setSizing(false);
     setCounting(false);
@@ -918,17 +954,23 @@ export function HomeView(props: {
         setCounting(true);
         // Whose profile it is comes first and on its own: it takes a second,
         // and the site gives it even where it will not list the posts.
-        const seen = who.site.endsWith("playlist")
-          ? Promise.resolve(null)
-          : api.profileFace(link).catch(() => null);
-        seen.then((found) => !stale && setFace(found));
+        const onProfile = !who.site.endsWith("playlist");
+        setFaceLoading(onProfile);
+        setStatsLoading(onProfile);
+        const seen = onProfile ? api.profileFace(link).catch(() => null) : Promise.resolve(null);
+        seen.then((found) => {
+          if (stale) return;
+          setFace(found);
+          setFaceLoading(false);
+        });
         // Its numbers (posts, followers, when it joined) take a moment longer,
         // and are asked for as a visitor who is not signed in.
-        if (!who.site.endsWith("playlist")) {
+        if (onProfile) {
           api
             .profileStats(link)
             .then((found) => !stale && setStats(found))
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => !stale && setStatsLoading(false));
         }
         api
           .playlistInfo(link)
@@ -1058,7 +1100,7 @@ export function HomeView(props: {
   const caughtChosen = caughtOffers.find((c) => c.key === caughtPick) ?? caughtOffers[0];
   // Once something real is caught, the looking is over.
   useEffect(() => {
-    if (catching && caughtOffers.some((c) => c.item.kind === "stream" || !c.label.includes("preview clip"))) {
+    if (catching && caughtOffers.some((c) => c.item.kind === "stream" || !c.preview)) {
       const settle = window.setTimeout(() => setCatching(false), 3500);
       return () => window.clearTimeout(settle);
     }
@@ -1105,15 +1147,33 @@ export function HomeView(props: {
   /** "4,678 posts", "94.4K followers", "Joined Dec 2017": each only where the site says. */
   const numbers: [string, string][] = who
     ? ([
-        who.posts != null ? [WHOLE.format(who.posts), who.posts === 1 ? "post" : "posts"] : null,
-        who.media != null ? [WHOLE.format(who.media), "with photos or videos"] : null,
-        who.followers != null ? [SHORT.format(who.followers), who.followers === 1 ? "follower" : "followers"] : null,
-        who.following != null ? [SHORT.format(who.following), "following"] : null,
-        who.joined ? ["", `Joined ${joinedIn(who.joined)}`] : null,
+        who.posts != null ? [num(who.posts), t.views.home.numbers.posts(who.posts)] : null,
+        who.media != null ? [num(who.media), t.views.home.numbers.media(who.media)] : null,
+        who.followers != null ? [short(who.followers), t.views.home.numbers.followers(who.followers)] : null,
+        who.following != null ? [short(who.following), t.views.home.numbers.following(who.following)] : null,
+        who.joined ? ["", t.views.home.numbers.joined(joinedIn(who.joined))] : null,
       ].filter(Boolean) as [string, string][])
     : [];
   /** The site shows this profile to anyone; only the list of its posts is kept for signed-in visitors. */
   const profileShown = !!profile && !isPlaylist && !!(who?.name || who?.picture);
+  // A profile the site lists only to signed-in visitors: downloading now
+  // would fetch nothing, so Download waits for a sign-in.
+  const gated = locked && !!profile && !isPlaylist;
+  const downloadButton = useRef<HTMLButtonElement>(null);
+  /** The note about signing in has been pointed at: its border stays lit,
+   *  steady, for as long as the link is the same. */
+  const [pointedAt, setPointedAt] = useState(false);
+  useEffect(() => setPointedAt(false), [url]);
+  /** Shakes the Download button and lights up the note about signing in. */
+  function nudge() {
+    setPointedAt(true);
+    const el = downloadButton.current;
+    if (!el) return;
+    el.classList.remove("is-shaking");
+    // Read the layout once, so the shake starts again on every click.
+    void el.offsetWidth;
+    el.classList.add("is-shaking");
+  }
   /** The name in the link, when the card is titled with the shown name instead. */
   const handle =
     profile && shownName.toLowerCase() !== profile.name.toLowerCase() ? `@${profile.name}` : null;
@@ -1122,12 +1182,23 @@ export function HomeView(props: {
   const holds = playlist
     ? [
         playlist.count > 0 || playlist.photos === 0
-          ? `${playlist.count}${plus} ${playlist.count === 1 ? "video" : "videos"}`
+          ? t.views.home.holds.videos(playlist.count, plus)
           : null,
-        playlist.photos > 0 ? `${playlist.photos}${plus} ${playlist.photos === 1 ? "photo" : "photos"}` : null,
-        playlist.duration ? `${formatDuration(playlist.duration)} total` : null,
+        playlist.photos > 0 ? t.views.home.holds.photos(playlist.photos, plus) : null,
+        playlist.duration ? t.views.home.holds.total(formatDuration(playlist.duration)) : null,
       ].filter(Boolean)
     : [];
+
+  // The seconds the count has taken, ticking while it goes.
+  useEffect(() => {
+    setCountSeconds(0);
+    if (!counting) return;
+    const started = Date.now();
+    const timer = window.setInterval(() => setCountSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [counting]);
+  /** Still waiting to hear whose profile it is. */
+  const faceWaiting = !isPlaylist && (faceLoading || statsLoading) && !who?.picture;
 
   // Which resolutions the playlist really has: a few of its videos are looked
   // up, so the card does not offer 4K for a playlist that has none.
@@ -1156,13 +1227,23 @@ export function HomeView(props: {
   }, [playlist]);
   const listChoices = listHeights
     ? [
-        { value: "best", label: "Best" },
-        ...listHeights.map((h) => ({ value: String(h), label: h === 2160 ? "2160p 4K" : `${h}p` })),
-        { value: "audio", label: "Audio only" },
+        { value: "best", label: t.views.quality.best },
+        ...listHeights.map((h) => ({
+          value: String(h),
+          label: h === 2160 ? t.views.quality.fourK(h) : t.common.quality.height(String(h)),
+        })),
+        { value: "audio", label: t.views.quality.audioOnly },
       ]
     : QUALITIES.map((q) => ({
         value: q.value,
-        label: q.value === "best" ? "Best" : q.value === "audio" ? "Audio only" : q.value === "2160" ? "2160p 4K" : q.label,
+        label:
+          q.value === "best"
+            ? t.views.quality.best
+            : q.value === "audio"
+              ? t.views.quality.audioOnly
+              : q.value === "2160"
+                ? t.views.quality.fourK(2160)
+                : q.label,
       }));
   /** Still finding out what the playlist has: the choice is shown once that is known. */
   const checkingList = picksQuality && !listHeights && (counting || sizing);
@@ -1170,6 +1251,10 @@ export function HomeView(props: {
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!valid) return;
+    if (gated) {
+      nudge();
+      return;
+    }
     // A video found on its page: the picked quality downloads.
     if (caughtChosen) {
       try {
@@ -1183,7 +1268,7 @@ export function HomeView(props: {
           headers: [["Referer", caughtChosen.item.referer]],
           filename: pageTitle.trim() || undefined,
         });
-        actions.toast("Download started");
+        actions.toast(t.views.downloadStarted);
         setUrl("");
         props.go("downloads");
       } catch (err) {
@@ -1212,12 +1297,12 @@ export function HomeView(props: {
       }
       const links = await api.importLinks(path);
       if (links.length === 0) {
-        actions.toast("No links were found in that file", "error");
+        actions.toast(t.views.home.noLinks, "error");
         return;
       }
       const media = qualityOptions(props.quality);
       await Promise.all(links.map((link) => api.add({ url: link, media })));
-      actions.toast(`Added ${links.length} download${links.length === 1 ? "" : "s"}`);
+      actions.toast(t.views.home.added(links.length));
       props.go("downloads");
     } catch (err) {
       actions.toast(String(err), "error");
@@ -1229,59 +1314,90 @@ export function HomeView(props: {
   return (
     <div className="page page-home">
       <div className="welcome">
-        <h1>Welcome to RushDownload</h1>
-        <p>Paste a link, or start a new download.</p>
+        <h1>{t.views.home.welcome}</h1>
+        <p>{t.views.home.subtitle}</p>
+
+        <label className="lang-switch">
+          <Languages size={14} strokeWidth={2} aria-hidden="true" />
+          <ChangeLanguageText />
+          <Select<Locale>
+            aria-label={changeLanguageLabel()}
+            value={locale}
+            onChange={(code) => void setLocale(code, true)}
+            options={LOCALES.map((l) => ({ value: l.code, label: languageOptionLabel(l), lang: l.code }))}
+          />
+        </label>
 
         <form className="paste" onSubmit={submit}>
           <input
             type="text"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="Paste any link: file, video page or torrent"
-            aria-label="Link to download"
+            placeholder={t.views.home.placeholder}
+            aria-label={t.views.home.linkLabel}
             spellCheck={false}
             autoFocus
           />
-          <button type="submit" className="btn btn-primary" disabled={!valid}>Download</button>
+          <button
+            ref={downloadButton}
+            type="submit"
+            className="btn btn-primary"
+            disabled={!valid}
+            // Still takes the click, to point at what is missing; see `gated`.
+            aria-disabled={gated || undefined}
+            onAnimationEnd={(e) => e.currentTarget.classList.remove("is-shaking")}
+          >
+            {t.views.home.download}
+          </button>
         </form>
 
         {locked && (
-          <div className="signin-needed" role="status">
+          <div className={`signin-needed${pointedAt ? " is-glowing" : ""}`} role="status">
             <KeyRound size={18} strokeWidth={2} aria-hidden="true" />
             <p>
               <strong>
                 {profileShown
-                  ? `${lockedSite ?? "This site"} shows this profile to everyone, but lists its posts only for signed-in visitors.`
+                  ? lockedSite
+                    ? t.views.home.locked.profileShown(lockedSite)
+                    : t.views.home.locked.profileShownThisSite
                   : lockedSite
-                    ? `${lockedSite} only shows this to signed-in visitors.`
-                    : "This site only shows this to signed-in visitors."}
+                    ? t.views.home.locked.site(lockedSite)
+                    : t.views.home.locked.thisSite}
               </strong>{" "}
               {lockedSite === "YouTube"
-                ? "Go to the Sign in page and bring your sign-in over from a browser (YouTube does not allow signing in inside other apps). "
-                : `Go to the Sign in page and sign in${lockedSite ? ` to ${lockedSite}` : ""}. `}
-              Then come back: your link stays here, ready to download.
+                ? t.views.home.locked.goYouTube
+                : lockedSite
+                  ? t.views.home.locked.goSite(lockedSite)
+                  : t.views.home.locked.go}{" "}
+              {t.views.home.locked.comeBack}
             </p>
-            <button type="button" className="btn btn-small btn-primary" onClick={() => props.go("signin")}>
-              Go to Sign in
+            <button
+              type="button"
+              className="btn btn-small btn-primary"
+              // Straight to the site's own sign-in where the app knows it;
+              // otherwise the Sign in page, to pick the site there.
+              onClick={() => (lockedSite ? props.signIn(lockedSite) : props.go("signin"))}
+            >
+              {t.views.home.locked.button}
             </button>
           </div>
         )}
         {((looking && !video) || (catchLink && catching && caughtOffers.length === 0)) && (
           <p className="video-looking" role="status">
             <span className="live-dot" aria-hidden="true" />{" "}
-            {catchLink ? "Finding the video on this page" : "Looking at what this page holds"}
+            {catchLink ? t.views.home.findingVideo : t.views.home.lookingPage}
           </p>
         )}
         {catchLink && !catching && caughtOffers.length === 0 && (
           <p className="video-looking" role="status">
-            No video could be found on this page by itself.
+            {t.views.home.noVideo}
             <button type="button" className="btn btn-small" onClick={() => actions.browse(catchLink)}>
-              Open it on the Browser page
+              {t.views.home.openInBrowser}
             </button>
           </p>
         )}
         {catchLink && caughtChosen && (
-          <section className="video-card is-caught" aria-label="Video found on this page">
+          <section className="video-card is-caught" aria-label={t.views.home.caughtRegion}>
             {picture ? (
               <img className="video-thumb" src={picture} alt="" referrerPolicy="no-referrer" />
             ) : (
@@ -1292,9 +1408,9 @@ export function HomeView(props: {
                 {pageTitle.trim() || mediaName(catchLink)}
               </h2>
               <p className="video-meta">
-                {catching ? "Found on the page · still looking for more qualities" : "Found on the page"}
+                {catching ? t.views.home.foundStillLooking : t.views.home.foundOnPage}
               </p>
-              <div className="video-choices" role="radiogroup" aria-label="Quality">
+              <div className="video-choices" role="radiogroup" aria-label={t.views.home.qualityLabel}>
                 {caughtOffers.map((offer) => (
                   <button
                     key={offer.key}
@@ -1314,7 +1430,7 @@ export function HomeView(props: {
         {profile && (
           <section
             className={`video-card profile-card${cardBanner ? " has-banner" : ""}`}
-            aria-label="Profile found at this link"
+            aria-label={t.views.home.profileRegion}
           >
             {cardBanner && (
               <img
@@ -1334,7 +1450,7 @@ export function HomeView(props: {
                 referrerPolicy="no-referrer"
                 onError={() => setPictureFailed(cardPicture)}
               />
-            ) : !isPlaylist && !playlist && !who && counting ? (
+            ) : faceWaiting || (!isPlaylist && profile.site === "YouTube" && !playlist && counting) ? (
               <span className="profile-face shimmer" aria-hidden="true" />
             ) : (
               <span className="profile-badge" aria-hidden="true">
@@ -1355,36 +1471,49 @@ export function HomeView(props: {
                         {playlist ? playlist.title : profile.site}
                       </h2>
                       <p className="video-meta">
-                        {playlist ? [...holds, playlist.channel, "Playlist"].filter(Boolean).join(" · ") : "Playlist"}
+                        {playlist
+                          ? [...holds, playlist.channel, t.views.home.playlist].filter(Boolean).join(" · ")
+                          : t.views.home.playlist}
                       </p>
                     </>
                   )}
                 </>
               ) : (
                 <>
-                  <h2 className="video-title" title={shownName}>{shownName}</h2>
-                  {/* Who it is shows as soon as it is known; the counts join the line when they are in. */}
-                  {!playlist && !who && counting ? (
-                    <div className="shimmer-lines" aria-hidden="true">
-                      <span className="shimmer shimmer-meta" />
-                    </div>
+                  {/* Each part shows the moment its answer comes, in place of
+                      its own placeholder; a part that comes back empty goes. */}
+                  <h2 className="video-title is-arriving" key={shownName} title={shownName}>{shownName}</h2>
+                  <p className="video-meta">
+                    {[handle, ...holds, t.views.home.profileOf(profile.site)].filter(Boolean).join(" · ")}
+                    {/* what it holds joins this line once counted */}
+                    {counting && !playlist && <span className="shimmer shimmer-inline" aria-hidden="true" />}
+                  </p>
+                  {who?.about ? (
+                    <p className="profile-about is-arriving" title={who.about}>{who.about}</p>
                   ) : (
-                    <p className="video-meta">
-                      {[handle, ...holds, `${profile.site} profile`].filter(Boolean).join(" · ")}
-                    </p>
-                  )}
-                  {who?.about && (
-                    <p className="profile-about" title={who.about}>{who.about}</p>
+                    faceWaiting && (
+                      <div className="shimmer-lines" aria-hidden="true">
+                        <span className="shimmer shimmer-about" />
+                      </div>
+                    )
                   )}
                   {/* What the profile shows any visitor: its numbers, and when it joined. */}
-                  {numbers.length > 0 && (
-                    <p className="profile-numbers">
+                  {numbers.length > 0 ? (
+                    <p className="profile-numbers is-arriving">
                       {numbers.map(([figure, what]) => (
                         <span key={what}>
                           {figure && <strong>{figure}</strong>} {what}
                         </span>
                       ))}
                     </p>
+                  ) : (
+                    statsLoading && (
+                      <div className="shimmer-numbers" aria-hidden="true">
+                        {[58, 74, 66].map((width, i) => (
+                          <span key={i} className="shimmer shimmer-number" style={{ width }} />
+                        ))}
+                      </div>
+                    )
                   )}
                 </>
               )}
@@ -1399,16 +1528,19 @@ export function HomeView(props: {
                 <div className="card-loading" role="status">
                   <span>
                     {!counting
-                      ? "Checking which resolutions it has"
+                      ? t.views.home.loading.resolutions
                       : isPlaylist
-                        ? "Looking up the playlist"
-                        : "Counting what it holds"}
+                        ? t.views.home.loading.playlist
+                        : countSeconds < 6
+                          ? t.views.home.loading.counting
+                          : // A slow site is said to be slow; nothing waits on the count.
+                            t.views.home.loading.slow(countSeconds, profile.site)}
                   </span>
                   <div className="bar bar-downloading bar-busy" />
                 </div>
               )}
               {picksQuality && !checkingList && (
-                <div className="video-choices" role="radiogroup" aria-label="Resolution">
+                <div className="video-choices" role="radiogroup" aria-label={t.views.home.resolution}>
                   {listChoices.map((q) => (
                     <button
                       key={q.value}
@@ -1430,22 +1562,18 @@ export function HomeView(props: {
           <p className="profile-note">
             <Info size={14} strokeWidth={2} aria-hidden="true" />
             {isPlaylist ? (
-              <span>
-                Download saves every video of this playlist, in order, into a folder named after the
-                playlist, in the quality picked above. A private playlist needs you to be signed in.
-              </span>
+              <span>{t.views.home.playlistNote}</span>
             ) : (
               <span>
-                Download saves every photo and video this profile has posted into a folder
-                named <strong>{profile.name} ({profile.site})</strong>, sorted into Images and Videos
-                {picksQuality ? ", in the quality picked above" : ""}.
-                Some sites only show a profile when you are signed in.
+                {t.views.home.profileNoteBefore}
+                <strong>{t.views.home.profileFolder(profile.name, profile.site)}</strong>
+                {picksQuality ? t.views.home.profileNoteAfterQuality : t.views.home.profileNoteAfter}
               </span>
             )}
           </p>
         )}
         {video && (
-          <section className="video-card" aria-label="Video found at this link">
+          <section className="video-card" aria-label={t.views.home.videoRegion}>
             {video.thumbnail ? (
               <img className="video-thumb" src={video.thumbnail} alt="" referrerPolicy="no-referrer" />
             ) : (
@@ -1458,11 +1586,14 @@ export function HomeView(props: {
                   .filter(Boolean)
                   .join(" · ")}
               </p>
-              <div className="video-choices" role="radiogroup" aria-label="Resolution">
+              <div className="video-choices" role="radiogroup" aria-label={t.views.home.resolution}>
                 {[
-                  { value: "best", label: "Best" },
-                  ...video.heights.map((h) => ({ value: String(h), label: h === 2160 ? "2160p 4K" : `${h}p` })),
-                  { value: "audio", label: "Audio only" },
+                  { value: "best", label: t.views.quality.best },
+                  ...video.heights.map((h) => ({
+                    value: String(h),
+                    label: h === 2160 ? t.views.quality.fourK(h) : t.common.quality.height(String(h)),
+                  })),
+                  { value: "audio", label: t.views.quality.audioOnly },
                 ].map((option) => (
                   <button
                     key={option.value}
@@ -1480,48 +1611,51 @@ export function HomeView(props: {
           </section>
         )}
 
-        <span className="or">or</span>
+        <span className="or">{t.views.home.or}</span>
 
         <div className="welcome-actions">
           <button
             type="button"
             className="btn btn-pill"
-            title="Paste a page address and pick the media found on it"
+            title={t.views.home.addFromBrowserTitle}
             onClick={() => actions.openAdd("", "scan")}
           >
-            <Puzzle size={17} strokeWidth={0} fill="currentColor" aria-hidden="true" /> Add from Browser
+            <Puzzle size={17} strokeWidth={0} fill="currentColor" aria-hidden="true" /> {t.views.home.addFromBrowser}
           </button>
           <button
             type="button"
             className="btn btn-pill"
-            title="Open a .torrent file, or add every link listed in a text file"
+            title={t.views.home.browseFilesTitle}
             disabled={busy}
             onClick={importFile}
           >
-            <Folder size={17} strokeWidth={0} fill="currentColor" aria-hidden="true" /> Browse Files
+            <Folder size={17} strokeWidth={0} fill="currentColor" aria-hidden="true" /> {t.views.home.browseFiles}
           </button>
         </div>
 
         {running.length > 0 && (
-          <section className="glance" aria-label="Downloading now">
+          <section className="glance" aria-label={t.views.home.downloadingRegion}>
             <button type="button" className="live" onClick={() => props.go("downloads")}>
               <span className="live-dot" aria-hidden="true" />
-              {running.length} downloading · {formatSpeed(speed)}
+              {t.views.home.downloading(running.length, formatSpeed(speed))}
               <ArrowRight size={15} strokeWidth={2} aria-hidden="true" />
             </button>
             {/* The first few, each with how far along it is; the rest are on the Downloads page. */}
             <ul className="glance-list">
               {running.slice(0, 3).map((d) => {
                 const percent = percentOf(d);
+                const checked = checkPercent(d);
                 return (
                   <li key={d.id}>
                     <FileIcon d={d} />
                     <span className="glance-name" title={displayName(d)}>{displayName(d)}</span>
                     <span className="glance-figure">
-                      {percent != null
-                        ? `${percent}%`
+                      {checked != null
+                        ? t.views.home.checking(checked)
+                        : percent != null
+                        ? pct(percent)
                         : d.status === "connecting"
-                          ? "Connecting"
+                          ? t.common.status.connecting
                           : formatBytes(d.downloaded)}
                     </span>
                     <span className={`glance-bar${percent == null ? " is-open" : ""}`} aria-hidden="true">
@@ -1535,12 +1669,12 @@ export function HomeView(props: {
         )}
       </div>
 
-      <ul className="features" aria-label="What RushDownload does">
+      <ul className="features" aria-label={t.views.home.featuresRegion}>
         {FEATURES.map((feature) => (
-          <li key={feature.title}>
+          <li key={feature.id}>
             <feature.icon size={24} strokeWidth={2} aria-hidden="true" />
-            <strong>{feature.title}</strong>
-            <span>{feature.detail}</span>
+            <strong>{t.views.home.features[feature.id]}</strong>
+            <span>{t.views.home.features[`${feature.id}Detail`]}</span>
           </li>
         ))}
       </ul>
@@ -1556,50 +1690,59 @@ type TypeFilter = "all" | Category;
 type DateFilter = "any" | "today" | "week" | "month";
 type SizeFilter = "any" | "small" | "medium" | "large";
 
-const CHIPS: { id: Chip; label: string; match: (d: Download) => boolean }[] = [
-  { id: "all", label: "All", match: () => true },
-  { id: "running", label: "Downloading", match: isRunning },
-  // Completed means the file is there; one deleted since has a chip of its own.
-  { id: "completed", label: "Completed", match: (d) => d.status === "completed" && !isDeleted(d) },
-  { id: "paused", label: "Paused", match: (d) => d.status === "paused" },
-  { id: "failed", label: "Failed", match: (d) => d.status === "failed" },
-  { id: "queued", label: "Queued", match: (d) => d.status === "queued" },
-  { id: "deleted", label: "Deleted", match: isDeleted },
-];
+// Labels are getters, read at render time, so they follow the language.
+const CHIPS: { id: Chip; readonly label: string; match: (d: Download) => boolean }[] = (
+  [
+    ["all", () => true],
+    ["running", isRunning],
+    // Completed means the file is there; one deleted since has a chip of its own.
+    ["completed", (d) => d.status === "completed" && !isDeleted(d)],
+    ["paused", (d) => d.status === "paused"],
+    ["failed", (d) => d.status === "failed"],
+    ["queued", (d) => d.status === "queued"],
+    ["deleted", isDeleted],
+  ] as [Chip, (d: Download) => boolean][]
+).map(([id, match]) => ({
+  id,
+  match,
+  get label() {
+    return t.views.downloads.chips[id];
+  },
+}));
 
-const SORTS: { value: Sort; label: string }[] = [
-  { value: "newest", label: "Newest first" },
-  { value: "oldest", label: "Oldest first" },
-  { value: "name", label: "Name" },
-  { value: "largest", label: "Largest first" },
-  { value: "smallest", label: "Smallest first" },
-  { value: "fastest", label: "Fastest first" },
-];
+/** Options of a menu whose labels are read from `labels` at render time. */
+function labelled<T extends string>(values: T[], labels: () => Record<T, string>) {
+  return values.map((value) => ({
+    value,
+    get label() {
+      return labels()[value];
+    },
+  }));
+}
 
-const TYPES: { value: TypeFilter; label: string; icon: LucideIcon }[] = [
-  { value: "all", label: "All Types", icon: ListFilter },
-  { value: "video", label: "Video", icon: Film },
-  { value: "audio", label: "Audio", icon: Music },
-  { value: "image", label: "Images", icon: ImageGlyph },
-  { value: "document", label: "Documents", icon: FileText },
-  { value: "archive", label: "Archives", icon: Archive },
-  { value: "software", label: "Programs", icon: Package },
-  { value: "other", label: "Others", icon: FileGlyph },
-];
+const SORTS = labelled<Sort>(["newest", "oldest", "name", "largest", "smallest", "fastest"], () => t.views.downloads.sorts);
 
-const DATES: { value: DateFilter; label: string }[] = [
-  { value: "any", label: "Any time" },
-  { value: "today", label: "Today" },
-  { value: "week", label: "Last 7 days" },
-  { value: "month", label: "Last 30 days" },
-];
+const TYPE_ICONS: Record<TypeFilter, LucideIcon> = {
+  all: ListFilter,
+  video: Film,
+  audio: Music,
+  image: ImageGlyph,
+  document: FileText,
+  archive: Archive,
+  software: Package,
+  other: FileGlyph,
+};
+const TYPES = (Object.keys(TYPE_ICONS) as TypeFilter[]).map((value) => ({
+  value,
+  icon: TYPE_ICONS[value],
+  get label() {
+    return t.views.downloads.types[value];
+  },
+}));
 
-const SIZES: { value: SizeFilter; label: string }[] = [
-  { value: "any", label: "Any size" },
-  { value: "small", label: "Under 100 MB" },
-  { value: "medium", label: "100 MB to 1 GB" },
-  { value: "large", label: "Over 1 GB" },
-];
+const DATES = labelled<DateFilter>(["any", "today", "week", "month"], () => t.views.downloads.dates);
+
+const SIZES = labelled<SizeFilter>(["any", "small", "medium", "large"], () => t.views.downloads.sizes);
 
 const MB = 1024 * 1024;
 
@@ -1711,6 +1854,8 @@ export function TransferSummary() {
   if (inHand.length === 0) return null;
 
   const speed = inHand.filter(isRunning).reduce((sum, d) => sum + d.speed, 0);
+  // Nothing is coming down because what was downloaded is being checked.
+  const checkingOnly = speed === 0 && inHand.some((d) => checkPercent(d) != null);
   const done = inHand.reduce((sum, d) => sum + d.downloaded, 0);
   // Everything in hand will have downloaded once it is finished. A download
   // whose size is not known yet counts for what it has so far. What is
@@ -1719,8 +1864,8 @@ export function TransferSummary() {
   const share = total > 0 ? Math.min(100, (done / total) * 100) : 0;
 
   return (
-    <section className="stats" aria-label="Transfer summary">
-      <div className="stat" title="Download speed">
+    <section className="stats" aria-label={t.views.summary.region}>
+      <div className="stat" title={t.views.summary.speed}>
         {/* The icon stands in for the word, and moves while anything is coming down. */}
         <div className="stat-trace">
           <MiniGraph values={speedLog.map((s) => s.speed)} />
@@ -1731,19 +1876,23 @@ export function TransferSummary() {
             aria-hidden="true"
           />
         </div>
-        <strong aria-label={`Download speed ${formatSpeed(speed)}`}>{formatSpeed(speed)}</strong>
+        {checkingOnly ? (
+          <strong title={t.views.summary.checkingTitle}>{t.views.summary.checking}</strong>
+        ) : (
+          <strong aria-label={t.views.summary.speedValue(formatSpeed(speed))}>{formatSpeed(speed)}</strong>
+        )}
       </div>
-      <div className="stat" title="Downloaded so far, of everything downloading, waiting or paused">
+      <div className="stat" title={t.views.summary.sizeTitle}>
         <span className="stat-graph stat-meter" aria-hidden="true">
           <span className="bar bar-tall">
             <span className="fill" style={{ width: `${share}%` }} />
           </span>
-          <small>{Math.floor(share)}%</small>
+          <small>{t.views.summary.percent(Math.floor(share))}</small>
         </span>
         <strong>
           {formatBytes(done)} <span className="stat-of">/ {formatBytes(total)}</span>
         </strong>
-        <span>Total</span>
+        <span>{t.views.summary.total}</span>
       </div>
     </section>
   );
@@ -1796,18 +1945,18 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
   return (
     <div className="page page-downloads">
       <header className="page-head">
-        <h1>Downloads</h1>
+        <h1>{t.views.downloads.title}</h1>
         <span className="spacer" />
         <IconBtn
           outlined
           icon={FolderOpen}
-          label="Open download folder"
+          label={t.views.downloads.openFolder}
           onClick={() => api.openDownloadDir().catch((e) => actions.toast(String(e), "error"))}
         />
         <IconBtn
           outlined
           icon={Search}
-          label="Search downloads"
+          label={t.views.downloads.search}
           active={filtersOpen && query !== ""}
           onClick={() => {
             setFiltersOpen(true);
@@ -1817,12 +1966,12 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
         <IconBtn
           outlined
           icon={ListFilter}
-          label={filtersOpen ? "Hide filters" : "Show filters"}
+          label={filtersOpen ? t.views.downloads.hideFilters : t.views.downloads.showFilters}
           active={filtersOpen || narrowed}
           onClick={() => setFiltersOpen((v) => !v)}
         />
         <Dropdown
-          label="Sort by"
+          label={t.views.downloads.sortBy}
           value={sort}
           options={SORTS}
           onChange={(v) => {
@@ -1832,7 +1981,7 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
         />
       </header>
 
-      <div className="chips" role="tablist" aria-label="Filter by status">
+      <div className="chips" role="tablist" aria-label={t.views.downloads.filterByStatus}>
         {CHIPS.map((c) => {
           const count = downloads.filter(c.match).length;
           // Queued only earns a chip while something is actually waiting, and
@@ -1858,9 +2007,9 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
 
       {filtersOpen && (
         <div className="filters">
-          <Dropdown label="Type" value={type} options={TYPES} onChange={setType} showValue />
-          <Dropdown label="Date" value={date} options={DATES} onChange={setDate} showValue />
-          <Dropdown label="Size" value={size} options={SIZES} onChange={setSize} showValue />
+          <Dropdown label={t.views.downloads.type} value={type} options={TYPES} onChange={setType} showValue />
+          <Dropdown label={t.views.downloads.date} value={date} options={DATES} onChange={setDate} showValue />
+          <Dropdown label={t.views.downloads.size} value={size} options={SIZES} onChange={setSize} showValue />
           <label className="search">
             <Search size={16} strokeWidth={2} aria-hidden="true" />
             <input
@@ -1868,12 +2017,12 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search downloads..."
-              aria-label="Search downloads"
+              placeholder={t.views.downloads.searchPlaceholder}
+              aria-label={t.views.downloads.search}
               spellCheck={false}
             />
             {query && (
-              <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>
+              <button type="button" className="search-clear" aria-label={t.views.downloads.clearSearch} onClick={() => setQuery("")}>
                 <X size={14} strokeWidth={2.25} aria-hidden="true" />
               </button>
             )}
@@ -1882,15 +2031,15 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
       )}
 
       {selected.length > 1 && (
-        <div className="bulk" role="toolbar" aria-label="Actions for selected downloads">
-          <strong>{selected.length} selected</strong>
+        <div className="bulk" role="toolbar" aria-label={t.views.downloads.bulkRegion}>
+          <strong>{t.views.downloads.selected(selected.length)}</strong>
           <button
             type="button"
             className="btn btn-small"
             disabled={!selected.some(canPause)}
             onClick={() => actions.pause(selected.filter(canPause).map((d) => d.id))}
           >
-            <Pause size={14} strokeWidth={0} fill="currentColor" aria-hidden="true" /> Pause
+            <Pause size={14} strokeWidth={0} fill="currentColor" aria-hidden="true" /> {t.views.downloads.pause}
           </button>
           <button
             type="button"
@@ -1898,13 +2047,13 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
             disabled={!selected.some(canResume)}
             onClick={() => actions.resume(selected.filter(canResume).map((d) => d.id))}
           >
-            <Play size={14} strokeWidth={0} fill="currentColor" aria-hidden="true" /> Resume
+            <Play size={14} strokeWidth={0} fill="currentColor" aria-hidden="true" /> {t.views.downloads.resume}
           </button>
           <button type="button" className="btn btn-small" onClick={() => actions.remove(selected.map((d) => d.id))}>
-            <X size={15} strokeWidth={2} aria-hidden="true" /> Remove
+            <X size={15} strokeWidth={2} aria-hidden="true" /> {t.views.downloads.remove}
           </button>
           <span className="spacer" />
-          <button type="button" className="link" onClick={props.clearSelection}>Clear selection</button>
+          <button type="button" className="link" onClick={props.clearSelection}>{t.views.downloads.clearSelection}</button>
         </div>
       )}
 
@@ -1912,22 +2061,22 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
         <div className="empty">
           {downloads.length === 0 ? (
             <>
-              <h2>No downloads yet</h2>
-              <p>Paste a link on the Home page to start your first download.</p>
+              <h2>{t.views.downloads.emptyTitle}</h2>
+              <p>{t.views.downloads.emptyText}</p>
               <button type="button" className="btn btn-primary" onClick={() => props.go("home")}>
-                Go to Home
+                {t.views.downloads.goHome}
               </button>
             </>
           ) : (
             <>
-              <h2>Nothing matches</h2>
-              <p>No download fits the current status, filters and search.</p>
-              <button type="button" className="btn" onClick={clearFilters}>Clear filters</button>
+              <h2>{t.views.downloads.noMatchTitle}</h2>
+              <p>{t.views.downloads.noMatchText}</p>
+              <button type="button" className="btn" onClick={clearFilters}>{t.views.downloads.clearFilters}</button>
             </>
           )}
         </div>
       ) : (
-        <ul className="list" role="listbox" aria-multiselectable="true" aria-label="Downloads">
+        <ul className="list" role="listbox" aria-multiselectable="true" aria-label={t.views.downloads.title}>
           {visible.map((d) => (
             <DownloadRow
               key={d.id}
@@ -1951,15 +2100,24 @@ export type Density = "comfortable" | "compact";
 type Section = "general" | "downloads" | "network" | "performance" | "scheduler" | "appearance" | "advanced";
 export type SettingsSection = Section;
 /** The sections of Settings, in order: one tab each. */
-export const SETTINGS_SECTIONS: { id: Section; label: string; icon: LucideIcon }[] = [
-  { id: "general", label: "General", icon: SettingsGlyph },
-  { id: "downloads", label: "Downloads", icon: DownloadGlyph },
-  { id: "network", label: "Network", icon: Wifi },
-  { id: "performance", label: "Performance", icon: Gauge },
-  { id: "scheduler", label: "Scheduler", icon: CalendarClock },
-  { id: "appearance", label: "Appearance", icon: Brush },
-  { id: "advanced", label: "Advanced", icon: Wrench },
-];
+export const SETTINGS_SECTIONS: { id: Section; readonly label: string; icon: LucideIcon }[] = (
+  [
+    ["general", SettingsGlyph],
+    ["downloads", DownloadGlyph],
+    ["network", Wifi],
+    ["performance", Gauge],
+    ["scheduler", CalendarClock],
+    ["appearance", Brush],
+    ["advanced", Wrench],
+  ] as [Section, LucideIcon][]
+).map(([id, icon]) => ({
+  id,
+  icon,
+  // Read at render time, so it follows the language.
+  get label() {
+    return t.views.settings.sections[id];
+  },
+}));
 
 /** The stops of the speed slider, 100 KB/s to 100 MB/s: fine at the slow end, coarse at the fast end. */
 const SPEED_STOPS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 7.5, 10, 15, 20, 30, 40, 50, 75, 100].map((mb) =>
@@ -1976,23 +2134,40 @@ function speedStopOf(limit: number): number {
   return best;
 }
 
-export const SHORTCUTS: [string, string][] = [
-  ["Ctrl N", "Add a download"],
-  ["Ctrl V", "Add the copied link"],
-  ["Ctrl K", "Search commands and downloads"],
-  ["Ctrl 1 / 2", "Home / Downloads"],
-  ["Ctrl ,", "Settings"],
-  ["Ctrl A", "Select every download"],
-  ["Space", "Pause or resume the selection"],
-  ["Delete", "Remove the selection from the list"],
-  ["Ctrl Shift P", "Pause all"],
-  ["Ctrl Shift R", "Resume all"],
-  ["Esc", "Close the dialog or menu"],
+type Shortcut = keyof typeof t.views.settings.shortcuts;
+/** Keys, and what they do (looked up in `t.views.settings.shortcuts` at render time). */
+export const SHORTCUTS: [string, Shortcut][] = [
+  ["Ctrl N", "add"],
+  ["Ctrl V", "paste"],
+  ["Ctrl K", "search"],
+  ["Ctrl 1 / 2", "pages"],
+  ["Ctrl ,", "settings"],
+  ["Ctrl A", "selectAll"],
+  ["Space", "toggle"],
+  ["Delete", "remove"],
+  ["Ctrl Shift P", "pauseAll"],
+  ["Ctrl Shift R", "resumeAll"],
+  ["Esc", "close"],
 ];
 
 /** A setting shown for a feature the app cannot do yet: visible, switched off, labelled. */
 /** One setting on a line: what it is, and a word about it, on the left; its control on the right. */
-function SettingRow(props: { label: string; id?: string; hint?: ReactNode; wide?: boolean; children: ReactNode }) {
+/** "Change language" in the language switched on; in any language but
+ *  English the English words follow on a pill, so someone who switched to a
+ *  language they cannot read can still find the way back. */
+function ChangeLanguageText() {
+  if (locale === "en") return <span>{ENGLISH_CHANGE_LANGUAGE}</span>;
+  return (
+    <span className="change-language">
+      {t.common.changeLanguage}
+      <span className="lang-pill" lang="en" dir="ltr">
+        {ENGLISH_CHANGE_LANGUAGE}
+      </span>
+    </span>
+  );
+}
+
+function SettingRow(props: { label: ReactNode; id?: string; hint?: ReactNode; wide?: boolean; children: ReactNode }) {
   return (
     <div className={`setting-row${props.wide ? " is-wide" : ""}`}>
       <div className="setting-text">
@@ -2005,15 +2180,16 @@ function SettingRow(props: { label: string; id?: string; hint?: ReactNode; wide?
 }
 
 /** A setting that is on or off: the whole line is the switch. Without `onChange` it is not built yet. */
-function SettingToggle(props: { label: string; checked?: boolean; onChange?: (on: boolean) => void }) {
+function SettingToggle(props: { label: string; hint?: string; checked?: boolean; onChange?: (on: boolean) => void }) {
   const soon = !props.onChange;
   return (
     <label className={`setting-row toggle${soon ? " is-disabled" : ""}`}>
       <span className="setting-text">
         <span>
           {props.label}
-          {soon && <span className="soon">Soon</span>}
+          {soon && <span className="soon">{t.views.settings.soon}</span>}
         </span>
+        {props.hint && <small>{props.hint}</small>}
       </span>
       <input
         type="checkbox"
@@ -2064,6 +2240,9 @@ export function SettingsView(props: {
   quality: string;
   onQuality: (q: string) => void;
   onSettings: (s: Settings) => void;
+  /** How the app sits on the desktop; null until known. */
+  appPrefs: AppPrefs | null;
+  onAppPrefs: (prefs: AppPrefs) => void;
   /** Which tab is in front, and what picks another. */
   section: Section;
   onSection: (section: Section) => void;
@@ -2122,10 +2301,10 @@ export function SettingsView(props: {
   }
 
   const folderRow = (
-    <SettingRow label="Default Download Location" id="set-dir" wide>
+    <SettingRow label={t.views.settings.folder} id="set-dir" wide>
       <div className="input-with-button">
         <input type="text" readOnly aria-labelledby="set-dir" value={settings.download_dir} />
-        <button type="button" title="Choose folder" aria-label="Choose folder" onClick={browse}>
+        <button type="button" title={t.views.settings.chooseFolder} aria-label={t.views.settings.chooseFolder} onClick={browse}>
           <Folder size={17} strokeWidth={2} aria-hidden="true" />
         </button>
       </div>
@@ -2136,12 +2315,12 @@ export function SettingsView(props: {
     <div className="page page-settings">
       <div className="settings">
         <div className="settings-side">
-          <h1>Settings</h1>
+          <h1>{t.views.settings.title}</h1>
         </div>
 
         {/* Tabs as a browser has them: the one in front is part of the panel under it. */}
         <div className="settings-main">
-          <div className="settings-nav settings-tabs" role="tablist" aria-label="Settings sections">
+          <div className="settings-nav settings-tabs" role="tablist" aria-label={t.views.settings.sectionsLabel}>
             {SETTINGS_SECTIONS.map((s) => (
               <button
                 key={s.id}
@@ -2169,125 +2348,141 @@ export function SettingsView(props: {
         <div className="settings-body" key={section}>
           {section === "general" && (
             <>
-              <h2>General</h2>
+              <h2>{t.views.settings.sections.general}</h2>
               <div className="setting-card">
                 <SettingToggle
-                  label="Put links I copy into the Home box"
+                  label={t.views.settings.general.clipWatch}
                   checked={props.clipWatch}
                   onChange={props.onClipWatch}
                 />
                 <SettingToggle
-                  label="Ask where to save each profile or playlist"
+                  label={t.views.settings.general.askFolder}
                   checked={props.askFolder}
                   onChange={props.onAskFolder}
                 />
               </div>
               <div className="setting-card">
-                {folderRow}
-                <SettingRow label="Language" id="set-language" hint="More languages are not available yet.">
-                  <select disabled aria-labelledby="set-language" value="en" onChange={() => {}}>
-                    <option value="en">English</option>
-                  </select>
+                <SettingRow label={<ChangeLanguageText />} id="set-language" hint={t.common.languageHint}>
+                  <Select<Locale>
+                    aria-labelledby="set-language"
+                    value={locale}
+                    onChange={(code) => void setLocale(code, true)}
+                    options={LOCALES.map((l) => ({ value: l.code, label: languageOptionLabel(l), lang: l.code }))}
+                  />
                 </SettingRow>
+                {folderRow}
               </div>
-              <h3>Not built yet</h3>
-              <div className="setting-card">
-                <SettingToggle label="Launch on system startup" />
-                <SettingToggle label="Minimize to tray" />
-                <SettingToggle label="Show download notifications" />
-                <SettingToggle label="Enable hardware acceleration" />
-              </div>
+              {props.appPrefs && (
+                <div className="setting-card">
+                  <SettingToggle
+                    label={t.views.settings.general.startup}
+                    hint={t.views.settings.general.startupHint}
+                    checked={props.appPrefs.start_with_system}
+                    onChange={(on) => props.onAppPrefs({ ...props.appPrefs!, start_with_system: on })}
+                  />
+                  <SettingToggle
+                    label={t.views.settings.general.tray}
+                    hint={t.views.settings.general.trayHint}
+                    checked={props.appPrefs.close_to_tray}
+                    onChange={(on) => props.onAppPrefs({ ...props.appPrefs!, close_to_tray: on })}
+                  />
+                  <SettingToggle
+                    label={t.views.settings.general.notifications}
+                    hint={t.views.settings.general.notificationsHint}
+                    checked={props.appPrefs.notifications}
+                    onChange={(on) => props.onAppPrefs({ ...props.appPrefs!, notifications: on })}
+                  />
+                  <SettingToggle
+                    label={t.views.settings.general.hardware}
+                    hint={t.views.settings.general.hardwareHint}
+                    checked={props.appPrefs.hardware_acceleration}
+                    onChange={(on) => props.onAppPrefs({ ...props.appPrefs!, hardware_acceleration: on })}
+                  />
+                </div>
+              )}
             </>
           )}
 
           {section === "downloads" && (
             <>
-              <h2>Downloads</h2>
+              <h2>{t.views.settings.sections.downloads}</h2>
               <div className="setting-card">
                 {folderRow}
-                <SettingRow label="Download folder" hint="Where finished files are, in Explorer.">
+                <SettingRow label={t.views.settings.downloads.folder} hint={t.views.settings.downloads.folderHint}>
                   <button
                     type="button"
                     className="btn"
                     onClick={() => api.openDownloadDir().catch((e) => actions.toast(String(e), "error"))}
                   >
-                    <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> Open download folder
+                    <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> {t.views.settings.downloads.openFolder}
                   </button>
                 </SettingRow>
               </div>
               <div className="setting-card">
                 <SettingRow
-                  label="Default quality for video pages"
+                  label={t.views.settings.downloads.quality}
                   id="set-quality"
-                  hint="Used for links such as YouTube. Direct file links ignore it."
+                  hint={t.views.settings.downloads.qualityHint}
                 >
-                  <select
+                  <Select
                     aria-labelledby="set-quality"
                     value={props.quality}
-                    onChange={(e) => props.onQuality(e.target.value)}
-                  >
-                    {QUALITIES.map((q) => (
-                      <option key={q.value} value={q.value}>{q.label}</option>
-                    ))}
-                  </select>
+                    onChange={props.onQuality}
+                    options={QUALITIES.map((q) => ({ value: q.value, label: q.label }))}
+                  />
                 </SettingRow>
                 <SettingRow
-                  label="Use a browser's sign-in"
+                  label={t.views.settings.downloads.cookies}
                   id="set-cookies"
-                  hint={
-                    <>
-                      Reads a browser's saved sign-in. Chrome, Edge and Brave lock their sign-ins
-                      on Windows, so this usually only works with Firefox. The Sign in page in the
-                      sidebar is the reliable way.
-                    </>
-                  }
+                  hint={t.views.settings.downloads.cookiesHint}
                 >
-                  <select
+                  <Select
                     aria-labelledby="set-cookies"
                     value={settings.cookies_browser ?? ""}
-                    onChange={(e) => update({ cookies_browser: e.target.value || null })}
-                  >
-                    <option value="">Off</option>
-                    {COOKIE_BROWSERS.map((b) => (
-                      <option key={b.value} value={b.value}>Use my {b.label} sign-in</option>
-                    ))}
-                  </select>
+                    onChange={(v) => update({ cookies_browser: v || null })}
+                    options={[
+                      { value: "", label: t.views.settings.downloads.off },
+                      ...COOKIE_BROWSERS.map((b) => ({ value: b.value, label: t.views.settings.downloads.useBrowser(b.label) })),
+                    ]}
+                  />
                 </SettingRow>
+              </div>
+              <div className="setting-card">
+                <SettingToggle
+                  label={t.views.settings.downloads.torrentApart}
+                  hint={t.views.settings.downloads.torrentApartHint}
+                  checked={settings.torrent_files_apart}
+                  onChange={(on) => update({ torrent_files_apart: on })}
+                />
               </div>
             </>
           )}
 
           {section === "network" && (
             <>
-              <h2>Network</h2>
+              <h2>{t.views.settings.sections.network}</h2>
               <div className="setting-card">
                 <SettingRow
-                  label="Secure DNS"
+                  label={t.views.settings.network.dns}
                   id="set-dns"
-                  hint={
-                    <>
-                      On by default. Site names are looked up at Cloudflare over an encrypted
-                      connection, the way a browser's secure DNS setting does, so a network's own
-                      DNS cannot send a site to a dead address. A change applies to downloads at
-                      once, and to the Browser and Sign in pages after the app is restarted.
-                    </>
-                  }
+                  hint={t.views.settings.network.dnsHint}
                 >
-                  <select
+                  <Select
                     aria-labelledby="set-dns"
                     value={settings.secure_dns ? "cloudflare" : "off"}
-                    onChange={(e) => update({ secure_dns: e.target.value === "cloudflare" })}
-                  >
-                    <option value="cloudflare">Cloudflare (1.1.1.1)</option>
-                    <option value="off">Off (use this network's own)</option>
-                  </select>
+                    onChange={(v) => update({ secure_dns: v === "cloudflare" })}
+                    options={[
+                      { value: "cloudflare", label: "Cloudflare (1.1.1.1)" },
+                      { value: "off", label: t.views.settings.network.dnsOff },
+                    ]}
+                  />
                 </SettingRow>
               </div>
               <div className="setting-card">
                 <SettingRow
-                  label="Connections per download"
+                  label={t.views.settings.network.connections}
                   id="set-connections"
-                  hint="Each file is split across this many connections. Servers that refuse extra connections are detected and fewer are used."
+                  hint={t.views.settings.network.connectionsHint}
                 >
                   <input
                     type="number"
@@ -2298,7 +2493,11 @@ export function SettingsView(props: {
                     onChange={(e) => update({ connections: clamp(e.target.value, 1, 32) })}
                   />
                 </SettingRow>
-                <SettingRow label="Downloads at once" id="set-concurrent" hint="The rest wait in the queue.">
+                <SettingRow
+                  label={t.views.settings.network.concurrent}
+                  id="set-concurrent"
+                  hint={t.views.settings.network.concurrentHint}
+                >
                   <input
                     type="number"
                     aria-labelledby="set-concurrent"
@@ -2314,25 +2513,22 @@ export function SettingsView(props: {
 
           {section === "performance" && (
             <>
-              <h2>Performance</h2>
+              <h2>{t.views.settings.sections.performance}</h2>
               <div className="setting-card">
                 <SettingRow
-                  label="Max download speed"
+                  label={t.views.settings.performance.maxSpeed}
                   id="set-speed"
-                  hint={
-                    limited
-                      ? "Shared by every download: together they stay under this speed."
-                      : "Downloads run as fast as the connection and the server allow."
-                  }
+                  hint={limited ? t.views.settings.performance.limitedHint : t.views.settings.performance.unlimitedHint}
                 >
-                  <select
+                  <Select
                     aria-labelledby="set-speed"
                     value={limited ? "manual" : "unlimited"}
-                    onChange={(e) => update({ speed_limit: e.target.value === "manual" ? lastLimit.current : 0 })}
-                  >
-                    <option value="unlimited">Unlimited</option>
-                    <option value="manual">Set manually</option>
-                  </select>
+                    onChange={(v) => update({ speed_limit: v === "manual" ? lastLimit.current : 0 })}
+                    options={[
+                      { value: "unlimited", label: t.views.settings.performance.unlimited },
+                      { value: "manual", label: t.views.settings.performance.manual },
+                    ]}
+                  />
                 </SettingRow>
                 {limited && (
                   <div className="setting-row setting-slider">
@@ -2342,7 +2538,7 @@ export function SettingsView(props: {
                       max={SPEED_STOPS.length - 1}
                       step={1}
                       value={speedStop}
-                      aria-label="Max download speed"
+                      aria-label={t.views.settings.performance.maxSpeed}
                       aria-valuetext={formatSpeed(settings.speed_limit)}
                       style={{ "--fill": `${(speedStop / (SPEED_STOPS.length - 1)) * 100}%` } as React.CSSProperties}
                       onChange={(e) => update({ speed_limit: SPEED_STOPS[Number(e.target.value)] })}
@@ -2356,12 +2552,14 @@ export function SettingsView(props: {
 
           {section === "scheduler" && (
             <>
-              <h2>Scheduler</h2>
+              <h2>{t.views.settings.sections.scheduler}</h2>
               <div className="setting-card setting-note">
                 <p className="note">
-                  Scheduling downloads for a set time is not built yet. Until then, downloads start
-                  as soon as a slot is free, and you can pause or resume all of them at once
-                  with <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd> and <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>R</kbd>.
+                  {t.views.settings.scheduler.before}
+                  <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd>
+                  {t.views.settings.scheduler.and}
+                  <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>R</kbd>
+                  {t.views.settings.scheduler.after}
                 </p>
               </div>
             </>
@@ -2369,50 +2567,44 @@ export function SettingsView(props: {
 
           {section === "appearance" && (
             <>
-              <h2>Appearance</h2>
+              <h2>{t.views.settings.sections.appearance}</h2>
               <div className="setting-card">
-                <SettingRow label="Theme">
+                <SettingRow label={t.views.settings.appearance.theme}>
                   <Segmented
-                    label="Theme"
+                    label={t.views.settings.appearance.theme}
                     value={props.theme}
                     onChange={props.onTheme}
                     options={[
-                      { value: "system", label: "Match Windows" },
-                      { value: "light", label: "Light" },
-                      { value: "dark", label: "Dark" },
+                      { value: "system", label: t.views.settings.appearance.system },
+                      { value: "light", label: t.views.settings.appearance.light },
+                      { value: "dark", label: t.views.settings.appearance.dark },
                     ]}
                   />
                 </SettingRow>
-                <SettingRow label="List density">
+                <SettingRow label={t.views.settings.appearance.density}>
                   <Segmented
-                    label="List density"
+                    label={t.views.settings.appearance.density}
                     value={props.density}
                     onChange={props.onDensity}
                     options={[
-                      { value: "comfortable", label: "Comfortable" },
-                      { value: "compact", label: "Compact" },
+                      { value: "comfortable", label: t.views.settings.appearance.comfortable },
+                      { value: "compact", label: t.views.settings.appearance.compact },
                     ]}
                   />
                 </SettingRow>
               </div>
               <div className="setting-card">
                 <SettingRow
-                  label="Progress bar"
-                  hint={
-                    <>
-                      One bar per connection shows every part of a file filling up on its own. Site
-                      videos and torrents are fetched in order from the start, so their bars fill
-                      one after another.
-                    </>
-                  }
+                  label={t.views.settings.appearance.progress}
+                  hint={t.views.settings.appearance.progressHint}
                 >
                   <Segmented
-                    label="Progress bar"
+                    label={t.views.settings.appearance.progress}
                     value={props.progressStyle}
                     onChange={props.onProgressStyle}
                     options={[
-                      { value: "single", label: "Single bar" },
-                      { value: "threads", label: "One per connection" },
+                      { value: "single", label: t.views.settings.appearance.single },
+                      { value: "threads", label: t.views.settings.appearance.threads },
                     ]}
                   />
                 </SettingRow>
@@ -2422,36 +2614,36 @@ export function SettingsView(props: {
 
           {section === "advanced" && (
             <>
-              <h2>Advanced</h2>
+              <h2>{t.views.settings.sections.advanced}</h2>
               <dl className="facts setting-card">
                 <div className="fact">
-                  <dt>Site downloads</dt>
+                  <dt>{t.views.settings.advanced.siteDownloads}</dt>
                   <dd>
                     {tools == null
-                      ? "Checking"
+                      ? t.views.settings.advanced.checking
                       : tools.yt_dlp && tools.ffmpeg
-                        ? "Ready. yt-dlp and ffmpeg were found."
-                        : `Not ready. Missing ${[!tools.yt_dlp && "yt-dlp", !tools.ffmpeg && "ffmpeg"]
-                            .filter(Boolean)
-                            .join(" and ")}.`}
+                        ? t.views.settings.advanced.sitesReady
+                        : t.views.settings.advanced.missing(
+                            listText([!tools.yt_dlp && "yt-dlp", !tools.ffmpeg && "ffmpeg"].filter(Boolean) as string[]),
+                          )}
                   </dd>
                 </div>
                 <div className="fact">
-                  <dt>Profile downloads</dt>
+                  <dt>{t.views.settings.advanced.profileDownloads}</dt>
                   <dd>
                     {tools == null
-                      ? "Checking"
+                      ? t.views.settings.advanced.checking
                       : tools.gallery_dl
-                        ? "Ready. gallery-dl was found."
-                        : "Not ready. Missing gallery-dl."}
+                        ? t.views.settings.advanced.galleryReady
+                        : t.views.settings.advanced.galleryMissing}
                   </dd>
                 </div>
               </dl>
-              <h3>Keyboard shortcuts</h3>
+              <h3>{t.views.settings.advanced.shortcuts}</h3>
               <dl className="shortcuts setting-card">
                 {SHORTCUTS.map(([keys, what]) => (
                   <div key={keys}>
-                    <dt>{what}</dt>
+                    <dt>{t.views.settings.shortcuts[what]}</dt>
                     <dd>
                       {keys.split(" ").map((k, i) =>
                         k === "/" ? <span key={i}>/</span> : <kbd key={i}>{k}</kbd>,
@@ -2475,35 +2667,35 @@ export function SettingsView(props: {
 export function AboutDialog({ onClose }: { onClose: () => void }) {
   return (
     <Modal
-      title="About RushDownload"
+      title={t.views.about.title}
       onClose={onClose}
       footer={
         <>
           <span className="spacer" />
-          <button type="button" className="btn btn-primary" onClick={onClose}>Close</button>
+          <button type="button" className="btn btn-primary" onClick={onClose}>{t.views.about.close}</button>
         </>
       }
     >
       <dl className="facts">
         <div className="fact">
-          <dt>Version</dt>
+          <dt>{t.views.about.version}</dt>
           <dd>{__APP_VERSION__}</dd>
         </div>
         <div className="fact">
-          <dt>File downloads</dt>
-          <dd>HTTP and HTTPS, split across several connections, with pause and resume.</dd>
+          <dt>{t.views.about.files}</dt>
+          <dd>{t.views.about.filesText}</dd>
         </div>
         <div className="fact">
-          <dt>Site downloads</dt>
-          <dd>Video pages such as YouTube, Instagram and Vimeo, through yt-dlp and ffmpeg.</dd>
+          <dt>{t.views.about.sites}</dt>
+          <dd>{t.views.about.sitesText}</dd>
         </div>
         <div className="fact">
-          <dt>Torrents</dt>
-          <dd>Magnet links and links to .torrent files. Uploading stops when a download ends.</dd>
+          <dt>{t.views.about.torrents}</dt>
+          <dd>{t.views.about.torrentsText}</dd>
         </div>
         <div className="fact">
-          <dt>Not built yet</dt>
-          <dd>Browser extension, scheduling, notifications and the system tray.</dd>
+          <dt>{t.views.about.notBuilt}</dt>
+          <dd>{t.views.about.notBuiltText}</dd>
         </div>
       </dl>
     </Modal>

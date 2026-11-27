@@ -1,0 +1,241 @@
+/* The app's own colours (see DESIGN.md): soft colour field, near-black text, one blue. */
+:root {
+  color-scheme: light dark;
+  --bg: #eef1f7;
+  --wall-1: #c6dbff;
+  --wall-2: #e2d3ff;
+  --pane: rgba(255, 255, 255, 0.62);
+  --control: rgba(255, 255, 255, 0.8);
+  --hover: rgba(60, 60, 67, 0.07);
+  --border: rgba(60, 60, 67, 0.12);
+  --border-strong: rgba(60, 60, 67, 0.24);
+  --text: #1d1d1f;
+  --text-2: #55555c;
+  --accent: #0b63f6;
+  --accent-solid: #0b63f6;
+  --accent-soft: rgba(11, 99, 246, 0.12);
+  --ok: #15803d;
+  --err: #d0262d;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0c11;
+    --wall-1: #17306b;
+    --wall-2: #3a2168;
+    --pane: rgba(255, 255, 255, 0.065);
+    --control: rgba(255, 255, 255, 0.1);
+    --hover: rgba(255, 255, 255, 0.08);
+    --border: rgba(255, 255, 255, 0.1);
+    --border-strong: rgba(255, 255, 255, 0.22);
+    --text: #f5f5f7;
+    --text-2: #b4b4bb;
+    --accent: #6ea8ff;
+    --accent-solid: #2a6cf0;
+    --accent-soft: rgba(80, 140, 255, 0.2);
+    --ok: #4ad38a;
+    --err: #ff7b82;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  width: 380px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font: 13px/1.4 Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(240px 160px at 0% 0%, var(--wall-1), transparent 70%),
+    radial-gradient(260px 180px at 100% 100%, var(--wall-2), transparent 70%), var(--bg);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  flex: 1;
+}
+.app {
+  font-size: 12px;
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.app::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.app.on::before {
+  background: var(--ok);
+}
+.app.off {
+  color: var(--err);
+}
+.app.off::before {
+  background: var(--err);
+}
+
+section {
+  background: var(--pane);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.page {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 12px;
+}
+.page-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.page-text strong {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.page-text span {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.found-head {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.all {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+}
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 290px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+li label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+li label:hover {
+  background: var(--hover);
+}
+li.sent label {
+  cursor: default;
+  opacity: 0.6;
+}
+.what {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.about {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kind {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.empty {
+  margin: 0;
+  padding: 16px 14px;
+  color: var(--text-2);
+}
+input[type="checkbox"] {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent-solid);
+}
+
+footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+#said {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+#said.err {
+  color: var(--err);
+}
+#said.ok {
+  color: var(--ok);
+}
+
+.button {
+  flex: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--control);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+.button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.button.primary {
+  color: #fff;
+  background: var(--accent-solid);
+  border-color: transparent;
+}
+.button.primary:hover:not(:disabled) {
+  background: var(--accent-solid);
+  filter: brightness(1.08);
+}
+.button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

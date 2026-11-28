@@ -382,6 +382,10 @@ pub(crate) async fn info(inner: &Arc<Inner>, url: &str) -> Result<MediaInfo, Str
     if crate::instagram::is_instagram(url) {
         return crate::instagram::info(inner, url).await;
     }
+    // A post on X: yt-dlp first, then X's own service for embedded posts (x.rs).
+    if crate::x::is_post(url) {
+        return crate::x::info(inner, url).await;
+    }
     ytdlp_info(inner, url).await
 }
 
@@ -981,6 +985,10 @@ pub(crate) async fn run(
     // Instagram's posts and reels have a downloader of their own (instagram.rs).
     if crate::instagram::is_post(&rec.url) {
         return crate::instagram::run(inner, id, live, rec).await;
+    }
+    // A post on X: yt-dlp first, then X's own service for embedded posts (x.rs).
+    if crate::x::is_post(&rec.url) {
+        return crate::x::run(inner, id, live, rec).await;
     }
     run_ytdlp(inner, id, live, rec).await
 }

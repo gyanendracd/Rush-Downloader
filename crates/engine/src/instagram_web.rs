@@ -14,14 +14,12 @@
 //! keeps for signed-in viewers stays there: such a post comes back empty
 //! here too, and is reported so.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::instagram::{classify, place, post_of, profile_link, AGE_RESTRICTED, INVALID, NEEDS_SIGN_IN, NO_VIDEO, PRIVATE, UNAVAILABLE};
+use crate::instagram::{classify, post_of, profile_link, AGE_RESTRICTED, INVALID, NEEDS_SIGN_IN, NO_VIDEO, PRIVATE, UNAVAILABLE};
 use crate::media::{find_tool, MediaInfo, Plan, Stream};
+use crate::postfiles::{picture_ext, PostFile};
 use crate::profile::BROWSER_AGENT;
 use crate::task::{Fail, Live};
 use crate::{Inner, Record, Status};
@@ -454,42 +452,6 @@ pub(crate) async fn post(client: &reqwest::Client, url: &str) -> Result<Post, Re
 
 /* ---------- saving it ---------- */
 
-fn picture_ext(address: &str) -> &'static str {
-    let path = address.split(['?', '#']).next().unwrap_or_default().to_ascii_lowercase();
-    ["jpg", "jpeg", "png", "webp", "heic"].into_iter().find(|ext| path.ends_with(&format!(".{ext}"))).unwrap_or("jpg")
-}
-
-/// Fetches one file whole into `dest`, counting it into the download.
-async fn fetch(live: &Arc<Live>, address: &str, dest: &Path) -> Result<u64, Fail> {
-    let ask = live.client().get(address).header(reqwest::header::USER_AGENT, BROWSER_AGENT).header(reqwest::header::REFERER, FRONT_PAGE);
-    let mut answer = tokio::select! {
-        _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
-        a = ask.send() => a.map_err(crate::probe::net_err)?,
-    };
-    if !answer.status().is_success() {
-        // Instagram's links to its files stop working after a while; the
-        // next try asks for the post, and its links, again.
-        return Err(Fail::Retry(format!("Instagram's file server answered {}", answer.status().as_u16())));
-    }
-    let mut file = std::fs::File::create(dest).map_err(|e| Fail::Fatal(format!("could not create the file: {e}")))?;
-    let mut size = 0u64;
-    loop {
-        let chunk = tokio::select! {
-            _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
-            c = answer.chunk() => c.map_err(crate::probe::net_err)?,
-        };
-        let Some(chunk) = chunk else { break };
-        tokio::select! {
-            _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
-            _ = live.limiter.acquire(chunk.len()) => {}
-        }
-        file.write_all(&chunk).map_err(|e| Fail::Fatal(format!("could not write the file: {e}")))?;
-        size += chunk.len() as u64;
-        live.downloaded.fetch_add(chunk.len() as u64, Relaxed);
-    }
-    Ok(size)
-}
-
 /// A post of one video (or the sound of a post's first video): its picture
 /// and sound fetched with many connections and joined, as a reel read by
 /// yt-dlp is (media.rs), and named the same way.
@@ -514,79 +476,21 @@ async fn save_video(inner: &Arc<Inner>, id: u64, live: &Arc<Live>, rec: &Record,
     crate::media::fetch_direct(inner, id, live, rec, &Plan { streams, stem }, &work, &rec.segments).await
 }
 
-/// A post's photos, and the videos among them: one file for one photo, a
-/// folder named after the post for several.
-async fn save_files(inner: &Arc<Inner>, id: u64, live: &Arc<Live>, rec: &Record, post: &Post) -> Result<(), Fail> {
-    let work = crate::media::work_dir(&rec.dir, id);
-    // A start over begins clean.
-    let _ = std::fs::remove_dir_all(&work);
-    std::fs::create_dir_all(&work).map_err(|e| Fail::Fatal(format!("could not create folder: {e}")))?;
-    inner.update(id, |r| {
-        r.part_started = true;
-        r.segments.clear();
-    });
-    live.downloaded.store(0, Relaxed);
-    live.items.store(0, Relaxed);
-
-    let ffmpeg = find_tool("ffmpeg");
-    let named = format!("{} {}", post.by(), post.code);
-    let mut files: Vec<PathBuf> = Vec::new();
-    for (place, piece) in post.pieces.iter().enumerate() {
-        let name = format!("{named} {}", place + 1);
-        let file = match (&piece.video, &piece.photo) {
+/// A post's photos, and the videos among them, as the files they become
+/// (postfiles.rs): one file for one photo, a folder named after the post
+/// for several.
+fn files_of(post: &Post, max_height: Option<u32>, can_join: bool) -> Vec<PostFile> {
+    post.pieces
+        .iter()
+        .filter_map(|piece| match (&piece.video, &piece.photo) {
             (Some(video), _) => {
-                let mut parts = Vec::new();
-                for (n, stream) in video.streams(rec.media_options.max_height, false, ffmpeg.is_some()).iter().enumerate() {
-                    let part = work.join(format!("part-{}-{n}.{}", place + 1, stream.ext));
-                    fetch(live, &stream.url, &part).await?;
-                    parts.push(part);
-                }
-                if parts.is_empty() {
-                    continue;
-                }
-                let file = work.join(crate::probe::sanitize(&format!("{name}.mp4")));
-                crate::media::assemble(live, ffmpeg.as_deref(), &parts, false, &file).await?;
-                for part in parts {
-                    let _ = std::fs::remove_file(part);
-                }
-                file
+                let parts: Vec<(String, String)> = video.streams(max_height, false, can_join).into_iter().map(|s| (s.url, s.ext)).collect();
+                (!parts.is_empty()).then(|| PostFile { parts, ext: "mp4".into() })
             }
-            (None, Some(photo)) => {
-                let file = work.join(crate::probe::sanitize(&format!("{name}.{}", picture_ext(photo))));
-                fetch(live, photo, &file).await?;
-                file
-            }
-            (None, None) => continue,
-        };
-        files.push(file);
-        live.items.fetch_add(1, Relaxed);
-    }
-    if files.is_empty() {
-        return Err(Fail::Fatal(UNAVAILABLE.into()));
-    }
-
-    let given = rec.user_named.then(|| Path::new(&rec.filename).file_stem().unwrap_or_default().to_string_lossy().to_string()).filter(|g| !g.is_empty());
-    let (final_name, size) = if let [one] = files.as_slice() {
-        let ext = one.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "jpg".into());
-        let size = std::fs::metadata(one).map(|m| m.len()).unwrap_or(0);
-        (place(one, &rec.dir, &format!("{}.{ext}", crate::probe::sanitize(&given.unwrap_or(named))))?, size)
-    } else {
-        let folder_name = crate::torrent::claim_folder(&rec.dir, &crate::probe::sanitize(&given.unwrap_or(named)))?;
-        let folder = rec.dir.join(&folder_name);
-        let mut size = 0;
-        for file in &files {
-            size += std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
-            place(file, &folder, &file.file_name().unwrap_or_default().to_string_lossy())?;
-        }
-        (folder_name, size)
-    };
-    live.downloaded.store(size, Relaxed);
-    live.total_hint.store(size, Relaxed);
-    inner.update(id, |r| {
-        r.filename = final_name.clone();
-        r.total = Some(size);
-    });
-    Ok(())
+            (None, Some(photo)) => Some(PostFile::whole(photo, picture_ext(photo))),
+            (None, None) => None,
+        })
+        .collect()
 }
 
 /// Saves a post that was read with [`post`]: a video as one file, a photo
@@ -611,9 +515,11 @@ pub(crate) async fn save(inner: &Arc<Inner>, id: u64, live: &Arc<Live>, rec: &Re
     if let Some(video) = alone {
         return save_video(inner, id, live, rec, post, video).await;
     }
-    let saved = save_files(inner, id, live, rec, post).await;
-    crate::media::remove_work_dir(&rec.dir, id);
-    saved
+    let files = files_of(post, rec.media_options.max_height, find_tool("ffmpeg").is_some());
+    if files.is_empty() {
+        return Err(Fail::Fatal(UNAVAILABLE.into()));
+    }
+    crate::postfiles::save(inner, id, live, rec, &format!("{} {}", post.by(), post.code), FRONT_PAGE, &files).await
 }
 
 #[cfg(test)]
@@ -762,8 +668,12 @@ mod tests {
         assert_eq!(post.pieces[1].video.as_ref().and_then(|v| v.whole.as_deref()), Some("https://cdn.test/2.mp4"));
         assert_eq!(post.pieces[2].photo.as_deref(), Some("https://cdn.test/4.webp"));
         assert_eq!(post.first_video().and_then(|v| v.whole.as_deref()), Some("https://cdn.test/2.mp4"));
-        assert_eq!(picture_ext("https://cdn.test/4.webp?x=1.jpg"), "webp");
-        assert_eq!(picture_ext("https://cdn.test/photo"), "jpg");
+        // as files: each photo as it is, the video as the one file Instagram gives for it
+        let files = files_of(&post, None, true);
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0], PostFile::whole("https://cdn.test/1-large.jpg", "jpg"));
+        assert_eq!(files[1], PostFile::whole("https://cdn.test/2.mp4", "mp4"));
+        assert_eq!(files[2], PostFile::whole("https://cdn.test/4.webp", "webp"));
     }
 
     #[test]

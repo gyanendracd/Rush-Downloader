@@ -1,0 +1,36 @@
+/* File checksums: the add dialog, a download's details, the list's status
+ * and Settings, Downloads (src/Checksum.tsx). */
+export const checksum = {
+  field: "Checksum",
+  fieldPlaceholder: "Optional: SHA-256, SHA-1, MD5 or SHA-512",
+  fieldHint: "Paste the checksum the site lists for the file; it is checked once the file is in.",
+  title: "Integrity",
+  algorithms: { md5: "MD5", sha1: "SHA-1", sha256: "SHA-256", sha512: "SHA-512" },
+  states: {
+    not_verified: "Not verified",
+    calculating: "Calculating…",
+    verified: "Verified",
+    failed: "Failed",
+    error: "Error",
+  },
+  calculatedOnly: "Worked out; there is no checksum to compare it with.",
+  failedNote: "The file does not match the checksum given. It may be damaged, or not the file the checksum belongs to. Do not open it if you are unsure.",
+  expected: "Expected",
+  calculated: "Calculated",
+  progress: (done: string, total: string) => `${done} of ${total} read`,
+  paste: "Paste a checksum to check against",
+  verify: "Verify",
+  recalculate: "Work out again",
+  calculate: "Work out",
+  copy: "Copy the calculated checksum",
+  rowFailed: "Checksum failed",
+  rowCalculating: "Verifying",
+  notifyFailed: "Checksum failed",
+  /** The toast when a file does not match. */
+  toastFailed: (name: string) => `${name} does not match its checksum`,
+  sumsFile: "Check with a sums file…",
+  sumsChecked: (n: number) => (n === 1 ? "Checking 1 file against the sums" : `Checking ${n} files against the sums`),
+  setting: "Work out a checksum for every download",
+  settingHint: "Shown in each download's details. Downloads given a checksum are always checked, whatever this says.",
+  off: "Off",
+};

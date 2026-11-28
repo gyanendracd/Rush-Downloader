@@ -8,7 +8,8 @@
 //! [`kind`] as blocked, with the reason, so the app can say so plainly.
 //!
 //! Video and audio pages are not handled here: the site backend (yt-dlp,
-//! gallery-dl) already reads them.
+//! gallery-dl) already reads them. The exceptions are video sites the
+//! backend does not know whose pages name the uploaded file (PMVHaven).
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -165,6 +166,7 @@ enum Route {
     NasaImage { id: String },
     Dryad { doi: String },
     ArtStation { hash: String },
+    PmvHaven { id: String },
     Itch { url: String },
     Listing { url: String },
 }
@@ -409,6 +411,14 @@ fn route(link: &str) -> Option<Route> {
             Route::Dryad { doi: seg[at..].join("/") }
         }
         "artstation.com" if s(0) == "artwork" && !s(1).is_empty() => Route::ArtStation { hash: s(1).into() },
+        // "/video/<title slug>_<id>" or "/videos/<id>"
+        "pmvhaven.com" if matches!(s(0), "video" | "videos") => {
+            let id = s(1).rsplit('_').next()?;
+            if id.len() != 24 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            Route::PmvHaven { id: id.to_ascii_lowercase() }
+        }
         h if h.ends_with(".itch.io") && seg.len() == 1 => Route::Itch { url: link.trim().to_string() },
         h if LISTING_HOSTS.iter().any(|d| host_is(h, d)) && (url.path().ends_with('/') || url.path().is_empty()) => {
             Route::Listing { url: link.trim().to_string() }
@@ -456,6 +466,7 @@ fn site_name(route: &Route) -> &'static str {
         Route::NasaImage { .. } => "NASA Image Library",
         Route::Dryad { .. } => "Dryad",
         Route::ArtStation { .. } => "ArtStation",
+        Route::PmvHaven { .. } => "PMVHaven",
         Route::Itch { .. } => "itch.io",
         Route::Listing { .. } => "Folder listing",
     }
@@ -483,7 +494,7 @@ pub fn kind(link: &str) -> Option<SiteKind> {
 pub async fn resolve(inner: &Arc<Inner>, link: &str) -> Result<SiteFiles, String> {
     let route = route(link).ok_or_else(|| "RushDownload does not read this site's links".to_string())?;
     let site = site_name(&route).to_string();
-    let web = Web { inner: inner.clone() };
+    let web = Web { client: inner.client()? };
     let (title, mut files) = tokio::time::timeout(Duration::from_secs(60), read(&web, route))
         .await
         .map_err(|_| format!("{site} took too long to answer"))??;
@@ -515,7 +526,7 @@ async fn fill_sizes(web: &Web, files: &mut [SiteFile]) {
     let limit = Arc::new(tokio::sync::Semaphore::new(10));
     for i in no_size {
         let (url, headers) = (files[i].url.clone(), files[i].headers.clone());
-        let (client, limit) = (web.inner.client.clone(), limit.clone());
+        let (client, limit) = (web.client.clone(), limit.clone());
         set.spawn(async move {
             let _turn = limit.acquire_owned().await;
             let asked = crate::probe::probe(&client, &url, &headers);
@@ -542,8 +553,9 @@ async fn fill_sizes(web: &Web, files: &mut [SiteFile]) {
 
 /// A fresh direct link for a file whose link expires, right before it is
 /// downloaded. Files with lasting links come back as they are.
-pub(crate) async fn direct(inner: &Arc<Inner>, file: &SiteFile) -> Result<(String, Vec<(String, String)>), String> {
-    let web = Web { inner: inner.clone() };
+/// `client`: the download's own (its connection).
+pub(crate) async fn direct(client: reqwest::Client, file: &SiteFile) -> Result<(String, Vec<(String, String)>), String> {
+    let web = Web { client };
     let url = match file.late.as_deref() {
         None => file.url.clone(),
         Some("mediafire") => mediafire_direct(&web, &file.url).await?,
@@ -560,7 +572,8 @@ pub(crate) async fn direct(inner: &Arc<Inner>, file: &SiteFile) -> Result<(Strin
 /* ---------- requests ---------- */
 
 struct Web {
-    inner: Arc<Inner>,
+    /// The connection to ask the site over.
+    client: reqwest::Client,
 }
 
 /// Some sites only serve pages to a browser.
@@ -577,7 +590,7 @@ impl Web {
     }
 
     async fn json(&self, url: &str) -> Result<Value, String> {
-        self.json_with(self.inner.client.get(url)).await
+        self.json_with(self.client.get(url)).await
     }
 
     async fn json_with(&self, rb: reqwest::RequestBuilder) -> Result<Value, String> {
@@ -591,11 +604,11 @@ impl Web {
     }
 
     fn post_json(&self, url: impl reqwest::IntoUrl, body: &Value) -> reqwest::RequestBuilder {
-        self.inner.client.post(url).header("Content-Type", "application/json").body(body.to_string())
+        self.client.post(url).header("Content-Type", "application/json").body(body.to_string())
     }
 
     async fn page(&self, url: &str) -> Result<String, String> {
-        self.text(self.inner.client.get(url).header("User-Agent", BROWSER_AGENT).header("Accept", "text/html,*/*")).await
+        self.text(self.client.get(url).header("User-Agent", BROWSER_AGENT).header("Accept", "text/html,*/*")).await
     }
 
     async fn text(&self, rb: reqwest::RequestBuilder) -> Result<String, String> {
@@ -609,13 +622,13 @@ impl Web {
 
     /// Where a link ends up after redirects, without reading its body.
     async fn final_url(&self, url: &str) -> Result<String, String> {
-        let resp = self.send(self.inner.client.get(url).header("User-Agent", BROWSER_AGENT)).await?;
+        let resp = self.send(self.client.get(url).header("User-Agent", BROWSER_AGENT)).await?;
         Ok(resp.url().to_string())
     }
 
     /// The file name and size a direct link gives, by asking for one byte.
     async fn head(&self, url: &str, headers: &[(String, String)]) -> (Option<String>, Option<u64>) {
-        let asked = crate::probe::probe(&self.inner.client, url, headers);
+        let asked = crate::probe::probe(&self.client, url, headers);
         match tokio::time::timeout(Duration::from_secs(15), asked).await {
             Ok(Ok(p)) if !p.is_html => (p.filename, p.total.filter(|t| *t > 0)),
             _ => (None, None),
@@ -764,6 +777,7 @@ async fn read(web: &Web, route: Route) -> Result<(String, Vec<SiteFile>), String
         Route::NasaImage { id } => nasa_image(web, &id).await,
         Route::Dryad { doi } => dryad(web, &doi).await,
         Route::ArtStation { hash } => artstation(web, &hash).await,
+        Route::PmvHaven { id } => pmvhaven(web, &id).await,
         Route::Itch { url } => itch(web, &url).await,
         Route::Listing { url } => listing(web, &url).await,
     }
@@ -1568,7 +1582,7 @@ async fn gutenberg(web: &Web, n: &str) -> Result<(String, Vec<SiteFile>), String
         .collect();
     static TITLE: OnceLock<Regex> = OnceLock::new();
     let title_re = TITLE.get_or_init(|| re(r"(?s)<dcterms:title>(.*?)</dcterms:title>"));
-    let rdf = web.text(web.inner.client.get(format!("{folder}pg{n}.rdf"))).await.unwrap_or_default();
+    let rdf = web.text(web.client.get(format!("{folder}pg{n}.rdf"))).await.unwrap_or_default();
     let title = title_re.captures(&rdf).map(|c| html_unescape(c[1].trim())).unwrap_or_else(|| format!("Gutenberg {n}"));
     Ok((title.lines().next().unwrap_or("").to_string(), books))
 }
@@ -1751,7 +1765,7 @@ fn worldbank(code: &str) -> (String, Vec<SiteFile>) {
 /// The AWS Open Data Registry: a data set's public S3 buckets, listed.
 async fn aws_registry(web: &Web, name: &str) -> Result<(String, Vec<SiteFile>), String> {
     let yaml = web
-        .text(web.inner.client.get(format!("https://raw.githubusercontent.com/awslabs/open-data-registry/main/datasets/{name}.yaml")))
+        .text(web.client.get(format!("https://raw.githubusercontent.com/awslabs/open-data-registry/main/datasets/{name}.yaml")))
         .await?;
     static ARN: OnceLock<Regex> = OnceLock::new();
     let arn = ARN.get_or_init(|| re(r"arn:aws:s3:::([a-z0-9.\-]+)(?:/([^\s]*))?"));
@@ -1766,7 +1780,7 @@ async fn aws_registry(web: &Web, name: &str) -> Result<(String, Vec<SiteFile>), 
 async fn s3(web: &Web, bucket: &str, prefix: &str) -> Result<(String, Vec<SiteFile>), String> {
     let prefix = prefix.trim_start_matches('/');
     let api = format!("https://{bucket}.s3.amazonaws.com/?list-type=2&max-keys=1000&prefix={}", enc(prefix));
-    let xml = web.text(web.inner.client.get(api)).await?;
+    let xml = web.text(web.client.get(api)).await?;
     static ITEM: OnceLock<Regex> = OnceLock::new();
     let item = ITEM.get_or_init(|| re(r"(?s)<Contents>.*?<Key>(.*?)</Key>.*?<Size>(\d+)</Size>.*?</Contents>"));
     let files = item
@@ -1831,7 +1845,7 @@ async fn itch(web: &Web, page: &str) -> Result<(String, Vec<SiteFile>), String> 
 async fn itch_direct(web: &Web, meta: &str) -> Result<String, String> {
     let (page, upload) = meta.split_once('|').ok_or("damaged itch.io record")?;
     let answer = web
-        .json_with(web.inner.client.post(format!("{page}/file/{upload}?source=view_game&as_props=1&after_download_lightbox=true")).header("User-Agent", BROWSER_AGENT))
+        .json_with(web.client.post(format!("{page}/file/{upload}?source=view_game&as_props=1&after_download_lightbox=true")).header("User-Agent", BROWSER_AGENT))
         .await?;
     answer["url"].as_str().map(str::to_string).ok_or_else(|| "itch.io gave no download for this file; it may need a payment first".into())
 }
@@ -1888,7 +1902,7 @@ async fn dryad(web: &Web, doi: &str) -> Result<(String, Vec<SiteFile>), String> 
 
 /// ArtStation: the pictures of one artwork, at full size.
 async fn artstation(web: &Web, hash: &str) -> Result<(String, Vec<SiteFile>), String> {
-    let rb = web.inner.client.get(format!("https://www.artstation.com/projects/{hash}.json")).header("User-Agent", BROWSER_AGENT);
+    let rb = web.client.get(format!("https://www.artstation.com/projects/{hash}.json")).header("User-Agent", BROWSER_AGENT);
     let data = web.json_with(rb).await?;
     let files = data["assets"]
         .as_array()
@@ -1902,6 +1916,46 @@ async fn artstation(web: &Web, hash: &str) -> Result<(String, Vec<SiteFile>), St
         })
         .collect();
     Ok((data["title"].as_str().unwrap_or(hash).to_string(), files))
+}
+
+/// PMVHaven: the video file as it was uploaded. The site's player only
+/// plays it as a stream, but the page's own data names the original file.
+async fn pmvhaven(web: &Web, id: &str) -> Result<(String, Vec<SiteFile>), String> {
+    let html = web.page(&format!("https://pmvhaven.com/videos/{id}")).await?;
+    let video = pmvhaven_video(&html, id).ok_or("PMVHaven's page does not name this video's file")?;
+    let ext = crate::probe::url_filename(&video.url)
+        .and_then(|n| n.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()))
+        .filter(|e| !e.is_empty() && e.len() <= 5)
+        .unwrap_or_else(|| "mp4".into());
+    let title = video.title.unwrap_or_else(|| id.to_string());
+    Ok((title.clone(), vec![one(&format!("{title}.{ext}"), video.url, video.size)]))
+}
+
+struct PmvVideo {
+    title: Option<String>,
+    url: String,
+    size: Option<u64>,
+}
+
+/// The video with this id in a PMVHaven page's data. The page is a Nuxt
+/// app: its data is one JSON list in which every object's fields are the
+/// places of their values in that same list.
+fn pmvhaven_video(html: &str, id: &str) -> Option<PmvVideo> {
+    static DATA: OnceLock<Regex> = OnceLock::new();
+    let data = DATA.get_or_init(|| re(r#"(?is)<script[^>]*\bid=["']__NUXT_DATA__["'][^>]*>(.*?)</script>"#));
+    let list: Vec<Value> = serde_json::from_str(&data.captures(html)?[1]).ok()?;
+    let at = |v: &Value| v.as_u64().and_then(|i| list.get(i as usize));
+    let text = |o: &serde_json::Map<String, Value>, k: &str| {
+        o.get(k).and_then(at).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    };
+    list.iter().filter_map(Value::as_object).find_map(|o| {
+        if text(o, "_id")?.to_ascii_lowercase() != id {
+            return None;
+        }
+        let url = text(o, "videoUrl").filter(|u| u.starts_with("https://") || u.starts_with("http://"))?;
+        let size = o.get("fileSize").and_then(at).and_then(num).filter(|n| *n > 0);
+        Some(PmvVideo { title: text(o, "title"), url, size })
+    })
 }
 
 /// A web server's own list of the files in a folder ("Index of /...").
@@ -1983,6 +2037,11 @@ mod tests {
         assert_eq!(r("https://www.youtube.com/watch?v=x"), None);
         assert!(matches!(r("https://www.ncei.noaa.gov/data/global-hourly/"), Some(Route::Listing { .. })));
         assert_eq!(r("https://www.ncei.noaa.gov/data/global-hourly/a.csv"), None);
+        assert_eq!(r("https://pmvhaven.com/video/_6b0a7a52ed9dcfdc03b4143d?from=home"), Some(Route::PmvHaven { id: "6b0a7a52ed9dcfdc03b4143d".into() }));
+        assert_eq!(r("https://pmvhaven.com/video/Some-Title_6B0A7A52ED9DCFDC03B4143D"), Some(Route::PmvHaven { id: "6b0a7a52ed9dcfdc03b4143d".into() }));
+        assert_eq!(r("https://pmvhaven.com/videos/6b0a7a52ed9dcfdc03b4143d"), Some(Route::PmvHaven { id: "6b0a7a52ed9dcfdc03b4143d".into() }));
+        assert_eq!(r("https://pmvhaven.com/profile/someone"), None);
+        assert_eq!(r("https://pmvhaven.com/video/not-a-video"), None);
         assert_eq!(r("https://sourceforge.net/projects/sevenzip/files/7-Zip/23.01/7z2301-x64.exe/download"),
             Some(Route::SourceForge { project: "sevenzip".into(), path: Some("7-Zip/23.01/7z2301-x64.exe".into()) }));
     }
@@ -2031,6 +2090,21 @@ mod tests {
         mega_decrypt(&path, key, nonce).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), data);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pmvhaven_page_names_the_original_file() {
+        // Trimmed from a real page: another video's card comes first.
+        let html = r#"<html><script type="application/json" id="__NUXT_DATA__" data-ssr="true">[["ShallowReactive",1],{"other":2,"video":7},
+            {"_id":3,"videoUrl":4,"title":5,"fileSize":6},"aaaaaaaaaaaaaaaaaaaaaaaa","https://cdn.test/videos/other.mp4","Other",10,
+            {"_id":8,"title":9,"videoUrl":10,"fileSize":11,"hlsMasterPlaylistUrl":12},
+            "6b0a7a52ed9dcfdc03b4143d","Some title","https://cdn.test/videos/up_j3biqi6h.mp4",248436263,"https://cdn.test/videos/up_j3biqi6h.mp4/master.m3u8"]</script></html>"#;
+        let v = pmvhaven_video(html, "6b0a7a52ed9dcfdc03b4143d").unwrap();
+        assert_eq!(v.url, "https://cdn.test/videos/up_j3biqi6h.mp4");
+        assert_eq!(v.title.as_deref(), Some("Some title"));
+        assert_eq!(v.size, Some(248436263));
+        assert!(pmvhaven_video(html, "bbbbbbbbbbbbbbbbbbbbbbbb").is_none());
+        assert!(pmvhaven_video("<html></html>", "6b0a7a52ed9dcfdc03b4143d").is_none());
     }
 
     #[test]

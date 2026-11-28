@@ -59,8 +59,8 @@ pub(crate) struct Listed {
 /// by file does not apply: one file only, web seeds to fetch from (the
 /// single-engine download uses them), or the torrent could not be read here
 /// (the single-engine download then reports why).
-pub(crate) async fn list(inner: &Arc<Inner>, session: &Arc<Session>, rec: &Record) -> Option<Listed> {
-    let (source, _) = open(inner, &rec.url, rec.torrent_file.as_deref()).await.ok()?;
+pub(crate) async fn list(client: &reqwest::Client, session: &Arc<Session>, rec: &Record) -> Option<Listed> {
+    let (source, _) = open(client, &rec.url, rec.torrent_file.as_deref()).await.ok()?;
     let options = AddTorrentOptions {
         list_only: true,
         ..Default::default()

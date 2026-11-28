@@ -108,7 +108,7 @@ export async function setLocale(code: Locale, remember = false): Promise<void> {
 
 /** A translation with the sections it does not have yet in English. */
 function withEnglish(dict: LocaleDict): Dict {
-  return { ...dict, batch: dict.batch ?? en.batch, organize: dict.organize ?? en.organize };
+  return { ...dict, batch: dict.batch ?? en.batch, organize: dict.organize ?? en.organize, proxy: dict.proxy ?? en.proxy, tools: dict.tools ?? en.tools, checksum: dict.checksum ?? en.checksum, request: dict.request ?? en.request, bridge: dict.bridge ?? en.bridge, remote: dict.remote ?? en.remote, speed: dict.speed ?? en.speed, poster: dict.poster ?? en.poster };
 }
 
 /** Whether the language switched on now is written right to left. */

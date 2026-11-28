@@ -261,6 +261,9 @@ const dict: Dict = {
         media: () => "含照片或视频",
         followers: () => "粉丝",
         following: () => "关注",
+        videos: () => "个视频",
+        subscribers: () => "位订阅者",
+        likes: () => "次赞",
         joined: (date: string) => `${date} 加入`,
       },
       holds: {
@@ -270,6 +273,8 @@ const dict: Dict = {
       },
       playlist: "播放列表",
       profileOf: (site: string) => `${site} 个人主页`,
+      links: "此主页的链接",
+      openLink: (link: string) => `在浏览器中打开 ${link}`,
 
       locked: {
         profileShown: (site: string) => `${site} 向所有人显示此个人主页，但只向已登录的访问者列出其帖子。`,
@@ -309,7 +314,7 @@ const dict: Dict = {
       profileNoteAfter: " 的文件夹中，并分类到“Images”和“Videos”。有些网站只在你登录后才显示个人主页。",
       profileNoteAfterQuality:
         " 的文件夹中，按上方选择的画质分类到“Images”和“Videos”。有些网站只在你登录后才显示个人主页。",
-      profileFolder: (name: string, site: string) => `${name} (${site})`,
+      profileFolder: (name: string) => name,
 
       or: "或",
       addFromBrowserTitle: "粘贴页面地址并选择其中找到的媒体",
@@ -614,6 +619,7 @@ const dict: Dict = {
       resume: "继续",
       pause: "暂停",
       more: "更多操作",
+      took: (time: string) => `下载用时 ${time}`,
     },
     dismiss: "关闭",
     close: "关闭",

@@ -14,8 +14,15 @@ use tokio::process::{Child, Command};
 use crate::task::{ConnGuard, Fail, Live};
 use crate::{Inner, Record, Status};
 
-/// Finds a helper program on PATH or where winget installs it.
+/// Finds a helper program: the app's own copy (deps.rs) if it keeps one,
+/// else one installed on this computer.
 pub(crate) fn find_tool(name: &str) -> Option<PathBuf> {
+    crate::deps::managed_path(name).or_else(|| find_tool_on_system(name))
+}
+
+/// Finds a helper program the user installed: on PATH or where winget
+/// installs it.
+pub(crate) fn find_tool_on_system(name: &str) -> Option<PathBuf> {
     let exe = if cfg!(windows) {
         format!("{name}.exe")
     } else {
@@ -56,6 +63,18 @@ pub(crate) fn find_tool(name: &str) -> Option<PathBuf> {
 pub(crate) fn command(program: &Path) -> Command {
     let mut cmd = Command::new(program);
     cmd.stdin(Stdio::null()).kill_on_drop(true);
+    // yt-dlp and gallery-dl are Python programs: writing into a pipe, Python
+    // holds lines back until a few kilobytes pile up, so a long listing (a
+    // profile's posts, which Instagram hands out a page every few seconds)
+    // says nothing for minutes. Each line is sent as it is made: through
+    // the environment for a Python installed as usual, and, as the packaged
+    // .exe builds ignore that, through gallery-dl's own setting. Programs
+    // that are not Python ignore both.
+    cmd.env("PYTHONUNBUFFERED", "1");
+    let name = program.file_stem().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+    if name.starts_with("gallery-dl") {
+        cmd.arg("-o").arg(r#"output.stdout={"encoding": "utf-8", "errors": "replace", "line_buffering": true}"#);
+    }
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     cmd
@@ -72,7 +91,7 @@ pub(crate) async fn browser_cookies(browser: &str) -> Result<Vec<String>, String
     if !COOKIE_BROWSERS.contains(&browser) {
         return Err(format!("Sign-ins cannot be read from \"{browser}\""));
     }
-    let program = find_tool("yt-dlp").ok_or("Reading a browser's sign-ins needs yt-dlp, which was not found")?;
+    let program = find_tool("yt-dlp").ok_or("Reading a browser's sign-ins needs yt-dlp, which is not installed; install it under Settings, Advanced, Engines")?;
     let dir = std::env::temp_dir().join(format!("rush-browser-cookies-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make room to read the sign-ins: {e}"))?;
     let file = dir.join("cookies.txt");
@@ -192,6 +211,11 @@ fn number(field: &str) -> Option<u64> {
 
 fn friendly(error: &str) -> String {
     let error = error.trim_start_matches("ERROR:").trim();
+    // Instagram's own words are kept: instagram.rs reads them to tell a
+    // private account from a missing post.
+    if error.contains("[Instagram]") || error.contains("[instagram]") {
+        return error.to_string();
+    }
     // Sites yt-dlp has no support for end up with its catch-all "generic"
     // reader, whose failures mean nothing to a user. The Browser page can
     // still catch the video while it plays.
@@ -259,6 +283,33 @@ pub struct MediaInfo {
     pub heights: Vec<u32>,
     /// The site's name as yt-dlp knows it.
     pub site: Option<String>,
+    /// The largest picture's width and height, where known (a phone video
+    /// stands, so its height is the larger).
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Who posted it, as the site shows their name.
+    #[serde(default)]
+    pub uploader: Option<String>,
+    /// Their own page on the site (a profile or channel), where known.
+    #[serde(default)]
+    pub uploader_url: Option<String>,
+    /// The post's own words (its caption), where the site gives them.
+    #[serde(default)]
+    pub caption: Option<String>,
+    /// How many have liked it, commented on it and watched it, where the site tells.
+    #[serde(default)]
+    pub likes: Option<u64>,
+    #[serde(default)]
+    pub comments: Option<u64>,
+    #[serde(default)]
+    pub views: Option<u64>,
+}
+
+#[cfg(test)]
+pub(crate) fn read_info_for_tests(info: &serde_json::Value) -> Option<MediaInfo> {
+    read_info(info)
 }
 
 fn read_info(info: &serde_json::Value) -> Option<MediaInfo> {
@@ -287,17 +338,56 @@ fn read_info(info: &serde_json::Value) -> Option<MediaInfo> {
             .filter(|v| !v.is_empty())
             .map(str::to_string)
     };
+    let count = |key: &str| info.get(key).and_then(|v| v.as_u64());
+    // The largest picture on offer, as width and height.
+    let size_of = |f: &serde_json::Value| Some((f.get("width")?.as_u64()? as u32, f.get("height")?.as_u64()? as u32));
+    let largest = info
+        .get("formats")
+        .and_then(|f| f.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|f| f.get("vcodec").and_then(|v| v.as_str()) != Some("none"))
+        .filter_map(size_of)
+        .max_by_key(|&(w, h)| u64::from(w) * u64::from(h))
+        .or_else(|| size_of(info));
     Some(MediaInfo {
         title,
         thumbnail: text("thumbnail").filter(|t| t.starts_with("http")),
         duration: info.get("duration").and_then(|d| d.as_f64()).map(|d| d as u64),
         heights,
         site: text("extractor_key").filter(|s| s != "Generic"),
+        width: largest.map(|(w, _)| w),
+        height: largest.map(|(_, h)| h),
+        // Who posted it, and their page: what the site's own fields say.
+        uploader: text("uploader").or_else(|| text("channel")).map(|u| u.trim().to_string()),
+        uploader_url: text("uploader_url")
+            .or_else(|| text("channel_url"))
+            .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+            // Instagram's reader names the account (`channel`) but may give no link.
+            .or_else(|| {
+                (text("extractor_key").as_deref() == Some("Instagram"))
+                    .then(|| text("channel").as_deref().and_then(crate::instagram::profile_link))
+                    .flatten()
+            }),
+        caption: text("description").map(|d| d.trim().to_string()).filter(|d| !d.is_empty()),
+        likes: count("like_count"),
+        comments: count("comment_count"),
+        views: count("view_count"),
     })
 }
 
 /// Looks up a video page's title, picture and resolutions. Nothing is downloaded.
 pub(crate) async fn info(inner: &Arc<Inner>, url: &str) -> Result<MediaInfo, String> {
+    // Instagram's posts and reels have a reader of their own (instagram.rs).
+    if crate::instagram::is_instagram(url) {
+        return crate::instagram::info(inner, url).await;
+    }
+    ytdlp_info(inner, url).await
+}
+
+/// A video page's details as yt-dlp reads them (Instagram's without any
+/// sign-in: see `uses_no_sign_in`).
+pub(crate) async fn ytdlp_info(inner: &Arc<Inner>, url: &str) -> Result<MediaInfo, String> {
     let mut tries = 0;
     loop {
         tries += 1;
@@ -337,13 +427,17 @@ fn cut_short(error: &str) -> bool {
 }
 
 async fn info_once(inner: &Arc<Inner>, url: &str) -> Result<MediaInfo, String> {
-    let ytdlp = find_tool("yt-dlp").ok_or("yt-dlp was not found on this computer")?;
+    let ytdlp = find_tool("yt-dlp").ok_or("yt-dlp is not installed; install it under Settings, Advanced, Engines")?;
     let mut cmd = command(&ytdlp);
     cmd.args(["--encoding", "utf-8", "--no-playlist", "--no-colors", "-J"]);
     if let Some(node) = find_tool("node") {
         cmd.arg("--js-runtimes").arg(format!("node:{}", node.display()));
     }
-    inner.add_sign_in(&mut cmd, None);
+    if uses_no_sign_in(url) {
+        inner.add_proxy(&mut cmd, &crate::ProxyChoice::Default);
+    } else {
+        inner.add_sign_in(&mut cmd, None, &crate::ProxyChoice::Default);
+    }
     cmd.arg("--").arg(url).stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = cmd.spawn().map_err(|e| format!("could not start yt-dlp: {e}"))?;
     // Dropping the unfinished call stops yt-dlp (kill_on_drop).
@@ -457,8 +551,12 @@ fn base_command(ytdlp: &Path, inner: &Arc<Inner>, rec: &Record, suffix: &str, wo
         cmd.arg("--js-runtimes").arg(format!("node:{}", node.display()));
     }
     // The user's sign-in, if they made one.
-    inner.add_sign_in(&mut cmd, Some(work));
-    for (k, v) in &rec.headers {
+    if uses_no_sign_in(&rec.url) {
+        inner.add_proxy(&mut cmd, &rec.proxy);
+    } else {
+        inner.add_sign_in(&mut cmd, Some(work), &rec.proxy);
+    }
+    for (k, v) in &inner.request_headers(rec) {
         cmd.arg("--add-headers").arg(format!("{k}:{v}"));
     }
     cmd
@@ -698,20 +796,21 @@ pub(crate) async fn assemble(
     ffmpeg_run(live, ffmpeg, &args).await
 }
 
-/// Notes on which way a site download took, printed when
-/// RUSHDOWNLOAD_DEBUG is set.
+/// Notes on which way a site download took, written to the log at the
+/// debug level (on with RUSHDOWNLOAD_DEBUG; see the app's logging.rs). The
+/// note is only made when it will be written.
 pub(crate) fn debug(note: impl FnOnce() -> String) {
-    if std::env::var_os("RUSHDOWNLOAD_DEBUG").is_some() {
-        eprintln!("[site] {}", note());
+    if tracing::enabled!(target: "rushdownload_engine::site", tracing::Level::DEBUG) {
+        tracing::debug!(target: "rushdownload_engine::site", "{}", note());
     }
 }
 
 /// Waits until a freshly issued stream link is accepted. YouTube turns a new
 /// link away with 403 for the first two or three seconds and serves it
 /// normally after that.
-async fn wait_until_served(inner: &Arc<Inner>, live: &Arc<Live>, stream: &Stream) -> Result<(), Fail> {
+async fn wait_until_served(live: &Arc<Live>, stream: &Stream) -> Result<(), Fail> {
     for attempt in 0..30 {
-        let req = crate::probe::request(&inner.client, &stream.url, &stream.headers)
+        let req = crate::probe::request(&live.client(), &stream.url, &stream.headers)
             .header(reqwest::header::RANGE, "bytes=0-0");
         let status = tokio::select! {
             _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
@@ -772,16 +871,17 @@ async fn fetch_direct(
     // Every stream must be a file of known size that can be read in ranges.
     let mut sizes = Vec::new();
     for stream in &plan.streams {
-        wait_until_served(inner, live, stream).await?;
+        wait_until_served(live, stream).await?;
         // The size the site states is used as it is.
         if let Some(size) = stream.size {
             debug(|| format!("stream .{}: {size} bytes, request cap {}", stream.ext, stream.request_cap));
             sizes.push(size);
             continue;
         }
+        let client = live.client();
         let probe = tokio::select! {
             _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
-            p = crate::probe::probe(&inner.client, &stream.url, &stream.headers) => p?,
+            p = crate::probe::probe(&client, &stream.url, &stream.headers) => p?,
         };
         debug(|| {
             format!(
@@ -824,7 +924,6 @@ async fn fetch_direct(
             }
             live.downloaded.store(finished, Relaxed);
             crate::task::fetch_stream(
-                inner,
                 live,
                 &stream.url,
                 &stream.headers,
@@ -878,10 +977,27 @@ pub(crate) async fn run(
     live: &Arc<Live>,
     rec: &Record,
 ) -> Result<(), Fail> {
+    // Instagram's posts and reels have a downloader of their own (instagram.rs).
+    if crate::instagram::is_post(&rec.url) {
+        return crate::instagram::run(inner, id, live, rec).await;
+    }
+    run_ytdlp(inner, id, live, rec).await
+}
+
+/// Public Instagram posts are fetched as any visitor sees them: yt-dlp is
+/// given no sign-in for them (with one, Instagram sends it a different way
+/// and turns it away).
+fn uses_no_sign_in(url: &str) -> bool {
+    crate::instagram::is_post(url)
+}
+
+/// A site download through yt-dlp: the streams fetched with many
+/// connections where it can be, else yt-dlp's own downloader.
+pub(crate) async fn run_ytdlp(inner: &Arc<Inner>, id: u64, live: &Arc<Live>, rec: &Record) -> Result<(), Fail> {
     let ytdlp = find_tool("yt-dlp").ok_or_else(|| {
         Fail::Fatal(
             "This link is a web page, not a file. Site downloads need yt-dlp, \
-             which was not found on this computer"
+             which is not installed; install it under Settings, Advanced, Engines"
                 .into(),
         )
     })?;

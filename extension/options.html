@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>RushDownload options</title>
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body class="options">
+    <header>
+      <img src="icons/64.png" alt="" width="22" height="22" />
+      <h1>RushDownload</h1>
+      <span id="app" class="app" role="status">Looking for the app</span>
+    </header>
+
+    <section>
+      <h2>Downloads the browser starts</h2>
+      <label class="row"><input type="checkbox" id="capture" /> Send them to RushDownload instead</label>
+      <p class="note">When the app is not open, or this browser is not connected, the browser keeps downloading as usual. Right-click a link and choose “Download with the browser” to keep one in the browser.</p>
+
+      <label class="field" for="sites">
+        <span>Sites to leave to the browser</span>
+        <textarea id="sites" rows="4" spellcheck="false" placeholder="example.com&#10;mail.example.org"></textarea>
+        <small>One per line. A site includes everything under it (example.com covers www.example.com).</small>
+      </label>
+
+      <label class="field" for="types">
+        <span>File types to leave to the browser</span>
+        <input type="text" id="types" spellcheck="false" placeholder="pdf, jpg, png" />
+        <small>Separated by commas or spaces.</small>
+      </label>
+
+      <label class="field" for="min">
+        <span>Leave files smaller than this to the browser (KB)</span>
+        <input type="number" id="min" min="0" step="1" placeholder="0" />
+        <small>0 sends files of any size. A file whose size the site does not say is sent.</small>
+      </label>
+
+      <label class="row"><input type="checkbox" id="cookies" /> Send the site's cookies along</label>
+      <p class="note">Files behind a sign-in need them. They go only to the app on this computer, are kept encrypted there, and are never sent to another site.</p>
+    </section>
+
+    <footer>
+      <span id="said" role="status"></span>
+      <button id="save" class="button primary">Save</button>
+    </footer>
+
+    <script src="shared.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

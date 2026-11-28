@@ -3,7 +3,7 @@
 // from main.tsx only when the app is not running inside Tauri in dev mode and
 // is never part of a production build.
 
-import type { AfterAllNotice, BatchInfo, Download, MediaOptions, LinkCheck, Found, NewDownload, ProfileFace, Schedule, ScheduleSpec, Settings, SiteFile, SiteFiles, SiteKind, ToolStatus, TorrentPreview } from "./api";
+import type { PairRequest, PairedExtension, RequestBook, RequestOptions, HashAlgo, ToolInfo, AfterAllNotice, BatchInfo, Download, MediaOptions, LinkCheck, Found, NewDownload, PasswordChange, ProfileFace, ProxyBook, ProxyChoice, ProxyProfile, ProxyTest, Schedule, ScheduleSpec, Settings, SiteFile, SiteFiles, SiteKind, ToolStatus, TorrentPreview } from "./api";
 
 const MB = 1024 * 1024;
 const now = Math.floor(Date.now() / 1000);
@@ -100,10 +100,10 @@ function torrentItems(downloaded: number, running: boolean) {
 }
 
 let downloads: Download[] = [
-  make({ id: 1, url: "https://example.com/files/project-backup-2026.zip", filename: "project-backup-2026.zip", status: "completed", total: 1240 * MB, downloaded: 1240 * MB, created_at: now - 86400 }),
-  make({ id: 2, url: "https://example.com/docs/annual-report.pdf", filename: "annual-report.pdf", status: "completed", total: 12 * MB, downloaded: 12 * MB, created_at: now - 7200 }),
-  make({ id: 3, url: "https://example.com/watch/conference-keynote", filename: "Conference keynote 1080p [a1b2c3].mp4", status: "completed", total: 452 * MB, downloaded: 452 * MB, media: true, thumbnail: SAMPLE_THUMB, created_at: now - 3600 }),
-  make({ id: 4, url: "https://example.com/music/field-recording.flac", filename: "field-recording.flac", status: "completed", total: 86 * MB, downloaded: 86 * MB, created_at: now - 1800 }),
+  make({ id: 1, url: "https://example.com/files/project-backup-2026.zip", filename: "project-backup-2026.zip", status: "completed", total: 1240 * MB, downloaded: 1240 * MB, created_at: now - 86400, took: 3725, checksum: { algorithm: "sha256", expected: "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", actual: "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", state: "verified", error: null, done: 1240 * MB } }),
+  make({ id: 2, url: "https://example.com/docs/annual-report.pdf", filename: "annual-report.pdf", status: "completed", total: 12 * MB, downloaded: 12 * MB, created_at: now - 7200, took: 4 }),
+  make({ id: 3, url: "https://example.com/watch/conference-keynote", filename: "Conference keynote 1080p [a1b2c3].mp4", status: "completed", total: 452 * MB, downloaded: 452 * MB, media: true, thumbnail: SAMPLE_THUMB, created_at: now - 3600, took: 192 }),
+  make({ id: 4, url: "https://example.com/music/field-recording.flac", filename: "field-recording.flac", status: "completed", total: 86 * MB, downloaded: 86 * MB, created_at: now - 1800, checksum: { algorithm: "md5", expected: "9e107d9d372bb6826bd81d3542a419d6", actual: "e4d909c290d0fb1ca068ffaddf22cbd0", state: "failed", error: null, done: 86 * MB } }),
   make({
     id: 5,
     url: "https://example.com/iso/workstation-installer-with-a-rather-long-descriptive-file-name-x64.iso",
@@ -115,6 +115,16 @@ let downloads: Download[] = [
     created_at: now - 900,
   }),
   make({ id: 6, url: "https://example.com/setup/editor-setup.exe", filename: "editor-setup.exe", status: "failed", error: "HTTP 404 Not Found", created_at: now - 600 }),
+  make({
+    id: 41,
+    url: "sftp://files.example.net/home/me/build-artifacts.tar.gz",
+    filename: "build-artifacts.tar.gz",
+    status: "failed",
+    error: "This server's key is not known yet (SHA256:Wq3oQ1uQe0b6m0F1s0VJmQ0bW9b8M5zj7Qp9j1nX2hY). Check it with the server's owner, then trust it in the download's details",
+    remote: { username: "me", has_password: true, key_file: null, active_mode: false, connect_timeout: null },
+    server_key: { host: "files.example.net", port: 22, fingerprint: "SHA256:Wq3oQ1uQe0b6m0F1s0VJmQ0bW9b8M5zj7Qp9j1nX2hY", key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample", changed: false },
+    created_at: now - 900,
+  }),
   make({ id: 7, url: "https://example.com/blog/some-article", filename: "some-article", status: "failed", media: true, error: "This link is a web page with no video RushDownload can download", created_at: now - 300 }),
   make({
     id: 8,
@@ -214,6 +224,8 @@ let settings: Settings = {
   after_all: "nothing",
   after_countdown: 60,
   after_failures: false,
+  auto_update_tools: true,
+  auto_checksum: null,
   organize: {
     enabled: true,
     categories: [
@@ -499,12 +511,189 @@ const NOBODY = {
   followers: null,
   following: null,
   joined: null,
+  username: null,
+  links: [],
+  likes: null,
+  rounded: false,
 } satisfies ProfileFace as ProfileFace;
 
 let appPrefs = { start_with_system: false, close_to_tray: false, notifications: true, hardware_acceleration: true };
 
+/** The helper programs: yt-dlp kept by the app with an update waiting,
+ *  gallery-dl installed by the user. */
+let tools: ToolInfo[] = [
+  {
+    name: "yt-dlp",
+    source: "managed",
+    path: "C:\\Users\\me\\AppData\\Roaming\\com.rushdownload.app\\tools\\yt-dlp\\2026.10.30\\yt-dlp.exe",
+    version: "2026.10.30",
+    latest: "2026.11.23",
+    update_available: true,
+    can_install: true,
+    installed_at: now - 29 * 86400,
+    last_checked: now - 3 * 3600,
+    previous: "2026.09.26",
+    notes_url: "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.11.23",
+    busy: null,
+    error: null,
+  },
+  {
+    name: "gallery-dl",
+    source: "system",
+    path: "C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Links\\gallery-dl.exe",
+    version: "1.31.4",
+    latest: "1.32.21",
+    update_available: true,
+    can_install: true,
+    installed_at: null,
+    last_checked: now - 3 * 3600,
+    previous: null,
+    notes_url: "https://codeberg.org/mikf/gallery-dl/releases/tag/v1.32.21",
+    busy: null,
+    error: null,
+  },
+];
+const toolListeners = new Map<symbol, (list: ToolInfo[]) => void>();
+function emitTools() {
+  for (const cb of toolListeners.values()) cb(structuredClone(tools));
+}
+
+/** A browser connected through the extension. */
+let paired: PairedExtension[] = [
+  { id: "a1", origin: "chrome-extension://hlkbcfmpnoeogpmhjdcmkdbakkgkmnpo", browser: "Chrome 131", created_at: now - 12 * 86400, last_seen: now - 2 * 3600 },
+];
+
+/** A sample request profile, with a token kept (never shown). */
+let requestBook: RequestBook = {
+  next_id: 2,
+  default: null,
+  items: [
+    {
+      id: 1,
+      name: "Work file server",
+      options: {
+        user_agent: null,
+        referer: null,
+        headers: [["X-Team", "media"], ["X-Api-Key", ""]],
+        auth: "bearer",
+        username: "",
+        read_timeout: 60,
+        connect_timeout: null,
+        has_password: true,
+        has_cookies: false,
+        private_headers: ["X-Api-Key"],
+      },
+    },
+  ],
+};
+
+/** Sample proxies; passwords are only noted as saved, as the real app does. */
+let proxyBook: ProxyBook = {
+  next_id: 3,
+  default: null,
+  items: [
+    { id: 1, name: "Office", kind: "http", host: "proxy.example.com", port: 3128, username: "me", has_password: true, bypass: ["intranet.example.com", "10.0.0.0/8"] },
+    { id: 2, name: "Home SOCKS", kind: "socks5h", host: "192.168.1.20", port: 1080, username: "", has_password: false, bypass: [] },
+  ],
+};
+const book = () => structuredClone(proxyBook);
+
+function checkProxy(p: ProxyProfile): string | null {
+  if (!p.name.trim()) return "Give the proxy a name";
+  if (!p.host.trim()) return "Enter the proxy's address";
+  if (/[\s/@]|:\/\//.test(p.host.trim())) return "Enter only the proxy's host name or IP address, without http:// or a port";
+  if (!(p.port >= 1 && p.port <= 65535)) return "Enter the proxy's port (1 to 65535)";
+  return null;
+}
+
 export const mockApi = {
   list: async () => rollUp(downloads),
+  proxies: async () => book(),
+  saveProxy: async (profile: ProxyProfile, password: PasswordChange) => {
+    const old = proxyBook.items.find((p) => p.id === profile.id);
+    const has_password = typeof password === "object" ? password.set !== "" : password === "keep" && !!old?.has_password;
+    const next = { ...profile, name: profile.name.trim(), host: profile.host.trim(), has_password, bypass: profile.bypass.map((b) => b.trim()).filter(Boolean) };
+    const why = checkProxy(next);
+    if (why) throw why;
+    if ((next.kind === "socks4" || next.kind === "socks4a") && has_password) throw "SOCKS4 proxies have no passwords; use SOCKS5 for a proxy that asks for one";
+    if (next.id === 0) {
+      next.id = proxyBook.next_id++;
+      proxyBook.items.push(next);
+    } else {
+      proxyBook.items = proxyBook.items.map((p) => (p.id === next.id ? next : p));
+    }
+    return book();
+  },
+  deleteProxy: async (id: number) => {
+    proxyBook.items = proxyBook.items.filter((p) => p.id !== id);
+    if (proxyBook.default === id) proxyBook.default = null;
+    return book();
+  },
+  setDefaultProxy: async (id: number | null) => {
+    proxyBook.default = id;
+    return book();
+  },
+  testProxy: async (profile: ProxyProfile, password: PasswordChange): Promise<ProxyTest> => {
+    await new Promise((r) => setTimeout(r, 900));
+    const url = "https://cp.cloudflare.com/generate_204";
+    const why = checkProxy(profile);
+    if (why) return { ok: false, url, status: null, millis: 0, error: why };
+    if (typeof password === "object" && password.set === "wrong") {
+      return { ok: false, url, status: null, millis: 412, error: "The proxy did not accept the user name and password" };
+    }
+    return { ok: true, url, status: 204, millis: 184, error: null };
+  },
+  verifyChecksum: async (id: number, expected: string | null, algorithm: HashAlgo | null) => {
+    const d = downloads.find((x) => x.id === id);
+    if (!d || d.status !== "completed") throw "The file can be checked once it has finished downloading";
+    const hex = expected?.trim().split(/[\s:]+/).pop()?.toLowerCase() ?? null;
+    if (hex != null && !/^[0-9a-f]{32}$|^[0-9a-f]{40}$|^[0-9a-f]{64}$|^[0-9a-f]{128}$/.test(hex)) throw "That is not a checksum";
+    const algo: HashAlgo = hex ? ({ 32: "md5", 40: "sha1", 64: "sha256", 128: "sha512" } as const)[hex.length as 32 | 40 | 64 | 128] : algorithm ?? "sha256";
+    const set = (patch: Partial<Download>) => (downloads = downloads.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+    const total = d.total ?? 0;
+    for (let i = 0; i <= 5; i++) {
+      set({ checksum: { algorithm: algo, expected: hex, actual: null, state: "calculating", error: null, done: (total * i) / 5 } });
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    // a made-up sum: the sample pretends a pasted one starting with "0" does not match
+    const actual = hex && !hex.startsWith("0") ? hex : "ab".repeat({ md5: 16, sha1: 20, sha256: 32, sha512: 64 }[algo]);
+    set({ checksum: { algorithm: algo, expected: hex, actual, state: hex ? (actual === hex ? "verified" : "failed") : "not_verified", error: null, done: total } });
+  },
+  verifyWithSums: async () => 1,
+  trustServerKey: async (id: number) => {
+    downloads = downloads.map((x) => (x.id === id ? { ...x, server_key: null, error: null, status: "queued" as const } : x));
+  },
+  pickAnyFile: async () => "C:\\Users\\me\\.ssh\\id_ed25519",
+  requestProfiles: async () => structuredClone(requestBook),
+  saveRequestProfile: async (id: number, name: string, options: RequestOptions, password: PasswordChange, cookies: PasswordChange) => {
+    if (!name.trim()) throw "Give the profile a name of up to 60 characters";
+    const old = requestBook.items.find((p) => p.id === id)?.options;
+    const isPrivate = (n: string) => /^(authorization|cookie)$|token|secret|key|session|auth|password/i.test(n);
+    const kept: RequestOptions = {
+      ...options,
+      password: undefined,
+      cookies: undefined,
+      headers: options.headers.filter(([n, v]) => n.trim() || v.trim()).map(([n, v]) => [n.trim(), isPrivate(n) ? "" : v]),
+      private_headers: options.headers.filter(([n]) => isPrivate(n)).map(([n]) => n.trim()),
+      has_password: typeof password === "object" ? !!password.set : password === "keep" && !!old?.has_password,
+      has_cookies: typeof cookies === "object" ? !!cookies.set : cookies === "keep" && !!old?.has_cookies,
+    };
+    if (id === 0) requestBook.items.push({ id: requestBook.next_id++, name: name.trim(), options: kept });
+    else requestBook.items = requestBook.items.map((p) => (p.id === id ? { id, name: name.trim(), options: kept } : p));
+    return structuredClone(requestBook);
+  },
+  deleteRequestProfile: async (id: number) => {
+    requestBook.items = requestBook.items.filter((p) => p.id !== id);
+    if (requestBook.default === id) requestBook.default = null;
+    return structuredClone(requestBook);
+  },
+  setDefaultRequestProfile: async (id: number | null) => {
+    requestBook.default = id;
+    return structuredClone(requestBook);
+  },
+  setDownloadProxy: async (id: number, choice: ProxyChoice) => {
+    downloads = downloads.map((d) => (d.id === id ? { ...d, proxy: choice } : d));
+  },
   getAppPrefs: async () => ({ ...appPrefs }),
   setAppPrefs: async (prefs: typeof appPrefs) => {
     appPrefs = { ...prefs };
@@ -610,6 +799,21 @@ export const mockApi = {
     return Promise.resolve(() => window.removeEventListener("mock-extension-link", hear));
   },
   onExtensionAdded: (_cb: (count: number) => void) => Promise.resolve(() => {}),
+  // A browser asking to connect: new CustomEvent("mock-extension-pair", { detail: { id, origin, browser } })
+  onExtensionPair: (cb: (ask: PairRequest) => void) => {
+    const hear = (e: Event) => cb((e as CustomEvent<PairRequest>).detail);
+    window.addEventListener("mock-extension-pair", hear);
+    return Promise.resolve(() => window.removeEventListener("mock-extension-pair", hear));
+  },
+  answerExtensionPair: async (id: string, allow: boolean) => {
+    if (allow) paired = [...paired, { id, origin: "chrome-extension://abcdefghijklmnopabcdefghijklmnop", browser: "Edge 131", created_at: Math.floor(Date.now() / 1000), last_seen: null }];
+    return structuredClone(paired);
+  },
+  pairedExtensions: async () => structuredClone(paired),
+  revokeExtension: async (id: string) => {
+    paired = paired.filter((p) => p.id !== id);
+    return structuredClone(paired);
+  },
   onBrowserDownload: (_cb: (url: string) => void) => Promise.resolve(() => {}),
   onBrowserDownloadFailed: (_cb: (why: string) => void) => Promise.resolve(() => {}),
   linkSize: async (url: string, _referer: string) => {
@@ -702,9 +906,13 @@ export const mockApi = {
           '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#3b6fd4"/>' +
             '<circle cx="32" cy="25" r="11" fill="#fff"/><path d="M10 64c2-16 12-22 22-22s20 6 22 22z" fill="#fff"/></svg>',
         ),
-      about: "Short films and behind-the-scenes photos from a two-person studio. New work every Friday.",
+      about: "Short films and behind-the-scenes photos from a two-person studio.\nNew work every Friday. Prints at samplestudio.com/shop",
+      links: ["https://samplestudio.com/shop", "https://linktr.ee/samplestudio"],
+      likes: 1_200_000,
+      rounded: true,
     };
   },
+  openWebLink: async (url: string) => console.info("[open link]", url),
   profileStats: async (url: string) => {
     await new Promise((r) => setTimeout(r, /slow/.test(url) ? 3500 : 700));
     // Only some sites tell a visitor a profile's numbers: "plain" and "bare" stand for the others.
@@ -738,12 +946,36 @@ export const mockApi = {
   },
   profileOf: async (url: string) => {
     if (/playlist\?list=/.test(url)) return { site: "YouTube playlist", name: "PLsample" };
+    const insta = /^https?:\/\/(?:www\.)?instagram\.com\/([\w.]+)\/?$/.exec(url.trim());
+    if (insta) return { site: "Instagram", name: insta[1] };
     const match = /^https?:\/\/[^/]+\/@?([\w.]+)\/?$/.exec(url.trim());
     return match && /profile|@/.test(url) ? { site: "Example", name: match[1] } : null;
   },
   mediaInfo: async (url: string) => {
     await new Promise((r) => setTimeout(r, 900));
     if (/nothing/i.test(url)) throw "no video was found on this page";
+    // Instagram, as crates/engine/src/instagram.rs answers it.
+    if (/instagram\.com/i.test(url)) {
+      if (!/\/(p|reels?|tv)\/[A-Za-z0-9_-]{5,}/.test(url)) throw "Please enter a valid Instagram URL.";
+      if (/private/i.test(url)) throw "This account is private. Only publicly accessible content can be downloaded.";
+      if (/gone/i.test(url)) throw "This Instagram video is currently unavailable.";
+      if (/locked/i.test(url)) throw "This Instagram content is only shown to signed-in Instagram users, so it cannot be accessed or downloaded without authentication.";
+      if (/age/i.test(url)) throw "This post is age-restricted by Instagram, which shows it only to signed-in Instagram users. Sign in to Instagram on the Sign in page, then come back to download it.";
+      return {
+        title: "Video by @instagram",
+        thumbnail: SAMPLE_THUMB,
+        duration: 15,
+        heights: [],
+        site: "Instagram",
+        width: 720,
+        height: 1280,
+        uploader: "Instagram",
+        uploader_url: "https://www.instagram.com/instagram/",
+        caption: "Golden hour on the coast, shot in one take.\nSound on for the waves. More at linktr.ee/sample",
+        likes: 48_213,
+        comments: 1_204,
+      };
+    }
     // A private post: it shows only once a sign-in has been made.
     if (/private|members/i.test(url) && signedIn.length === 0) {
       throw "ERROR: [Instagram] sample: You need to log in to access this content. Use --cookies-from-browser or --cookies for the authentication";
@@ -925,9 +1157,54 @@ export const mockApi = {
   },
   open: async (_id: number) => {},
   reveal: async (_id: number) => {},
+  openItem: async (_id: number, _index: number) => {},
+  revealItem: async (_id: number, _index: number) => {},
   showFolder: async (_id: number) => {},
   openDownloadDir: async () => {},
   tools: async (): Promise<ToolStatus> => ({ yt_dlp: true, ffmpeg: true, gallery_dl: true }),
+  toolsInfo: async () => structuredClone(tools),
+  checkTools: async () => {
+    await new Promise((r) => setTimeout(r, 800));
+    tools = tools.map((x) => ({ ...x, last_checked: Math.floor(Date.now() / 1000) }));
+    emitTools();
+    return structuredClone(tools);
+  },
+  installTool: async (name: string) => {
+    const tool = tools.find((x) => x.name === name)!;
+    const total = name === "yt-dlp" ? 23_600_000 : 22_600_000;
+    for (let done = 0; done <= total; done += total / 12) {
+      tools = tools.map((x) => (x.name === name ? { ...x, busy: { phase: "downloading", done, total } } : x));
+      emitTools();
+      await new Promise((r) => setTimeout(r, 180));
+    }
+    const next: ToolInfo = {
+      ...tool,
+      source: "managed",
+      path: `C:\\Users\\me\\AppData\\Roaming\\com.rushdownload.app\\tools\\${name}\\${tool.latest}\\${name}.exe`,
+      previous: tool.source === "managed" ? tool.version : tool.previous,
+      version: tool.latest,
+      update_available: false,
+      installed_at: Math.floor(Date.now() / 1000),
+      busy: null,
+      error: null,
+    };
+    tools = tools.map((x) => (x.name === name ? next : x));
+    emitTools();
+    return structuredClone(next);
+  },
+  rollbackTool: async (name: string) => {
+    tools = tools.map((x) => (x.name === name && x.previous ? { ...x, version: x.previous, previous: x.version, update_available: true } : x));
+    emitTools();
+    return structuredClone(tools.find((x) => x.name === name)!);
+  },
+  openReleaseNotes: async (name: string) => console.info("[release notes]", tools.find((x) => x.name === name)?.notes_url),
+  onTools: (cb: (list: ToolInfo[]) => void) => {
+    const key = Symbol();
+    toolListeners.set(key, cb);
+    return Promise.resolve(() => {
+      toolListeners.delete(key);
+    });
+  },
   getSettings: async () => settings,
   schedules: async () => schedules.map((x) => ({ ...x })),
   saveSchedule: async (id: number | null, spec: ScheduleSpec) => {

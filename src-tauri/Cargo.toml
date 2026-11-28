@@ -23,6 +23,10 @@ serde_json = "1"
 arboard = { version = "3", default-features = false }
 tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-appender = "0.2.5"
+ring = "0.17"
 
 # Sleep after all downloads finish (after.rs); already built for other crates.
 [target.'cfg(windows)'.dependencies]

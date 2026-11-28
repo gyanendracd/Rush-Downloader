@@ -78,7 +78,12 @@ pub(crate) struct Live {
     /// with the share of the limit it gets (1, or the number of engines
     /// side by side). Their limit is set again when the limit changes.
     pub torrent_sessions: Mutex<Vec<(Arc<librqbit::Session>, u64)>>,
+    /// When this run started, to add its running time to the record's.
+    pub started: std::time::Instant,
     fatal: Mutex<Option<String>>,
+    /// The HTTP client for this download's connection (a proxy, or none),
+    /// chosen as it starts (see `run`).
+    client: Mutex<Option<(Client, crate::ProxyChoice)>>,
 }
 
 impl Live {
@@ -100,8 +105,26 @@ impl Live {
             files: Mutex::new(Vec::new()),
             limiter: Arc::new(Limiter::new(0)),
             torrent_sessions: Mutex::new(Vec::new()),
+            started: std::time::Instant::now(),
             fatal: Mutex::new(None),
+            client: Mutex::new(None),
         }
+    }
+
+    /// Sets the connection this download uses: its HTTP client, and the
+    /// choice it came from (for the helper programs it runs).
+    pub fn set_connection(&self, client: Client, route: crate::ProxyChoice) {
+        *self.client.lock().unwrap() = Some((client, route));
+    }
+
+    /// This download's HTTP client. Set before anything is fetched.
+    pub fn client(&self) -> Client {
+        self.client.lock().unwrap().as_ref().map(|c| c.0.clone()).expect("the connection is chosen as the download starts")
+    }
+
+    /// The connection choice this download runs with.
+    pub fn route(&self) -> crate::ProxyChoice {
+        self.client.lock().unwrap().as_ref().map(|c| c.1.clone()).unwrap_or_default()
     }
 }
 
@@ -409,7 +432,6 @@ async fn drive(ctx: Arc<Ctx>, conns: usize, live: &Arc<Live>) -> Result<(), Fail
 /// `resume` holds the segments saved when the same stream was paused.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn fetch_stream(
-    inner: &Arc<Inner>,
     live: &Arc<Live>,
     url: &str,
     headers: &[(String, String)],
@@ -461,7 +483,7 @@ pub(crate) async fn fetch_stream(
     *live.segs.lock().unwrap() = segs;
 
     let ctx = Arc::new(Ctx {
-        client: inner.client.clone(),
+        client: live.client(),
         url: url.to_string(),
         headers: headers.to_vec(),
         file,
@@ -480,7 +502,7 @@ fn io_fail(what: &str, e: io::Error) -> Fail {
 }
 
 /// Reserves a unique file name in `dir` by creating its `.part` file.
-fn create_part(dir: &Path, base: &str) -> Result<(String, File), Fail> {
+pub(crate) fn create_part(dir: &Path, base: &str) -> Result<(String, File), Fail> {
     for n in 0..10_000 {
         let name = candidate(base, n);
         if dir.join(&name).exists() {
@@ -501,7 +523,7 @@ fn create_part(dir: &Path, base: &str) -> Result<(String, File), Fail> {
 }
 
 /// Moves the finished `.part` file to its final name; returns that name.
-fn finalize(dir: &Path, filename: &str) -> Result<String, Fail> {
+pub(crate) fn finalize(dir: &Path, filename: &str) -> Result<String, Fail> {
     let part = part_path(dir, filename);
     for n in 0..10_000 {
         let name = candidate(filename, n);
@@ -535,6 +557,12 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>) -> Result
     let Some(rec) = inner.record(id) else {
         return Err(Fail::Cancelled);
     };
+    // How its requests are made, and the connection it uses; a proxy (or a
+    // vault) that cannot be used stops it here rather than letting it
+    // connect some other way.
+    let req_opts = inner.request_of(&rec).map_err(Fail::Fatal)?;
+    let opts = crate::ClientOpts::of(req_opts.as_ref().map(|(o, _)| o));
+    live.set_connection(inner.client_with(&rec.proxy, opts).map_err(Fail::Fatal)?, rec.proxy.clone());
     if !rec.bundle.is_empty() {
         return crate::bundle::run(inner, id, live, &rec).await;
     }
@@ -544,16 +572,24 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>) -> Result
     if rec.torrent {
         return crate::torrent::run(inner, id, live, &rec).await;
     }
+    if crate::remote::proto_of(&rec.url).is_some() {
+        return crate::remote::run(inner, id, live, &rec).await;
+    }
     if rec.media {
         return crate::media::run(inner, id, live, &rec).await;
     }
+
+    // The address and headers to ask with: the user's own, signed in, and
+    // followed through redirects (only harmless ones go to another site).
+    let client = live.client();
+    let (url, headers) = inner.prepare_request(&rec, req_opts.as_ref(), &client, &live.cancel).await?;
 
     // Probe, retrying transient failures a few times.
     let mut attempt = 0u32;
     let probe = loop {
         let res = tokio::select! {
             _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
-            p = probe::probe(&inner.client, &rec.url, &rec.headers) => p,
+            p = probe::probe(&client, &url, &headers) => p,
         };
         match res {
             Ok(p) => {
@@ -686,9 +722,9 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>) -> Result
         drop(probe);
 
         let ctx = Arc::new(Ctx {
-            client: inner.client.clone(),
-            url: rec.url.clone(),
-            headers: rec.headers.clone(),
+            client: live.client(),
+            url: url.clone(),
+            headers: headers.clone(),
             file,
             live: live.clone(),
             limiter: live.limiter.clone(),
@@ -721,7 +757,7 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>) -> Result
             None => {
                 let r = tokio::select! {
                     _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
-                    r = request(&inner.client, &rec.url, &rec.headers).send() => r.map_err(net_err)?,
+                    r = request(&live.client(), &url, &headers).send() => r.map_err(net_err)?,
                 };
                 if !r.status().is_success() {
                     return Err(status_fail(r.status()));

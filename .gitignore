@@ -25,3 +25,6 @@ dist-ssr
 
 # Rust
 /target
+
+# extension store packages (extension/build.mjs)
+dist-extension/

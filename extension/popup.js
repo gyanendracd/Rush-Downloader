@@ -157,6 +157,7 @@ sendButton.addEventListener("click", async () => {
   );
   if (!answer.ok) {
     say(answer.error, "err");
+    if (answer.pair) showLink();
     refresh();
     return;
   }
@@ -182,13 +183,48 @@ el("send-page").addEventListener("click", async () => {
   const answer = await rushSend([{ url: tab.url, kind: "page" }]);
   el("send-page").disabled = false;
   if (answer.ok) say("The page is waiting on the app's Home", "ok");
-  else say(answer.error, "err");
+  else {
+    say(answer.error, "err");
+    if (answer.pair) showLink();
+  }
+});
+
+/** Shows whether the app is open and this browser connected to it. */
+async function showLink() {
+  const state = await rushPing();
+  el("app").textContent = !state.open ? "App is not open" : state.paired ? "Connected" : "Not connected";
+  el("app").className = "app " + (!state.open ? "off" : state.paired ? "on" : "warn");
+  el("link").hidden = !state.open || state.paired;
+  return state;
+}
+
+el("connect").addEventListener("click", async () => {
+  el("connect").disabled = true;
+  el("link-text").textContent = "Asking the app…";
+  const result = await rushPair(() => {
+    el("link-text").textContent = "Allow this browser in the RushDownload window.";
+  });
+  el("connect").disabled = false;
+  if (result.ok) {
+    say("Connected to RushDownload", "ok");
+  } else {
+    el("link-text").textContent = "This browser is not connected to RushDownload yet.";
+    say(result.error, "err");
+  }
+  showLink();
+});
+
+el("options").addEventListener("click", () => chrome.runtime.openOptionsPage());
+
+el("catch").addEventListener("change", async (e) => {
+  const settings = await rushSettings();
+  await rushSaveSettings({ ...settings, capture: e.target.checked });
 });
 
 async function start() {
-  rushPing().then((open) => {
-    el("app").textContent = open ? "App is open" : "App is not open";
-    el("app").className = "app " + (open ? "on" : "off");
+  showLink();
+  rushSettings().then((settings) => {
+    el("catch").checked = settings.capture;
   });
 
   // "popup.html?tab=12" reads that tab instead of the one in front, so the

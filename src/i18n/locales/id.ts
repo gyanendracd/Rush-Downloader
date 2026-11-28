@@ -264,6 +264,9 @@ const dict: Dict = {
         media: () => "berisi foto atau video",
         followers: () => "pengikut",
         following: () => "mengikuti",
+        videos: () => "video",
+        subscribers: () => "pelanggan",
+        likes: () => "suka",
         joined: (date: string) => `Bergabung ${date}`,
       },
       holds: {
@@ -273,6 +276,8 @@ const dict: Dict = {
       },
       playlist: "Playlist",
       profileOf: (site: string) => `Profil ${site}`,
+      links: "Tautan di profil ini",
+      openLink: (link: string) => `Buka ${link} di browser`,
 
       locked: {
         profileShown: (site: string) =>
@@ -315,7 +320,7 @@ const dict: Dict = {
       profileNoteAfter: ", dipisah ke Images dan Videos. Beberapa situs hanya menampilkan profil jika Anda sudah masuk.",
       profileNoteAfterQuality:
         ", dipisah ke Images dan Videos, dalam kualitas yang dipilih di atas. Beberapa situs hanya menampilkan profil jika Anda sudah masuk.",
-      profileFolder: (name: string, site: string) => `${name} (${site})`,
+      profileFolder: (name: string) => name,
 
       or: "atau",
       addFromBrowserTitle: "Tempel alamat halaman lalu pilih media yang ditemukan di sana",
@@ -621,6 +626,7 @@ const dict: Dict = {
       resume: "Lanjutkan",
       pause: "Jeda",
       more: "Tindakan lainnya",
+      took: (time: string) => `Diunduh dalam ${time}`,
     },
     dismiss: "Tutup",
     close: "Tutup",

@@ -65,6 +65,8 @@ export const ui = {
     resume: "Resume",
     pause: "Pause",
     more: "More actions",
+    /** `time`: how long it took ("3m 12s"). */
+    took: (time: string) => `Downloaded in ${time}`,
   },
   dismiss: "Dismiss",
   close: "Close",

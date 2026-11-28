@@ -80,7 +80,7 @@ pub(crate) fn sample_ranges(segments: &[[u64; 3]]) -> Vec<(u64, u64)> {
 /// A download that takes a new link: a direct file, not a torrent, a site
 /// video, a profile or a set of files picked from a page.
 pub(crate) fn takes_new_link(rec: &Record) -> bool {
-    !rec.torrent && !rec.media && !rec.profile && rec.bundle.is_empty()
+    !rec.torrent && !rec.media && !rec.profile && rec.bundle.is_empty() && crate::remote::proto_of(&rec.url).is_none()
 }
 
 fn web_link(url: &str) -> Result<(), String> {
@@ -100,7 +100,8 @@ fn fail_text(f: Fail) -> String {
 /// Looks at what the new link gives, against the download as it is.
 pub(crate) async fn check(inner: &Inner, rec: &Record, url: &str, headers: &[(String, String)]) -> Result<LinkCheck, String> {
     web_link(url)?;
-    let probe = probe::probe(&inner.client, url.trim(), headers).await.map_err(fail_text)?;
+    let client = inner.client_for(&rec.proxy)?;
+    let probe = probe::probe(&client, url.trim(), headers).await.map_err(fail_text)?;
     if probe.is_html {
         return Err("That link opens a web page, not the file".into());
     }
@@ -151,7 +152,7 @@ pub(crate) async fn check(inner: &Inner, rec: &Record, url: &str, headers: &[(St
             // the partial file is gone or short: nothing can be kept
             return Ok(verdict(Some(LinkProblem::ContentDiffers)));
         };
-        let resp = request(&inner.client, url.trim(), headers)
+        let resp = request(&client, url.trim(), headers)
             .header(RANGE, format!("bytes={start}-{}", end - 1))
             .send()
             .await

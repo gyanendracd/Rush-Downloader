@@ -69,3 +69,14 @@ Each prints what it observed as JSON, or `FAILED:` with the step that timed out.
 ## Not covered
 
 The Windows folder and file pickers, dragging the window, and site downloads and torrents, which need the internet. Torrents have a live engine test instead: `cargo test --release -p rushdownload-engine -- --ignored torrent` (it uses Ubuntu's official torrent).
+
+## Browser extension pairing
+
+Start the test copy with a port for the extension, then run the check (it pairs as a made-up extension, presses Allow in the test window, and tries the key):
+
+```powershell
+$env:RUSHDOWNLOAD_EXT_PORT = "38999"
+powershell -ExecutionPolicy Bypass -File e2e\launch.ps1 -TestFolder <test-folder>
+node e2e/t23_extension_pair.mjs
+node e2e/cdp.mjs e2e/t23_revoke.js
+```

@@ -274,6 +274,9 @@ const dict: Dict = {
         media: (n: number) => plural(n, { one: "mit Fotos oder Videos", other: "mit Fotos oder Videos" }),
         followers: (n: number) => plural(n, { one: "Follower", other: "Follower" }),
         following: (n: number) => plural(n, { one: "folgt", other: "folgt" }),
+        videos: (n: number) => plural(n, { one: "Video", other: "Videos" }),
+        subscribers: (n: number) => plural(n, { one: "Abonnent", other: "Abonnenten" }),
+        likes: (n: number) => plural(n, { one: "Like", other: "Likes" }),
         joined: (date: string) => `Dabei seit ${date}`,
       },
       holds: {
@@ -283,6 +286,8 @@ const dict: Dict = {
       },
       playlist: "Playlist",
       profileOf: (site: string) => `${site}-Profil`,
+      links: "Links in diesem Profil",
+      openLink: (link: string) => `${link} im Browser öffnen`,
 
       locked: {
         profileShown: (site: string) =>
@@ -326,7 +331,7 @@ const dict: Dict = {
         ", sortiert in „Images“ und „Videos“. Manche Websites zeigen ein Profil nur, wenn Sie angemeldet sind.",
       profileNoteAfterQuality:
         ", sortiert in „Images“ und „Videos“, in der oben gewählten Qualität. Manche Websites zeigen ein Profil nur, wenn Sie angemeldet sind.",
-      profileFolder: (name: string, site: string) => `${name} (${site})`,
+      profileFolder: (name: string) => name,
 
       or: "oder",
       addFromBrowserTitle: "Seitenadresse einfügen und die darauf gefundenen Medien auswählen",
@@ -634,6 +639,7 @@ const dict: Dict = {
       resume: "Fortsetzen",
       pause: "Pausieren",
       more: "Weitere Aktionen",
+      took: (time: string) => `Heruntergeladen in ${time}`,
     },
     dismiss: "Schließen",
     close: "Schließen",

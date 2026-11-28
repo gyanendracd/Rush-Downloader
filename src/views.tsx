@@ -63,6 +63,7 @@ import {
   percentOf,
   checkPercent,
   looksLikePage,
+  isInstagramLink,
   looksLikeUrl,
   QUALITIES,
   qualityOptions,
@@ -74,14 +75,23 @@ import {
   type CaughtMedia,
   type MediaInfo,
   type SiteKind,
+  type SiteFiles,
   type MediaOptions,
   type PlaylistInfo,
   type ProfileFace,
   type ProfileRef,
   type Settings,
   type ToolStatus,
+  type HashAlgo,
+  HASH_ALGOS,
 } from "./api";
 import { DEFAULT_ORGANIZE, OrganizeSettings } from "./Organize";
+import { ProxySettings } from "./Proxies";
+import { RequestProfiles } from "./Requests";
+import { ToolSettings } from "./Tools";
+import { ExtensionSettings } from "./Bridge";
+import { PosterRow } from "./Poster";
+import { InstaPostCard } from "./InstaPost";
 import { siteBlockedText } from "./dialogs";
 import { SITE_LOGOS } from "./siteLogos";
 import { LumenButton } from "./LumenButton";
@@ -184,6 +194,9 @@ export function BrowserView(props: {
   /** The page being shown, and the video the site downloader finds on it. */
   const [pageUrl, setPageUrl] = useState("");
   const [pageVideo, setPageVideo] = useState<MediaInfo | null>(null);
+  /** The one file a site the app reads files from gives for this page
+   *  (PMVHaven's uploaded video): it beats a stream caught from the player. */
+  const [pageSite, setPageSite] = useState<SiteFiles | null>(null);
   const [pageChoice, setPageChoice] = useState("best");
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -229,6 +242,7 @@ export function BrowserView(props: {
           setStarted(new Set());
           setPick("");
           setPageVideo(null);
+          setPageSite(null);
           setPageUrl(where);
         }
       }),
@@ -262,7 +276,16 @@ export function BrowserView(props: {
   useEffect(() => {
     if (!pageUrl) return;
     let stale = false;
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
+      // A site the app reads files from hands over the uploaded file itself,
+      // where its player would only give a stream.
+      const known = await api.siteKind(pageUrl).catch(() => null);
+      if (stale) return;
+      if (known?.support === "files") {
+        const listed = await api.siteFiles(pageUrl).catch(() => null);
+        if (!stale && listed?.files.length === 1) setPageSite(listed);
+        return;
+      }
       api
         .mediaInfo(pageUrl)
         .then((info) => {
@@ -293,6 +316,19 @@ export function BrowserView(props: {
             ? { max_height: null, audio_only: true }
             : { max_height: pageChoice === "best" ? null : Number(pageChoice), audio_only: false },
       });
+      setStarted((set) => new Set(set).add(pageUrl));
+      actions.toast(t.views.downloadStarted);
+    } catch (e) {
+      actions.toast(String(e), "error");
+    }
+  }
+
+  /** Downloads the site page's file. Added straight away: a dialog would
+   *  open beneath the site's page, which is drawn over the app. */
+  async function downloadSite() {
+    if (!pageSite) return;
+    try {
+      await api.addSiteFiles(pageUrl, pageSite.title, pageSite.files);
       setStarted((set) => new Set(set).add(pageUrl));
       actions.toast(t.views.downloadStarted);
     } catch (e) {
@@ -528,9 +564,29 @@ export function BrowserView(props: {
               )}
             </div>
           )}
+          {pageSite && !pageVideo && (
+            <div className="browser-page-video">
+              <span className="browser-kind is-full">{pageSite.site}</span>
+              <span className="browser-name" title={pageSite.files[0].path.join("/")}>
+                {pageSite.files[0].path[pageSite.files[0].path.length - 1]}
+              </span>
+              {pageSite.files[0].size != null && (
+                <span className="browser-size">{formatBytes(pageSite.files[0].size)}</span>
+              )}
+              {started.has(pageUrl) ? (
+                <button type="button" className="btn btn-small" onClick={() => props.go("downloads")}>
+                  {t.views.browser.inDownloads}
+                </button>
+              ) : (
+                <button type="button" className="btn btn-small btn-primary" onClick={downloadSite}>
+                  {t.views.browser.download}
+                </button>
+              )}
+            </div>
+          )}
           {/* With the full video on offer, the files caught from the player
               (clips, pieces, previews) would only be clutter beside it. */}
-          {pageVideo ? null : found.length === 0 ? (
+          {pageVideo || pageSite ? null : found.length === 0 ? (
             <p className="browser-empty">{t.views.browser.nothingCaught}</p>
           ) : (
             // Everything caught from the player is one row: the best file is
@@ -863,6 +919,11 @@ export function SignInView(props: {
 const short = (n: number) =>
   new Intl.NumberFormat(formatLocale(), { notation: "compact", maximumFractionDigits: 1 }).format(n);
 
+/** A link as a card shows it: "site.com/path", without "https://www." or a trailing slash. */
+function linkText(link: string): string {
+  return link.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/$/, "");
+}
+
 /** "Dec 2017", from the day a profile joined ("2017-12-14"). */
 function joinedIn(day: string): string {
   const at = new Date(`${day}T00:00:00`);
@@ -896,6 +957,9 @@ export function HomeView(props: {
   keptLink = url;
   /** The link's site will not show this to a visitor who is not signed in. */
   const [locked, setLocked] = useState(false);
+  /** Why an Instagram link cannot be downloaded, in the engine's words
+   *  (crates/engine/src/instagram.rs); Instagram never sends users to sign in. */
+  const [siteError, setSiteError] = useState<string | null>(null);
   useEffect(() => {
     if (props.copied) setUrl(props.copied.text);
   }, [props.copied]);
@@ -958,6 +1022,7 @@ export function HomeView(props: {
     setLooking(false);
     setCatchLink(null);
     setLocked(false);
+    setSiteError(null);
     // A profile's name may end like a file's ("john.doe"), so any web link is asked about.
     if (!looksLikeUrl(link) || !link.toLowerCase().startsWith("http")) return;
     let stale = false;
@@ -1016,6 +1081,22 @@ export function HomeView(props: {
       if (stale) return;
       if (who) {
         showProfile(who);
+        return;
+      }
+      // Instagram posts, reels and videos have a reader of their own, which
+      // works without a sign-in for public content and says plainly why not
+      // otherwise: no catching from the page, and no asking to sign in.
+      if (isInstagramLink(link)) {
+        setLooking(true);
+        api
+          .mediaInfo(link)
+          .then((found) => {
+            if (stale) return;
+            setVideo(found);
+            setChoice(props.quality === "audio" ? "audio" : "best");
+          })
+          .catch((e) => !stale && setSiteError(String(e)))
+          .finally(() => !stale && setLooking(false));
         return;
       }
       if (!looksLikePage(link)) return;
@@ -1148,11 +1229,18 @@ export function HomeView(props: {
           picture: face?.picture ?? stats?.picture ?? null,
           about: stats?.about ?? face?.about ?? null,
           banner: stats?.banner ?? null,
-          posts: stats?.posts ?? null,
+          posts: stats?.posts ?? face?.posts ?? null,
           media: stats?.media ?? null,
-          followers: stats?.followers ?? null,
-          following: stats?.following ?? null,
+          // Exact numbers from the site's own answer, else the page's rounded ones.
+          followers: stats?.followers ?? face?.followers ?? null,
+          following: stats?.following ?? face?.following ?? null,
+          likes: stats?.likes ?? face?.likes ?? null,
+          rounded: stats?.followers != null || stats?.posts != null ? false : !!face?.rounded,
           joined: stats?.joined ?? null,
+          username: stats?.username ?? face?.username ?? null,
+          links: [...(stats?.links ?? []), ...(face?.links ?? [])].filter(
+            (link, i, all) => all.findIndex((l) => l.toLowerCase() === link.toLowerCase()) === i,
+          ),
         }
       : null;
   const shownName =
@@ -1169,16 +1257,31 @@ export function HomeView(props: {
       ? (playlist?.thumbnail ?? who?.picture ?? null)
       : (who?.picture ?? playlist?.thumbnail ?? null);
   const cardBanner = !isPlaylist && who?.banner && bannerFailed !== who.banner ? who.banner : null;
-  /** "4,678 posts", "94.4K followers", "Joined Dec 2017": each only where the site says. */
+  /** "4,678 posts", "94.4K followers", "1.2M likes", "Joined Dec 2017": each only where the site says.
+   *  A count the page wrote rounded ("32K") stays rounded. */
+  const exact = (n: number) => (who?.rounded ? short(n) : num(n));
+  const videoSite = !!profile && ["YouTube", "TikTok", "Pornhub"].includes(profile.site);
   const numbers: [string, string][] = who
     ? ([
-        who.posts != null ? [num(who.posts), t.views.home.numbers.posts(who.posts)] : null,
-        who.media != null ? [num(who.media), t.views.home.numbers.media(who.media)] : null,
-        who.followers != null ? [short(who.followers), t.views.home.numbers.followers(who.followers)] : null,
+        who.posts != null
+          ? [exact(who.posts), videoSite ? t.views.home.numbers.videos(who.posts) : t.views.home.numbers.posts(who.posts)]
+          : null,
+        who.media != null ? [exact(who.media), t.views.home.numbers.media(who.media)] : null,
+        who.followers != null
+          ? [
+              short(who.followers),
+              profile?.site === "YouTube"
+                ? t.views.home.numbers.subscribers(who.followers)
+                : t.views.home.numbers.followers(who.followers),
+            ]
+          : null,
         who.following != null ? [short(who.following), t.views.home.numbers.following(who.following)] : null,
+        who.likes != null ? [short(who.likes), t.views.home.numbers.likes(who.likes)] : null,
         who.joined ? ["", t.views.home.numbers.joined(joinedIn(who.joined))] : null,
       ].filter(Boolean) as [string, string][])
     : [];
+  /** The links the profile lists, shown as "site.com/path". */
+  const profileLinks = (who?.links ?? []).slice(0, 6);
   /** The site shows this profile to anyone; only the list of its posts is kept for signed-in visitors. */
   const profileShown = !!profile && !isPlaylist && !!(who?.name || who?.picture);
   // A profile the site lists only to signed-in visitors: downloading now
@@ -1215,8 +1318,8 @@ export function HomeView(props: {
     el.classList.add("is-shaking");
   }
   /** The name in the link, when the card is titled with the shown name instead. */
-  const handle =
-    profile && shownName.toLowerCase() !== profile.name.toLowerCase() ? `@${profile.name}` : null;
+  /** Its name on the site, always shown: "@natgeo". */
+  const handle = profile && !isPlaylist ? `@${who?.username || profile.name}` : null;
   const plus = playlist?.more ? "+" : "";
   /** "27 videos", "214 photos", "5:39:18 total": what was counted. */
   const holds = playlist
@@ -1517,6 +1620,23 @@ export function HomeView(props: {
                       </div>
                     )
                   )}
+                  {profileLinks.length > 0 && (
+                    <ul className="profile-links is-arriving" aria-label={t.views.home.links}>
+                      {profileLinks.map((link) => (
+                        <li key={link}>
+                          <button
+                            type="button"
+                            className="profile-link"
+                            title={t.views.home.openLink(link)}
+                            onClick={() => api.openWebLink(link).catch((e) => actions.toast(String(e), "error"))}
+                          >
+                            <Globe size={12} strokeWidth={2} aria-hidden="true" />
+                            <span>{linkText(link)}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {/* What the profile shows any visitor: its numbers, and when it joined. */}
                   {numbers.length > 0 ? (
                     <p className="profile-numbers is-arriving">
@@ -1586,13 +1706,17 @@ export function HomeView(props: {
             ) : (
               <span>
                 {t.views.home.profileNoteBefore}
-                <strong>{t.views.home.profileFolder(profile.name, profile.site)}</strong>
+                <strong>{t.views.home.profileFolder(profile.name)}</strong>
                 {picksQuality ? t.views.home.profileNoteAfterQuality : t.views.home.profileNoteAfter}
               </span>
             )}
           </p>
         )}
-        {video && (
+        {/* An Instagram post or reel: whose it is on the left, the post on the right. */}
+        {video && video.site === "Instagram" && video.uploader_url && (
+          <InstaPostCard video={video} choice={choice} onChoice={setChoice} />
+        )}
+        {video && !(video.site === "Instagram" && video.uploader_url) && (
           <section className="video-card" aria-label={t.views.home.videoRegion}>
             {video.thumbnail ? (
               <img className="video-thumb" src={video.thumbnail} alt="" referrerPolicy="no-referrer" />
@@ -1602,7 +1726,11 @@ export function HomeView(props: {
             <div className="video-body">
               <h2 className="video-title" title={video.title}>{video.title}</h2>
               <p className="video-meta">
-                {[video.site, video.duration ? formatDuration(video.duration) : null]
+                {[
+                  video.site,
+                  video.duration ? formatDuration(video.duration) : null,
+                  video.width && video.height ? `${video.width} × ${video.height}` : null,
+                ]
                   .filter(Boolean)
                   .join(" · ")}
               </p>
@@ -1627,6 +1755,8 @@ export function HomeView(props: {
                   </button>
                 ))}
               </div>
+              {/* who posted it, with the way to download their whole profile */}
+              <PosterRow video={video} quality={choice} />
             </div>
           </section>
         )}
@@ -1705,6 +1835,26 @@ export function HomeView(props: {
               {site.support === "blocked" ? siteBlockedText(site) : t.views.home.siteFiles(site.site)}
             </p>
           )}
+          {siteError &&
+            (needsSignIn(siteError) && signInSiteOf(link) ? (
+              // Instagram age-restricted or signed-in-only content: the engine
+              // says why in plain words, and the way through is the user's own
+              // Instagram sign-in, so a button points straight at it.
+              <div className="note note-error home-site-error" role="alert">
+                <span>{siteError}</span>
+                <button
+                  type="button"
+                  className="btn btn-small btn-primary"
+                  onClick={() => props.signIn(signInSiteOf(link)!)}
+                >
+                  {t.views.home.locked.button}
+                </button>
+              </div>
+            ) : (
+              <p className="note note-error" role="alert">
+                {siteError}
+              </p>
+            ))}
           {locked && (
             <div className={`signin-needed${pointedAt ? " is-glowing" : ""}`} role="status">
               <KeyRound size={18} strokeWidth={2} aria-hidden="true" />
@@ -1906,7 +2056,7 @@ function MiniGraph({ values }: { values: number[] }) {
 /** Speed now, as a graph of the last minute, and how much has been downloaded.
  *  Shown at the foot of the sidebar, so it is in view on every page. */
 export function TransferSummary() {
-  const { downloads } = useApp();
+  const { downloads, settings } = useApp();
   const latest = useRef(downloads);
   latest.current = downloads;
   const [, redraw] = useState(0);
@@ -1958,6 +2108,13 @@ export function TransferSummary() {
           <strong title={t.views.summary.checkingTitle}>{t.views.summary.checking}</strong>
         ) : (
           <strong aria-label={t.views.summary.speedValue(formatSpeed(speed))}>{formatSpeed(speed)}</strong>
+        )}
+        {/* A limit holds every download back: said here, where the speed is
+            read, not only in Settings. */}
+        {(settings?.speed_limit ?? 0) > 0 && (
+          <span className="stat-limit" title={t.speed.limitedTitle}>
+            {t.speed.limited(formatSpeed(settings!.speed_limit))}
+          </span>
         )}
       </div>
       <div className="stat" title={t.views.summary.sizeTitle}>
@@ -2523,6 +2680,17 @@ export function SettingsView(props: {
                     <FolderOpen size={16} strokeWidth={2} aria-hidden="true" /> {t.views.settings.downloads.openFolder}
                   </button>
                 </SettingRow>
+                <SettingRow label={t.checksum.setting} id="set-checksum" hint={t.checksum.settingHint}>
+                  <Select
+                    aria-labelledby="set-checksum"
+                    value={settings.auto_checksum ?? "off"}
+                    onChange={(v) => update({ auto_checksum: v === "off" ? null : (v as HashAlgo) })}
+                    options={[
+                      { value: "off", label: t.checksum.off },
+                      ...HASH_ALGOS.map((a) => ({ value: a, label: t.checksum.algorithms[a] })),
+                    ]}
+                  />
+                </SettingRow>
               </div>
               <h3 className="setting-group">{t.organize.title}</h3>
               <p className="setting-group-hint">{t.organize.hint}</p>
@@ -2654,6 +2822,8 @@ export function SettingsView(props: {
                   />
                 </SettingRow>
               </div>
+              <ProxySettings />
+              <RequestProfiles />
             </>
           )}
 
@@ -2765,30 +2935,8 @@ export function SettingsView(props: {
           {section === "advanced" && (
             <>
               <h2>{t.views.settings.sections.advanced}</h2>
-              <dl className="facts setting-card">
-                <div className="fact">
-                  <dt>{t.views.settings.advanced.siteDownloads}</dt>
-                  <dd>
-                    {tools == null
-                      ? t.views.settings.advanced.checking
-                      : tools.yt_dlp && tools.ffmpeg
-                        ? t.views.settings.advanced.sitesReady
-                        : t.views.settings.advanced.missing(
-                            listText([!tools.yt_dlp && "yt-dlp", !tools.ffmpeg && "ffmpeg"].filter(Boolean) as string[]),
-                          )}
-                  </dd>
-                </div>
-                <div className="fact">
-                  <dt>{t.views.settings.advanced.profileDownloads}</dt>
-                  <dd>
-                    {tools == null
-                      ? t.views.settings.advanced.checking
-                      : tools.gallery_dl
-                        ? t.views.settings.advanced.galleryReady
-                        : t.views.settings.advanced.galleryMissing}
-                  </dd>
-                </div>
-              </dl>
+              <ExtensionSettings />
+              <ToolSettings settings={settings} onSettings={props.onSettings} ffmpeg={tools} />
               <h3>{t.views.settings.advanced.shortcuts}</h3>
               <dl className="shortcuts setting-card">
                 {SHORTCUTS.map(([keys, what]) => (

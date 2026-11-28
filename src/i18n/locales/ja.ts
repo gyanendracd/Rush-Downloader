@@ -264,6 +264,9 @@ const dict: Dict = {
         media: () => "件の写真・動画付き投稿",
         followers: () => "フォロワー",
         following: () => "フォロー中",
+        videos: () => "本の動画",
+        subscribers: () => "チャンネル登録者",
+        likes: () => "いいね",
         joined: (date: string) => `${date}から利用`,
       },
       holds: {
@@ -273,6 +276,8 @@ const dict: Dict = {
       },
       playlist: "プレイリスト",
       profileOf: (site: string) => `${site} のプロフィール`,
+      links: "このプロフィールのリンク",
+      openLink: (link: string) => `${link} をブラウザーで開く`,
 
       locked: {
         profileShown: (site: string) =>
@@ -314,7 +319,7 @@ const dict: Dict = {
       profileNoteAfter: " という名前のフォルダーに、「Images」と「Videos」に分けて保存されます。サイトによっては、サインインしないとプロフィールが表示されません。",
       profileNoteAfterQuality:
         " という名前のフォルダーに、上で選んだ画質で、「Images」と「Videos」に分けて保存されます。サイトによっては、サインインしないとプロフィールが表示されません。",
-      profileFolder: (name: string, site: string) => `${name} (${site})`,
+      profileFolder: (name: string) => name,
 
       or: "または",
       addFromBrowserTitle: "ページのアドレスを貼り付けて、見つかったメディアを選びます",
@@ -620,6 +625,7 @@ const dict: Dict = {
       resume: "再開",
       pause: "一時停止",
       more: "その他の操作",
+      took: (time: string) => `${time}でダウンロード完了`,
     },
     dismiss: "閉じる",
     close: "閉じる",

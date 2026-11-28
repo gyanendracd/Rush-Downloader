@@ -43,6 +43,7 @@ import {
   ScanSearch,
   SquareArrowOutUpRight,
   CalendarClock,
+  Timer,
   Trash2,
   X,
   type LucideIcon,
@@ -59,6 +60,7 @@ import {
   etaOf,
   formatBytes,
   formatSpeed,
+  formatTook,
   percentOf,
   STATUS_LABEL,
   takesNewLink,
@@ -302,6 +304,23 @@ export function FileIcon({ d, large }: { d: Download; large?: boolean }) {
 
 /** Dot plus status word, used where a download is listed outside the main list. */
 export function StatusText({ d }: { d: Download }) {
+  // A finished file that does not match its checksum is not shown as fine.
+  if (d.status === "completed" && d.checksum?.state === "failed") {
+    return (
+      <span className="status status-failed">
+        <span className="status-dot" aria-hidden="true" />
+        {t.checksum.rowFailed}
+      </span>
+    );
+  }
+  if (d.status === "completed" && d.checksum?.state === "calculating") {
+    return (
+      <span className="status status-connecting">
+        <span className="status-dot" aria-hidden="true" />
+        {t.checksum.rowCalculating}
+      </span>
+    );
+  }
   return (
     <span className={`status status-${d.status}`}>
       <span className="status-dot" aria-hidden="true" />
@@ -477,9 +496,20 @@ export function RowMeta({ d }: { d: Download }) {
           </>
         );
       }
+      // A file that does not match its checksum is never shown as fine.
+      if (d.checksum?.state === "failed") {
+        return (
+          <>
+            <span className="tone-err">{t.checksum.rowFailed}</span>
+            {d.total != null ? ` · ${formatBytes(d.total)}` : ""}
+          </>
+        );
+      }
       return (
         <>
           <span className="tone-ok">{t.common.status.completed}</span>
+          {d.checksum?.state === "calculating" ? ` · ${t.checksum.rowCalculating}` : ""}
+          {d.checksum?.state === "verified" ? ` · ${t.checksum.algorithms[d.checksum.algorithm]} ${t.checksum.states.verified.toLowerCase()}` : ""}
           {d.profile ? ` · ${fileCount(d.items)}` : ""}
           {d.total != null ? ` · ${formatBytes(d.total)}` : ""}
         </>
@@ -1921,6 +1951,15 @@ function RowAction({ d }: { d: Download }) {
       </button>
     );
   }
+  // A file that failed its checksum is not opened with one click: its
+  // details, which say what is wrong, open instead.
+  if (d.status === "completed" && d.checksum?.state === "failed") {
+    return (
+      <button type="button" className="round round-err" title={t.checksum.rowFailed} aria-label={t.checksum.rowFailed} onClick={() => actions.inspect(d.id)}>
+        <span aria-hidden="true">!</span>
+      </button>
+    );
+  }
   if (d.status === "completed") {
     return (
       <button type="button" className="round round-ok" title={t.ui.row.openFile} aria-label={t.ui.row.completedOpen} onClick={() => actions.open(d)}>
@@ -1985,6 +2024,12 @@ export function DownloadRow(props: {
         {(active || (d.status === "paused" && d.total)) && <Progress d={d} />}
       </div>
       <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+        {d.status === "completed" && d.took != null && !isDeleted(d) && (
+          <span className="row-took" title={t.ui.row.took(formatTook(d.took))}>
+            <Timer size={13} strokeWidth={2} aria-hidden="true" />
+            {formatTook(d.took)}
+          </span>
+        )}
         <IconBtn
           icon={FolderOpen}
           label={t.ui.menu.showInFolder}

@@ -6,15 +6,24 @@
 
 mod batch;
 mod bundle;
+mod checksum;
+mod deps;
 mod dns;
+mod gateway;
+mod instagram;
 mod limiter;
 mod organize;
 mod media;
 mod probe;
 mod profile;
+mod proxy;
 mod refresh;
+mod remote;
+mod request;
 mod scan;
 mod schedule;
+mod secrets;
+mod vault;
 mod sites;
 mod torrent;
 mod torrent_split;
@@ -31,10 +40,16 @@ use tokio::runtime::Handle;
 use tokio::sync::watch;
 
 pub use batch::BatchInfo;
+pub use checksum::{parse_expected, CheckState, Checksum, HashAlgo};
+pub use deps::{ToolInfo, ToolPhase, ToolProgress, ToolSource, MANAGED_TOOLS};
 pub use media::MediaInfo;
 pub use organize::{FileCategory, Organize};
 pub use profile::{Fetcher, PlaylistInfo, ProfileFace, ProfileRef};
+pub use proxy::{PasswordChange, ProxyBook, ProxyChoice, ProxyKind, ProxyProfile};
 pub use refresh::{LinkCheck, LinkProblem};
+pub use remote::{RemoteOptions, ServerKey};
+pub use request::{AuthKind, RequestBook, RequestOptions, RequestProfile};
+pub use secrets::{Keyring, MemoryStore, SecretStore};
 pub use scan::{Found, FoundKind};
 pub use schedule::{Event, EventKind, Repeat, ScheduleInfo, ScheduleSpec, ScheduleStatus};
 pub use sites::{SiteFile, SiteFiles, SiteKind, Support, Why};
@@ -96,6 +111,16 @@ pub struct Settings {
     /// Sorting finished files into folders by their kind (organize.rs).
     #[serde(default)]
     pub organize: Organize,
+    /// Install yt-dlp and gallery-dl when they are missing, and keep the
+    /// app's own copies up to date (deps.rs). Copies the user installed are
+    /// never touched.
+    #[serde(default = "on")]
+    pub auto_update_tools: bool,
+    /// Work out this kind of checksum for every file once it has
+    /// downloaded, to see and compare; `None` = only for downloads given a
+    /// checksum to check against.
+    #[serde(default)]
+    pub auto_checksum: Option<HashAlgo>,
 }
 
 /// What happens once every download has finished.
@@ -140,6 +165,8 @@ impl Settings {
             after_countdown: 60,
             after_failures: false,
             organize: Organize::default(),
+            auto_update_tools: true,
+            auto_checksum: None,
         }
     }
 
@@ -199,7 +226,44 @@ pub struct NewDownload {
     /// the global limit applies.
     #[serde(default)]
     pub speed_limit: Option<u64>,
+    /// Which connection it uses: the default, a direct one, or a saved proxy.
+    #[serde(default)]
+    pub proxy: ProxyChoice,
+    /// The checksum the file should have, as pasted ("sha256:…", or the
+    /// hex alone); it is checked once the file has downloaded.
+    #[serde(default)]
+    pub checksum: Option<String>,
+    /// How its requests are made (headers, cookies, sign-in, timeouts),
+    /// private values included; they are kept in the vault, not the list.
+    #[serde(default)]
+    pub request: Option<RequestOptions>,
+    /// A saved request profile to use instead; neither = the default one.
+    #[serde(default)]
+    pub request_profile: Option<u64>,
+    /// For an FTP or SFTP link: how to sign in (the password goes to the
+    /// vault). A sign-in written into the link is used too.
+    #[serde(default)]
+    pub remote: Option<RemoteOptions>,
 }
+
+/// What testing a proxy found.
+#[derive(Clone, Debug, Serialize)]
+pub struct ProxyTest {
+    /// A web server answered through the proxy.
+    pub ok: bool,
+    /// The address asked for.
+    pub url: String,
+    /// The HTTP status that web server answered with.
+    pub status: Option<u16>,
+    /// How long the answer took, in milliseconds.
+    pub millis: u64,
+    /// Why it failed, when it did.
+    pub error: Option<String>,
+}
+
+/// Where a proxy is tested when no address is given: a page that answers
+/// with an empty "204", made for checking connections.
+pub const PROXY_TEST_URL: &str = "https://cp.cloudflare.com/generate_204";
 
 /// Snapshot of one download for display.
 #[derive(Clone, Debug, Serialize)]
@@ -258,6 +322,21 @@ pub struct TaskInfo {
     pub cancelled: bool,
     /// When it ended (finished, failed or was cancelled), seconds since 1970.
     pub finished_at: Option<u64>,
+    /// For a finished download: how long it took, in seconds. Only the time
+    /// it was running counts, not time spent queued or paused.
+    pub took: Option<u64>,
+    /// Which connection it uses.
+    pub proxy: ProxyChoice,
+    /// Its file's checksum and how it compares, once one is wanted.
+    pub checksum: Option<Checksum>,
+    /// Its own request options (private values left out), if any.
+    pub request: Option<RequestOptions>,
+    /// The saved request profile it uses, if any.
+    pub request_profile: Option<u64>,
+    /// For an FTP or SFTP download: how it signs in (no password).
+    pub remote: Option<RemoteOptions>,
+    /// An SFTP server key that was refused, for the user to trust or not.
+    pub server_key: Option<ServerKey>,
 }
 
 /// One video or file of a profile or playlist download, for display.
@@ -429,10 +508,34 @@ pub(crate) struct Record {
     /// When it ended, in seconds since 1970.
     #[serde(default)]
     pub finished_at: Option<u64>,
+    /// Seconds it has spent running, over all its runs; `None` for downloads
+    /// saved before this was counted.
+    #[serde(default)]
+    pub active_secs: Option<u64>,
     /// Saved to the download folder with no folder of its own chosen: once
     /// finished, its file is sorted into the folder of its kind.
     #[serde(default)]
     pub sort: bool,
+    /// Which connection it uses; downloads from before proxies existed use
+    /// the default, which is a direct connection until one is chosen.
+    #[serde(default)]
+    pub proxy: ProxyChoice,
+    /// Its file's checksum: the one to check against, and the outcome.
+    #[serde(default)]
+    pub checksum: Option<Checksum>,
+    /// Its own request options; private values are in the vault under
+    /// `request:<id>`.
+    #[serde(default)]
+    pub request: Option<RequestOptions>,
+    #[serde(default)]
+    pub request_profile: Option<u64>,
+    /// For an FTP or SFTP download: how it signs in; the password is in the
+    /// vault under `remote:<id>`.
+    #[serde(default)]
+    pub remote: Option<RemoteOptions>,
+    /// The SFTP server key it last met and refused.
+    #[serde(default)]
+    pub server_key: Option<ServerKey>,
 }
 
 impl Record {
@@ -474,7 +577,14 @@ impl Record {
             batch: None,
             cancelled: false,
             finished_at: None,
+            active_secs: Some(0),
             sort: false,
+            proxy: ProxyChoice::Default,
+            checksum: None,
+            request: None,
+            request_profile: None,
+            remote: None,
+            server_key: None,
         }
     }
 
@@ -487,6 +597,16 @@ impl Record {
         self.files.iter_mut().for_each(|f| f.done = 0);
         self.media_copy = None;
         self.named_stem = None;
+        self.active_secs = Some(0);
+    }
+
+    /// How long a finished download took. Downloads saved before running
+    /// time was counted are timed from when they were added.
+    fn took(&self) -> Option<u64> {
+        if self.status != Status::Completed {
+            return None;
+        }
+        self.active_secs.or_else(|| self.finished_at.map(|f| f.saturating_sub(self.created_at)))
     }
 }
 
@@ -565,6 +685,13 @@ impl Entry {
             batch: None,
             cancelled: r.cancelled,
             finished_at: r.finished_at,
+            took: r.took(),
+            proxy: r.proxy.clone(),
+            checksum: r.checksum.clone(),
+            request: r.request.clone(),
+            request_profile: r.request_profile,
+            remote: r.remote.clone(),
+            server_key: r.server_key.clone(),
         }
     }
 }
@@ -573,6 +700,8 @@ struct State {
     entries: Vec<Entry>,
     next_id: u64,
     settings: Settings,
+    proxies: ProxyBook,
+    requests: RequestBook,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -580,11 +709,109 @@ struct Saved {
     next_id: u64,
     settings: Settings,
     tasks: Vec<Record>,
+    #[serde(default)]
+    proxies: ProxyBook,
+    #[serde(default)]
+    requests: RequestBook,
+}
+
+/// How a client reaches the web.
+enum Route {
+    /// As before proxies could be set in the app: through a proxy set for
+    /// the whole system (HTTP_PROXY and the like), if there is one.
+    System,
+    /// Never through a proxy.
+    Direct,
+    Proxy(reqwest::Proxy),
+}
+
+/// What else a client is built with, for downloads with request options.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ClientOpts {
+    /// Seconds without data before a connection gives up; none = 20.
+    read_timeout: Option<u32>,
+    /// Seconds to wait for an answer; none = 15.
+    connect_timeout: Option<u32>,
+    /// Redirects to another host are not followed, but handed back, so the
+    /// download's own headers do not go along (see `prepare_request`).
+    same_site_only: bool,
+}
+
+impl ClientOpts {
+    pub(crate) fn of(request: Option<&RequestOptions>) -> ClientOpts {
+        match request {
+            Some(r) => ClientOpts { read_timeout: r.read_timeout, connect_timeout: r.connect_timeout, same_site_only: true },
+            None => ClientOpts::default(),
+        }
+    }
+
+    fn key(&self) -> String {
+        format!("{:?}|{:?}|{}", self.read_timeout, self.connect_timeout, self.same_site_only)
+    }
+}
+
+/// The engine's HTTP client: HTTP/1 only (HTTP/2 would carry every segment
+/// over one TCP connection, which defeats parallel connections), site names
+/// looked up the way Settings says.
+fn build_client(dns: &Arc<dns::SecureDns>, route: Route) -> Result<reqwest::Client, String> {
+    build_client_with(dns, route, ClientOpts::default())
+}
+
+fn build_client_with(dns: &Arc<dns::SecureDns>, route: Route, opts: ClientOpts) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .dns_resolver(Arc::new(dns::Resolver(dns.clone())))
+        .user_agent(USER_AGENT)
+        .default_headers(
+            [(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("*/*"))]
+                .into_iter()
+                .collect(),
+        )
+        .http1_only()
+        .connect_timeout(Duration::from_secs(opts.connect_timeout.unwrap_or(15).into()))
+        .read_timeout(Duration::from_secs(opts.read_timeout.unwrap_or(20).into()));
+    if opts.same_site_only {
+        builder = builder.redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            let from = attempt.previous().last().and_then(|u| u.host_str()).map(str::to_ascii_lowercase);
+            let to = attempt.url().host_str().map(str::to_ascii_lowercase);
+            if from == to {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }));
+    }
+    builder = match route {
+        Route::System => builder,
+        Route::Direct => builder.no_proxy(),
+        Route::Proxy(proxy) => builder.proxy(proxy),
+    };
+    builder.build().map_err(|e| format!("http client: {e}"))
 }
 
 pub(crate) struct Inner {
-    pub(crate) client: reqwest::Client,
+    /// The client used when no proxy is chosen in the app; see
+    /// [`Inner::client_for`] for the one a download should use.
+    system: reqwest::Client,
+    /// The client for downloads set to a direct connection.
+    direct: reqwest::Client,
     pub(crate) dns: Arc<dns::SecureDns>,
+    /// Where proxy passwords are kept.
+    secrets: Arc<dyn SecretStore>,
+    /// A client per proxy in use, by its fingerprint (proxy.rs).
+    routes: Mutex<std::collections::HashMap<String, reqwest::Client>>,
+    /// A gateway per proxy the helper programs use, by its fingerprint.
+    gateways: Mutex<std::collections::HashMap<String, gateway::Gateway>>,
+    /// The helper programs the app installs and updates itself.
+    deps: deps::Deps,
+    /// Checksums being worked out, by download, each with its way to stop.
+    hash_jobs: Mutex<std::collections::HashMap<u64, Arc<std::sync::atomic::AtomicBool>>>,
+    /// How many files are read for their checksum at the same time.
+    hash_slots: Arc<tokio::sync::Semaphore>,
+    /// Private request values (vault.rs).
+    vault: vault::Vault,
     pub(crate) limiter: Arc<Limiter>,
     /// Started the first time a torrent is downloaded.
     pub(crate) torrents: tokio::sync::OnceCell<Arc<librqbit::Session>>,
@@ -614,6 +841,13 @@ impl Engine {
     /// Loads saved state from `state_dir` and resumes interrupted downloads.
     /// Must be called from within a Tokio runtime.
     pub fn new(state_dir: impl AsRef<Path>, defaults: Settings) -> Result<Engine, String> {
+        let secrets = Arc::new(Keyring::for_state_dir(state_dir.as_ref()));
+        Self::with_secrets(state_dir, defaults, secrets)
+    }
+
+    /// As [`Engine::new`], with secrets (proxy passwords) kept in `secrets`
+    /// rather than in the system's credential store.
+    pub fn with_secrets(state_dir: impl AsRef<Path>, defaults: Settings, secrets: Arc<dyn SecretStore>) -> Result<Engine, String> {
         let state_dir = state_dir.as_ref();
         std::fs::create_dir_all(state_dir).map_err(|e| format!("state folder: {e}"))?;
         let state_file = state_dir.join("downloads.json");
@@ -626,7 +860,7 @@ impl Engine {
         let saved: Option<Saved> = std::fs::read(&state_file)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
-        let (entries, next_id, settings) = match saved {
+        let (entries, next_id, settings, proxies, requests) = match saved {
             Some(s) => {
                 let entries = s
                     .tasks
@@ -645,31 +879,26 @@ impl Engine {
                         }
                     })
                     .collect();
-                (entries, s.next_id, s.settings.normalized())
+                (entries, s.next_id, s.settings.normalized(), s.proxies.normalized(), s.requests.normalized())
             }
-            None => (Vec::new(), 1, defaults.normalized()),
+            None => (Vec::new(), 1, defaults.normalized(), ProxyBook::default().normalized(), RequestBook::default().normalized()),
         };
 
         let dns = dns::SecureDns::new(settings.secure_dns);
-        let client = reqwest::Client::builder()
-            .dns_resolver(Arc::new(dns::Resolver(dns.clone())))
-            .user_agent(USER_AGENT)
-            .default_headers(
-                [(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("*/*"))]
-                    .into_iter()
-                    .collect(),
-            )
-            // HTTP/2 would multiplex every segment over one TCP connection,
-            // which defeats the point of parallel connections.
-            .http1_only()
-            .connect_timeout(Duration::from_secs(15))
-            .read_timeout(Duration::from_secs(20))
-            .build()
-            .map_err(|e| format!("http client: {e}"))?;
+        let system = build_client(&dns, Route::System)?;
+        let direct = build_client(&dns, Route::Direct)?;
 
         let inner = Arc::new(Inner {
-            client,
+            system,
+            direct,
             dns,
+            secrets: secrets.clone(),
+            routes: Mutex::new(Default::default()),
+            gateways: Mutex::new(Default::default()),
+            deps: deps::Deps::new(state_dir),
+            hash_jobs: Mutex::new(Default::default()),
+            hash_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            vault: vault::Vault::new(state_dir.join("secrets.vault"), secrets.clone()),
             limiter: Arc::new(Limiter::new(settings.speed_limit)),
             torrents: tokio::sync::OnceCell::new(),
             lists: Mutex::new(Default::default()),
@@ -678,6 +907,8 @@ impl Engine {
                 entries,
                 next_id,
                 settings,
+                proxies,
+                requests,
             }),
             state_file,
             save_lock: Mutex::new(()),
@@ -692,6 +923,19 @@ impl Engine {
         // closed is paused again before the queue starts it.
         inner.check_schedules(true);
         inner.rt.spawn(schedule_loop(Arc::downgrade(&inner)));
+        inner.rt.spawn(tools_loop(Arc::downgrade(&inner)));
+        // Checksums being worked out when the app closed start again.
+        let unfinished: Vec<u64> = {
+            let st = inner.state.lock().unwrap();
+            st.entries
+                .iter()
+                .filter(|e| e.rec.checksum.as_ref().is_some_and(|c| c.state == CheckState::Calculating))
+                .map(|e| e.rec.id)
+                .collect()
+        };
+        for id in unfinished {
+            inner.start_check(id);
+        }
         inner.pump();
         Ok(Engine { inner })
     }
@@ -850,6 +1094,115 @@ impl Engine {
         }
     }
 
+    /// Trusts the SFTP server key a download was refused for (shown in its
+    /// details), and tries the download again.
+    pub fn trust_server_key(&self, id: u64) -> Result<(), String> {
+        let key = {
+            let st = self.inner.state.lock().unwrap();
+            let e = st.entries.iter().find(|e| e.rec.id == id).ok_or("That download is no longer in the list")?;
+            e.rec.server_key.clone().ok_or("This download has no server key waiting to be trusted")?
+        };
+        let state_dir = self.inner.state_file.parent().map(Path::to_path_buf).unwrap_or_default();
+        remote::trust(&state_dir, &key)?;
+        self.inner.update(id, |r| r.server_key = None);
+        self.resume(id);
+        Ok(())
+    }
+
+    /// Checks a finished file against a checksum: `expected` as pasted (its
+    /// kind told by its form or `algorithm`), or none to work out the file's
+    /// own sum of `algorithm` (SHA-256 if none) to see. Runs in the
+    /// background; the download's `checksum` follows it.
+    pub fn verify_checksum(&self, id: u64, expected: Option<String>, algorithm: Option<HashAlgo>) -> Result<(), String> {
+        let wanted = match expected.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            Some(text) => {
+                let (algorithm, hex) = checksum::parse_expected(text, algorithm)?;
+                Checksum::wanted(algorithm, Some(hex))
+            }
+            None => Checksum::wanted(algorithm.unwrap_or_default(), None),
+        };
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            let e = st.entries.iter_mut().find(|e| e.rec.id == id).ok_or("That download is no longer in the list")?;
+            if !checkable(&e.rec) {
+                return Err("Only a single file can be checked; a folder of files cannot".into());
+            }
+            if e.rec.status != Status::Completed {
+                return Err("The file can be checked once it has finished downloading".into());
+            }
+            e.rec.checksum = Some(wanted);
+        }
+        self.inner.start_check(id);
+        Ok(())
+    }
+
+    /// Checks a batch's files (or one download's file) against a sums file
+    /// ("<hex>  <name>" lines, as SHA256SUMS and the like are written), by
+    /// file name. Returns how many files had a sum in it.
+    pub fn verify_with_sums(&self, id: u64, sums: &str) -> Result<usize, String> {
+        let wanted: Vec<(u64, Checksum)> = {
+            let st = self.inner.state.lock().unwrap();
+            st.entries
+                .iter()
+                .filter(|e| e.rec.id == id || e.rec.parent == Some(id))
+                .filter(|e| checkable(&e.rec) && e.rec.status == Status::Completed)
+                .filter_map(|e| {
+                    let hex = checksum::sum_for(sums, &e.rec.filename)?;
+                    let (algorithm, hex) = checksum::parse_expected(&hex, None).ok()?;
+                    Some((e.rec.id, Checksum::wanted(algorithm, Some(hex))))
+                })
+                .collect()
+        };
+        if wanted.is_empty() {
+            return Err("The sums do not name any finished file of this download".into());
+        }
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            for (child, c) in &wanted {
+                if let Some(e) = st.entries.iter_mut().find(|e| e.rec.id == *child) {
+                    e.rec.checksum = Some(c.clone());
+                }
+            }
+        }
+        for (child, _) in &wanted {
+            self.inner.start_check(*child);
+        }
+        Ok(wanted.len())
+    }
+
+    /// The helper programs the app can install and update (yt-dlp,
+    /// gallery-dl): which copy is in use, its version, the newest release
+    /// seen, and what is being done about it now.
+    pub fn tools_info(&self) -> Vec<ToolInfo> {
+        MANAGED_TOOLS.iter().map(|name| self.inner.deps.info(name)).collect()
+    }
+
+    /// Goes up whenever [`Engine::tools_info`] may say something new.
+    pub fn tools_revision(&self) -> u64 {
+        self.inner.deps.revision()
+    }
+
+    /// Looks for new releases of every tool now, whatever the time of the
+    /// last check. A tool whose check fails says why in its `error`.
+    pub async fn check_tools(&self) -> Vec<ToolInfo> {
+        for name in MANAGED_TOOLS {
+            let _ = self.inner.check_tool(name).await;
+        }
+        self.tools_info()
+    }
+
+    /// Installs a tool's latest release, or updates the app's copy to it,
+    /// checked against the project's published sums first. A failure leaves
+    /// the copy in use as it was.
+    pub async fn install_tool(&self, name: &str) -> Result<ToolInfo, String> {
+        self.inner.install_tool(name).await
+    }
+
+    /// Goes back to the version of a tool used before its last update.
+    pub fn rollback_tool(&self, name: &str) -> Result<ToolInfo, String> {
+        self.inner.rollback_tool(name)
+    }
+
     /// While secure DNS is on: the proxy on this computer that looks site
     /// names up at Cloudflare. The embedded browser is sent through it.
     pub fn dns_proxy(&self) -> Option<std::net::SocketAddr> {
@@ -919,7 +1272,8 @@ impl Engine {
     /// How large the file behind a link is, when its server says. Nothing is
     /// downloaded; `headers` are sent along (a Referer, a browser's name).
     pub async fn link_size(&self, url: &str, headers: &[(String, String)]) -> Option<u64> {
-        let asked = probe::probe(&self.inner.client, url, headers);
+        let client = self.inner.client().ok()?;
+        let asked = probe::probe(&client, url, headers);
         let found = tokio::time::timeout(Duration::from_secs(10), asked).await.ok()?.ok()?;
         found.total.filter(|size| *size > 0 && !found.is_html)
     }
@@ -993,7 +1347,7 @@ impl Engine {
 
     /// Deep scan: lists the media links found on a web page.
     pub async fn scan_page(&self, url: &str) -> Result<Vec<Found>, String> {
-        scan::scan(&self.inner.client, url).await
+        scan::scan(&self.inner.client()?, url).await
     }
 
     pub fn settings(&self) -> Settings {
@@ -1013,6 +1367,181 @@ impl Engine {
         self.inner.state.lock().unwrap().settings = settings;
         self.inner.changed();
         self.inner.pump();
+    }
+
+    /// The saved proxies and which one is the default.
+    pub fn proxies(&self) -> ProxyBook {
+        self.inner.state.lock().unwrap().proxies.clone()
+    }
+
+    /// Saves a new proxy (`profile.id` 0) or changes one; its password is
+    /// kept in the system's credential store. Returns its id. Downloads that
+    /// start from now on use the change; running ones keep their connection
+    /// until they are paused and resumed.
+    pub fn save_proxy(&self, mut profile: ProxyProfile, password: PasswordChange) -> Result<u64, String> {
+        let existing = {
+            let st = self.inner.state.lock().unwrap();
+            match profile.id {
+                0 => None,
+                id => Some(st.proxies.get(id).cloned().ok_or("That proxy has been deleted")?),
+            }
+        };
+        profile.has_password = match &password {
+            PasswordChange::Set(p) => !p.is_empty(),
+            PasswordChange::Clear => false,
+            PasswordChange::Keep => existing.as_ref().is_some_and(|p| p.has_password),
+        };
+        let mut profile = profile.checked()?;
+        let id = {
+            let mut st = self.inner.state.lock().unwrap();
+            if profile.id == 0 {
+                profile.id = st.proxies.next_id.max(1);
+                st.proxies.next_id = profile.id + 1;
+            }
+            profile.id
+        };
+        let key = ProxyProfile::secret_key(id);
+        match &password {
+            PasswordChange::Set(p) if !p.is_empty() => self.inner.secrets.set(&key, p)?,
+            PasswordChange::Set(_) | PasswordChange::Clear => self.inner.secrets.delete(&key)?,
+            PasswordChange::Keep => {}
+        }
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            match st.proxies.items.iter_mut().find(|p| p.id == id) {
+                Some(slot) => *slot = profile,
+                None => st.proxies.items.push(profile),
+            }
+        }
+        self.inner.routes.lock().unwrap().clear();
+        tracing::info!(id, "proxy saved");
+        self.inner.changed();
+        Ok(id)
+    }
+
+    /// Deletes a proxy and its password. Refused while an unfinished
+    /// download is set to use it, so none of them silently connects some
+    /// other way. Downloads on the default connection connect directly from
+    /// then on, when it was the default.
+    pub fn delete_proxy(&self, id: u64) -> Result<(), String> {
+        {
+            let st = self.inner.state.lock().unwrap();
+            let users = st
+                .entries
+                .iter()
+                .filter(|e| e.rec.proxy == ProxyChoice::Profile(id) && e.rec.status != Status::Completed)
+                .count();
+            if users > 0 {
+                return Err(match users {
+                    1 => "A download that has not finished uses this proxy. Remove it or let it finish first".to_string(),
+                    n => format!("{n} downloads that have not finished use this proxy. Remove them or let them finish first"),
+                });
+            }
+        }
+        self.inner.secrets.delete(&ProxyProfile::secret_key(id))?;
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            st.proxies.items.retain(|p| p.id != id);
+            if st.proxies.default == Some(id) {
+                st.proxies.default = None;
+            }
+        }
+        self.inner.routes.lock().unwrap().clear();
+        tracing::info!(id, "proxy deleted");
+        self.inner.changed();
+        Ok(())
+    }
+
+    /// The proxy address a helper program (or the embedded browser) is
+    /// given for a connection choice: a gateway on this computer to the
+    /// chosen proxy, the secure-DNS relay, or `None` for no proxy at all.
+    pub fn helper_proxy(&self, choice: &ProxyChoice) -> Result<Option<String>, String> {
+        self.inner.helper_proxy(choice)
+    }
+
+    /// Makes a saved proxy the default connection, or `None` for direct.
+    pub fn set_default_proxy(&self, id: Option<u64>) -> Result<(), String> {
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            if id.is_some_and(|id| st.proxies.get(id).is_none()) {
+                return Err("That proxy has been deleted".into());
+            }
+            st.proxies.default = id;
+        }
+        self.inner.changed();
+        Ok(())
+    }
+
+    /// Changes which connection a download uses. It takes effect the next
+    /// time the download starts; a running one is restarted with it and
+    /// carries on where it was.
+    pub fn set_download_proxy(&self, id: u64, choice: ProxyChoice) -> Result<(), String> {
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            if let ProxyChoice::Profile(p) = choice {
+                if st.proxies.get(p).is_none() {
+                    return Err("That proxy has been deleted".into());
+                }
+            }
+            let ids = expand(&st, &[id]);
+            for e in st.entries.iter_mut().filter(|e| ids.contains(&e.rec.id) || e.rec.id == id) {
+                if e.rec.proxy == choice {
+                    continue;
+                }
+                e.rec.proxy = choice.clone();
+                if let Some(live) = &e.live {
+                    if matches!(e.rec.status, Status::Connecting | Status::Downloading) {
+                        // back in the queue as it stops, so it starts again at once
+                        e.rec.status = Status::Queued;
+                        live.cancel.cancel();
+                    }
+                }
+            }
+        }
+        self.inner.changed();
+        self.inner.pump();
+        Ok(())
+    }
+
+    /// Tries a proxy as it is filled in (saved or not): asks `url` (a page
+    /// made for checking connections when none is given) through it, always
+    /// through the proxy, whatever its bypass list says. `password` Keep
+    /// uses the one saved for `profile.id`.
+    pub async fn test_proxy(&self, profile: ProxyProfile, password: PasswordChange, url: Option<String>) -> ProxyTest {
+        let url = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()).unwrap_or_else(|| PROXY_TEST_URL.to_string());
+        let failed = |error: String| ProxyTest { ok: false, url: url.clone(), status: None, millis: 0, error: Some(error) };
+        if reqwest::Url::parse(&url).map_or(true, |u| !matches!(u.scheme(), "http" | "https")) {
+            return failed("Enter a web address (http or https) to test with".into());
+        }
+        let secret = match password {
+            PasswordChange::Set(p) => Some(p).filter(|p| !p.is_empty()),
+            PasswordChange::Clear => None,
+            PasswordChange::Keep if profile.id != 0 => match self.inner.secrets.get(&ProxyProfile::secret_key(profile.id)) {
+                Ok(p) => p,
+                Err(e) => return failed(e),
+            },
+            PasswordChange::Keep => None,
+        };
+        let mut profile = profile;
+        profile.has_password = secret.is_some();
+        let profile = match profile.checked() {
+            Ok(p) => p,
+            Err(e) => return failed(e),
+        };
+        let mut up = proxy::Upstream::new(&profile, secret);
+        up.bypass = Arc::new(proxy::Bypass::default());
+        let client = match up.reqwest_proxy().and_then(|p| build_client(&self.inner.dns, Route::Proxy(p))) {
+            Ok(c) => c,
+            Err(e) => return failed(e),
+        };
+        let started = std::time::Instant::now();
+        let asked = client.get(&url).timeout(Duration::from_secs(20)).send().await;
+        let millis = started.elapsed().as_millis() as u64;
+        tracing::info!(proxy = ?up, ok = asked.is_ok(), millis, "proxy tested");
+        match asked {
+            Ok(resp) => ProxyTest { ok: true, url, status: Some(resp.status().as_u16()), millis, error: None },
+            Err(e) => ProxyTest { millis, ..failed(proxy::error_text(&e)) },
+        }
     }
 
     pub fn add(&self, new: NewDownload) -> Result<u64, String> {
@@ -1043,7 +1572,42 @@ impl Engine {
 
     /// The record of a new download, with the next id; not yet in the list.
     fn new_record(&self, st: &mut State, new: NewDownload, profile: Option<ProfileRef>) -> Result<Record, String> {
-        let url = torrent::clean(&new.url);
+        if let ProxyChoice::Profile(proxy) = new.proxy {
+            if st.proxies.get(proxy).is_none() {
+                return Err("That proxy has been deleted; choose another connection".into());
+            }
+        }
+        if let Some(profile) = new.request_profile {
+            if st.requests.get(profile).is_none() {
+                return Err("That request profile has been deleted; choose another".into());
+            }
+        }
+        let request = match new.request.clone().filter(RequestOptions::is_set) {
+            Some(options) => Some(options.checked()?),
+            None => None,
+        };
+        let checksum = match new.checksum.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            Some(text) => {
+                let (algorithm, hex) = checksum::parse_expected(text, None)?;
+                Some(Checksum::wanted(algorithm, Some(hex)))
+            }
+            None => None,
+        };
+        let mut url = torrent::clean(&new.url);
+        // An FTP or SFTP link: a sign-in written into it comes out of it.
+        let mut remote_options = None;
+        if remote::proto_of(&url).is_some() {
+            let (bare, user, password) = remote::split_credentials(&url)?;
+            let mut options = new.remote.clone().unwrap_or_default();
+            if options.username.trim().is_empty() {
+                options.username = user.unwrap_or_default();
+            }
+            if options.password.as_deref().unwrap_or_default().is_empty() {
+                options.password = password;
+            }
+            remote_options = Some(options.checked()?);
+            url = bare;
+        }
         let local_torrent = torrent::is_local_torrent(&url);
         let is_torrent = local_torrent || torrent::is_torrent_link(&url);
         let default_name = if local_torrent {
@@ -1051,8 +1615,8 @@ impl Engine {
         } else {
             let parsed =
                 reqwest::Url::parse(&url).map_err(|_| "That is not a valid link".to_string())?;
-            if !is_torrent && !matches!(parsed.scheme(), "http" | "https") {
-                return Err("Only http, https, magnet links and .torrent files are supported".into());
+            if !is_torrent && remote_options.is_none() && !matches!(parsed.scheme(), "http" | "https") {
+                return Err("Only http, https, ftp, ftps, ftpes, sftp and magnet links, and .torrent files, are supported".into());
             }
             if is_torrent {
                 torrent::default_name(&url)
@@ -1114,6 +1678,24 @@ impl Engine {
         rec.collection = profile.filter(|p| p.by.is_some());
         rec.speed_limit = new.speed_limit.unwrap_or(0);
         rec.sort = sort;
+        rec.proxy = new.proxy;
+        rec.checksum = checksum;
+        rec.request_profile = new.request_profile;
+        if let Some(mut options) = remote_options {
+            if let Some(password) = options.password.take().filter(|p| !p.is_empty()) {
+                self.inner.vault.set(&format!("remote:{id}"), &password)?;
+                options.has_password = true;
+            }
+            rec.remote = Some(options);
+        }
+        if let Some(mut options) = request {
+            let private = options.split_private();
+            if private != request::Private::default() {
+                let text = serde_json::to_string(&private).map_err(|e| e.to_string())?;
+                self.inner.vault.set(&format!("request:{id}"), &text)?;
+            }
+            rec.request = Some(options);
+        }
         Ok(rec)
     }
 
@@ -1388,6 +1970,15 @@ impl Engine {
         if !ids.contains(&id) {
             ids.push(id);
         }
+        // A checksum being worked out for it stops.
+        {
+            let mut jobs = self.inner.hash_jobs.lock().unwrap();
+            for id in &ids {
+                if let Some(stop) = jobs.remove(id) {
+                    stop.store(true, Relaxed);
+                }
+            }
+        }
         let mut folder = None;
         {
             let mut st = self.inner.state.lock().unwrap();
@@ -1415,9 +2006,15 @@ impl Engine {
         if let Some(folder) = folder {
             let _ = std::fs::remove_dir(folder);
         }
-        // Gone from the list, gone from the record of what it fetched.
+        // Gone from the list, gone from the record of what it fetched, and
+        // its private request values from the vault.
         for id in ids {
             let _ = std::fs::remove_file(self.inner.remembered_file(id));
+            for key in [format!("request:{id}"), format!("remote:{id}")] {
+                if let Err(e) = self.inner.vault.delete(&key) {
+                    tracing::warn!(id, "could not remove the download's private values: {e}");
+                }
+            }
         }
         self.inner.changed();
         self.inner.pump();
@@ -1618,6 +2215,109 @@ impl Inner {
         self.state.lock().unwrap().settings.download_dir.clone()
     }
 
+    /// The proxy a connection choice comes to, with its password, or `None`
+    /// for no proxy chosen in the app.
+    pub(crate) fn upstream(&self, choice: &ProxyChoice) -> Result<Option<proxy::Upstream>, String> {
+        let profile = {
+            let st = self.state.lock().unwrap();
+            match st.proxies.pick(choice)? {
+                Some(p) => p.clone(),
+                None => return Ok(None),
+            }
+        };
+        let password = if profile.has_password {
+            let saved = self.secrets.get(&ProxyProfile::secret_key(profile.id))?;
+            Some(saved.ok_or_else(|| {
+                format!("The password of the proxy \"{}\" is missing. Enter it again under Settings, Network", profile.name)
+            })?)
+        } else {
+            None
+        };
+        Ok(Some(proxy::Upstream::new(&profile, password)))
+    }
+
+    /// The HTTP client for a connection choice. Fails, rather than quietly
+    /// connecting another way, when the chosen proxy cannot be used.
+    pub(crate) fn client_for(&self, choice: &ProxyChoice) -> Result<reqwest::Client, String> {
+        self.client_with(choice, ClientOpts::default())
+    }
+
+    /// As [`Inner::client_for`], built with a download's request options.
+    pub(crate) fn client_with(&self, choice: &ProxyChoice, opts: ClientOpts) -> Result<reqwest::Client, String> {
+        let up = match choice {
+            ProxyChoice::Direct => None,
+            other => self.upstream(other)?,
+        };
+        if opts == ClientOpts::default() {
+            match (&up, choice) {
+                (None, ProxyChoice::Direct) => return Ok(self.direct.clone()),
+                (None, _) => return Ok(self.system.clone()),
+                _ => {}
+            }
+        }
+        let key = format!(
+            "{}|{}",
+            up.as_ref().map(|u| u.fingerprint()).unwrap_or_else(|| format!("none:{}", *choice == ProxyChoice::Direct)),
+            opts.key()
+        );
+        if let Some(client) = self.routes.lock().unwrap().get(&key) {
+            return Ok(client.clone());
+        }
+        let route = match up {
+            Some(up) => Route::Proxy(up.reqwest_proxy()?),
+            None if *choice == ProxyChoice::Direct => Route::Direct,
+            None => Route::System,
+        };
+        let client = build_client_with(&self.dns, route, opts)?;
+        self.routes.lock().unwrap().insert(key, client.clone());
+        Ok(client)
+    }
+
+    /// The HTTP client for the app's own look-ups that belong to no
+    /// download (a page's details, a scan): the default connection.
+    pub(crate) fn client(&self) -> Result<reqwest::Client, String> {
+        self.client_for(&ProxyChoice::Default)
+    }
+
+    /// What to give a helper program's `--proxy` for a connection choice:
+    /// a gateway to the chosen proxy, the secure-DNS relay when no proxy is
+    /// chosen and secure DNS is on, or nothing.
+    pub(crate) fn helper_proxy(&self, choice: &ProxyChoice) -> Result<Option<String>, String> {
+        let up = match choice {
+            ProxyChoice::Direct => None,
+            other => self.upstream(other)?,
+        };
+        let Some(up) = up else {
+            let _runtime = self.rt.enter();
+            return Ok(self.dns.proxy().map(|addr| format!("http://{addr}")));
+        };
+        let key = up.fingerprint();
+        let mut gateways = self.gateways.lock().unwrap();
+        if let Some(gate) = gateways.get(&key) {
+            return Ok(Some(gate.proxy_arg()));
+        }
+        let _runtime = self.rt.enter();
+        let gate = gateway::Gateway::start(up, self.dns.clone()).map_err(|e| format!("could not start the proxy gateway: {e}"))?;
+        gateways.insert(key, gate.clone());
+        Ok(Some(gate.proxy_arg()))
+    }
+
+    /// Sends a helper program through the connection a choice comes to. If
+    /// the chosen proxy cannot be used, the program is pointed at an address
+    /// where nothing answers, so it fails instead of connecting directly.
+    pub(crate) fn add_proxy(&self, cmd: &mut tokio::process::Command, choice: &ProxyChoice) {
+        match self.helper_proxy(choice) {
+            Ok(Some(proxy)) => {
+                cmd.arg("--proxy").arg(proxy);
+            }
+            Ok(None) => {}
+            Err(why) => {
+                tracing::warn!("a helper program could not be given its proxy: {why}");
+                cmd.arg("--proxy").arg("http://127.0.0.1:9");
+            }
+        }
+    }
+
     pub(crate) fn cookies_browser(&self) -> Option<String> {
         self.state.lock().unwrap().settings.cookies_browser.clone()
     }
@@ -1635,12 +2335,11 @@ impl Inner {
     /// sign-ins made inside the app if there are any, otherwise the browser
     /// chosen in Settings. The tools write to a cookie file they are given,
     /// so with `scratch` each run gets a copy of its own there.
-    pub(crate) fn add_sign_in(&self, cmd: &mut tokio::process::Command, scratch: Option<&Path>) {
-        // With secure DNS on, the helper program goes through the local
-        // proxy, which looks names up the same way the app does.
-        if let Some(proxy) = self.dns.proxy() {
-            cmd.arg("--proxy").arg(format!("http://{proxy}"));
-        }
+    /// `route`: the connection to go through (see [`Inner::add_proxy`]).
+    pub(crate) fn add_sign_in(&self, cmd: &mut tokio::process::Command, scratch: Option<&Path>, route: &ProxyChoice) {
+        // Through the chosen proxy, or with secure DNS on, through the local
+        // relay that looks names up the same way the app does.
+        self.add_proxy(cmd, route);
         let saved = self.cookies_file();
         if std::fs::metadata(&saved).map(|m| m.len() > 0).unwrap_or(false) {
             let own = scratch.map(|dir| dir.join(".rush-cookies.txt"));
@@ -1929,6 +2628,8 @@ impl Inner {
             Saved {
                 next_id: st.next_id,
                 settings: st.settings.clone(),
+                proxies: st.proxies.clone(),
+                requests: st.requests.clone(),
                 tasks: st
                     .entries
                     .iter_mut()
@@ -1980,10 +2681,15 @@ impl Inner {
                 let id = e.rec.id;
                 self.rt.spawn(async move {
                     let res = task::run(&inner, id, &live).await;
-                    if res.is_ok() && !live.removed.load(Relaxed) {
+                    let fetched = res.is_ok() && !live.removed.load(Relaxed);
+                    if fetched {
                         inner.sort_finished(id).await;
                     }
                     inner.finish(id, &live, res);
+                    // Its checksum, worked out now it is in its final place.
+                    if fetched {
+                        inner.start_check(id);
+                    }
                 });
             }
         }
@@ -2003,6 +2709,8 @@ impl Inner {
                 e.sync();
                 e.live = None;
                 e.speed = 0.0;
+                let ran = live.started.elapsed().as_secs_f64().round() as u64;
+                e.rec.active_secs = Some(e.rec.active_secs.unwrap_or(0) + ran);
                 if live.removed.load(Relaxed) {
                     let e = st.entries.remove(i);
                     delete_files(&e.rec, false);
@@ -2104,6 +2812,89 @@ impl Inner {
     }
 }
 
+/// Whether a download is one file whose checksum can be worked out: not a
+/// torrent's, profile's or batch's folder, nor a set of files.
+fn checkable(rec: &Record) -> bool {
+    !rec.torrent && !rec.profile && rec.bundle.is_empty() && rec.batch.is_none()
+}
+
+impl Inner {
+    /// Works out a finished download's checksum in the background, when it
+    /// has one to check against or Settings ask for one for every file. A
+    /// check already running for it stops and starts over.
+    fn start_check(self: &Arc<Self>, id: u64) {
+        let job = {
+            let mut st = self.state.lock().unwrap();
+            let auto = st.settings.auto_checksum;
+            let Some(e) = st.entries.iter_mut().find(|e| e.rec.id == id) else { return };
+            if e.rec.status != Status::Completed || !checkable(&e.rec) {
+                return;
+            }
+            if e.rec.checksum.is_none() {
+                match auto {
+                    Some(algorithm) => e.rec.checksum = Some(Checksum::wanted(algorithm, None)),
+                    None => return,
+                }
+            }
+            let c = e.rec.checksum.as_mut().expect("set above");
+            c.state = CheckState::Calculating;
+            c.done = 0;
+            c.actual = None;
+            c.error = None;
+            (e.rec.dir.join(&e.rec.filename), c.algorithm)
+        };
+        let (path, algorithm) = job;
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(old) = self.hash_jobs.lock().unwrap().insert(id, stop.clone()) {
+            old.store(true, Relaxed);
+        }
+        self.changed();
+        let inner = self.clone();
+        self.rt.spawn(async move {
+            let Ok(_turn) = inner.hash_slots.clone().acquire_owned().await else { return };
+            if stop.load(Relaxed) {
+                return;
+            }
+            let worker = inner.clone();
+            let flag = stop.clone();
+            let file = path.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                checksum::hash_file(&file, algorithm, &flag, |done| {
+                    worker.update(id, |r| {
+                        if let Some(c) = r.checksum.as_mut() {
+                            c.done = done;
+                        }
+                    })
+                })
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("the check stopped: {e}")));
+            if stop.load(Relaxed) {
+                return;
+            }
+            inner.hash_jobs.lock().unwrap().remove(&id);
+            {
+                let mut st = inner.state.lock().unwrap();
+                let Some(c) = st.entries.iter_mut().find(|e| e.rec.id == id).and_then(|e| e.rec.checksum.as_mut()) else { return };
+                match outcome {
+                    Ok(Some(actual)) => c.settle(actual),
+                    Ok(None) => return,
+                    Err(why) => {
+                        c.state = CheckState::Error;
+                        c.error = Some(why);
+                    }
+                }
+                match c.state {
+                    CheckState::Failed => tracing::warn!(id, file = %path.display(), "checksum does not match"),
+                    CheckState::Error => tracing::warn!(id, file = %path.display(), error = ?c.error, "checksum could not be worked out"),
+                    _ => tracing::info!(id, state = ?c.state, "checksum worked out"),
+                }
+            }
+            inner.changed();
+        });
+    }
+}
+
 /// Where a download that just finished is moved to, if anywhere: the folder
 /// of its schedule, else the folder of its kind of file when sorting is on
 /// and it was put in the download folder with no folder of its own.
@@ -2134,6 +2925,23 @@ async fn schedule_loop(inner: Weak<Inner>) {
         interval.tick().await;
         let Some(inner) = inner.upgrade() else { return };
         inner.check_schedules(false);
+    }
+}
+
+/// Looks after the helper programs (deps.rs): shortly after the app opens,
+/// then every hour; each is checked for a new release at most once a day.
+/// RUSHDOWNLOAD_NO_TOOL_UPKEEP keeps tests from downloading anything.
+async fn tools_loop(inner: Weak<Inner>) {
+    if std::env::var_os("RUSHDOWNLOAD_NO_TOOL_UPKEEP").is_some() {
+        return;
+    }
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        let Some(inner) = inner.upgrade() else { return };
+        inner.tend_tools().await;
     }
 }
 

@@ -88,11 +88,12 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>, rec: &Rec
             child.cancel = live.cancel.child_token();
             // every file of the bundle counts against the download's own limit
             child.limiter = live.limiter.clone();
+            child.set_connection(live.client(), live.route());
             let child = Arc::new(child);
             running.push((i, child.clone()));
-            let (inner, file, dest) = (inner.clone(), rec.bundle[i].clone(), file_path(&folder, &rec.bundle[i]));
+            let (file, dest) = (rec.bundle[i].clone(), file_path(&folder, &rec.bundle[i]));
             let parent = live.clone();
-            set.spawn(async move { (i, fetch(&inner, &file, &dest, conns, &child, &parent).await) });
+            set.spawn(async move { (i, fetch(&file, &dest, conns, &child, &parent).await) });
         }
         if set.is_empty() {
             break;
@@ -146,7 +147,7 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>, rec: &Rec
 }
 
 /// Downloads one file of the set to `dest`; returns its size.
-async fn fetch(inner: &Arc<Inner>, file: &SiteFile, dest: &Path, conns: usize, child: &Arc<Live>, parent: &Arc<Live>) -> Result<u64, Fail> {
+async fn fetch(file: &SiteFile, dest: &Path, conns: usize, child: &Arc<Live>, parent: &Arc<Live>) -> Result<u64, Fail> {
     let mut last = String::new();
     for attempt in 0..TRIES {
         if attempt > 0 {
@@ -156,7 +157,7 @@ async fn fetch(inner: &Arc<Inner>, file: &SiteFile, dest: &Path, conns: usize, c
             }
         }
         child.downloaded.store(0, Relaxed);
-        match fetch_once(inner, file, dest, conns, child, parent).await {
+        match fetch_once(file, dest, conns, child, parent).await {
             Ok(n) => return Ok(n),
             Err(Fail::Retry(m)) => last = m,
             Err(other) => return Err(other),
@@ -165,16 +166,17 @@ async fn fetch(inner: &Arc<Inner>, file: &SiteFile, dest: &Path, conns: usize, c
     Err(Fail::Retry(last))
 }
 
-async fn fetch_once(inner: &Arc<Inner>, file: &SiteFile, dest: &Path, conns: usize, child: &Arc<Live>, parent: &Arc<Live>) -> Result<u64, Fail> {
+async fn fetch_once(file: &SiteFile, dest: &Path, conns: usize, child: &Arc<Live>, parent: &Arc<Live>) -> Result<u64, Fail> {
     let (url, headers) = tokio::select! {
         _ = child.cancel.cancelled() => return Err(Fail::Cancelled),
-        d = sites::direct(inner, file) => d.map_err(|m| {
+        d = sites::direct(child.client(), file) => d.map_err(|m| {
             if m.contains("too long") || m.contains("could not reach") || m.contains("busy") { Fail::Retry(m) } else { Fail::Fatal(m) }
         })?,
     };
+    let client = child.client();
     let probe = tokio::select! {
         _ = child.cancel.cancelled() => return Err(Fail::Cancelled),
-        p = probe::probe(&inner.client, &url, &headers) => p?,
+        p = probe::probe(&client, &url, &headers) => p?,
     };
     if probe.is_html {
         return Err(Fail::Fatal("the site sent a web page instead of the file; it may need a sign-in".into()));
@@ -191,10 +193,10 @@ async fn fetch_once(inner: &Arc<Inner>, file: &SiteFile, dest: &Path, conns: usi
     let size = match (probe.resumable, total) {
         (true, Some(total)) => {
             drop(probe);
-            fetch_stream(inner, child, &url, &headers, &part, total, conns, 0, None).await?;
+            fetch_stream(child, &url, &headers, &part, total, conns, 0, None).await?;
             total
         }
-        _ => stream(inner, probe.body, &url, &headers, &part, total, child, parent).await?,
+        _ => stream(probe.body, &url, &headers, &part, total, child, parent).await?,
     };
     if let Some((key, nonce)) = sites::mega_key(file) {
         let path = part.clone();
@@ -211,7 +213,6 @@ async fn fetch_once(inner: &Arc<Inner>, file: &SiteFile, dest: &Path, conns: usi
 /// One plain stream, for a server that does not take ranges.
 #[allow(clippy::too_many_arguments)]
 async fn stream(
-    inner: &Arc<Inner>,
     body: Option<reqwest::Response>,
     url: &str,
     headers: &[(String, String)],
@@ -225,7 +226,7 @@ async fn stream(
         None => {
             let r = tokio::select! {
                 _ = child.cancel.cancelled() => return Err(Fail::Cancelled),
-                r = request(&inner.client, url, headers).send() => r.map_err(net_err)?,
+                r = request(&child.client(), url, headers).send() => r.map_err(net_err)?,
             };
             if !r.status().is_success() {
                 return Err(status_fail(r.status()));

@@ -264,6 +264,9 @@ const dict: Dict = {
         media: () => "사진·동영상 게시물",
         followers: () => "팔로워",
         following: () => "팔로잉",
+        videos: () => "동영상",
+        subscribers: () => "구독자",
+        likes: () => "좋아요",
         joined: (date: string) => `${date} 가입`,
       },
       holds: {
@@ -273,6 +276,8 @@ const dict: Dict = {
       },
       playlist: "재생목록",
       profileOf: (site: string) => `${site} 프로필`,
+      links: "이 프로필의 링크",
+      openLink: (link: string) => `브라우저에서 ${link} 열기`,
 
       locked: {
         profileShown: (site: string) =>
@@ -314,7 +319,7 @@ const dict: Dict = {
       profileNoteAfter: " 폴더에 Images와 Videos 폴더로 나누어 저장해요. 일부 사이트는 로그인해야 프로필을 보여 줘요.",
       profileNoteAfterQuality:
         " 폴더에 위에서 선택한 화질로, Images와 Videos 폴더로 나누어 저장해요. 일부 사이트는 로그인해야 프로필을 보여 줘요.",
-      profileFolder: (name: string, site: string) => `${name} (${site})`,
+      profileFolder: (name: string) => name,
 
       or: "또는",
       addFromBrowserTitle: "페이지 주소를 붙여 넣고 찾은 미디어를 선택하세요",
@@ -620,6 +625,7 @@ const dict: Dict = {
       resume: "재개",
       pause: "일시 중지",
       more: "추가 작업",
+      took: (time: string) => `${time} 만에 다운로드됨`,
     },
     dismiss: "닫기",
     close: "닫기",

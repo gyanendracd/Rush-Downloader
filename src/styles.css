@@ -741,6 +741,7 @@ kbd {
 }
 
 input[type="text"],
+input[type="password"],
 input[type="number"],
 select {
   height: 38px;
@@ -754,6 +755,7 @@ select {
 }
 
 input[type="text"],
+input[type="password"],
 input[type="number"] {
   user-select: text;
   -webkit-user-select: text;
@@ -1558,6 +1560,19 @@ select:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* How long a finished download took, just before its folder button. */
+.row-took {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  margin-inline-end: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .round {
@@ -2719,6 +2734,42 @@ select:disabled {
   color: var(--ok);
 }
 
+/* Shows the file in its folder; an empty one keeps the column lined up. */
+.item-reveal {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-inline-end: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.item-reveal:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.item-reveal:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.item-reveal-empty {
+  cursor: default;
+}
+
+.item:has(.item-reveal:not(.item-reveal-empty)) {
+  cursor: default;
+  user-select: none;
+}
+
 .item-downloading {
   background: var(--accent-soft);
 }
@@ -3703,6 +3754,7 @@ select:disabled {
 
 /* fields: wells pressed into the surface they sit on */
 input[type="text"],
+input[type="password"],
 input[type="number"],
 select {
   height: 34px;
@@ -4296,9 +4348,52 @@ video.item-thumb {
   font-size: 12px;
   line-height: 1.45;
   text-align: start;
+  /* the profile's own line breaks are kept */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+
+/* the links a profile lists, under its description */
+.profile-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.profile-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 240px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.profile-link span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-link:hover {
+  background: var(--accent-soft);
+}
+
+.profile-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* the profile's numbers: posts, followers, following, when it joined */
@@ -4758,6 +4853,7 @@ video.item-thumb {
 }
 
 input[type="text"],
+input[type="password"],
 input[type="number"],
 select {
   border-color: var(--glass-stroke);
@@ -5215,6 +5311,22 @@ input[aria-invalid="true"] {
 .stat > span {
   color: var(--text-2);
   font-size: 12px;
+}
+
+/* a speed limit on: said under the speed it holds back */
+.stat > .stat-limit {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #b45309;
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: help;
+}
+
+:root[data-theme="dark"] .stat > .stat-limit {
+  color: #fbbf24;
 }
 
 /* the graph, with a download mark after it in place of the word */
@@ -9107,4 +9219,687 @@ span.org-name {
   .ambient {
     display: none;
   }
+}
+
+/* ---------- proxies (Proxies.tsx) ---------- */
+
+.proxy-row .setting-text > span:first-child {
+  gap: 8px;
+}
+
+.proxy-row .setting-text small {
+  overflow-wrap: anywhere;
+}
+
+.proxy-empty small,
+.proxy-limits {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.proxy-limits {
+  margin: 8px 4px 0;
+}
+
+.proxy-error {
+  margin: 8px 4px 0;
+  color: var(--err);
+  font-size: 12px;
+}
+
+.proxy-foot .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* address and port, user name and password: side by side, the second narrower */
+.proxy-address {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.55fr);
+  gap: 12px;
+}
+
+@media (max-width: 520px) {
+  .proxy-address {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.proxy-test {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--r-sm, 10px);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.proxy-test.is-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.proxy-test.is-bad {
+  background: var(--err-soft);
+  color: var(--err);
+}
+
+.proxy-confirm {
+  font-size: 13px;
+  color: var(--text-2);
+  max-width: 60%;
+}
+
+/* ---------- helper programs (Tools.tsx) ---------- */
+
+.tool-row {
+  align-items: flex-start;
+}
+
+.tool-row .setting-control {
+  padding-top: 4px;
+}
+
+.tool-row .setting-text > span:first-child {
+  gap: 8px;
+}
+
+.tool-row .setting-text small {
+  overflow-wrap: anywhere;
+}
+
+.tool-bar {
+  margin-top: 4px;
+  max-width: 360px;
+}
+
+.tool-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+}
+
+.tool-links:empty {
+  display: none;
+}
+
+.tool-error {
+  color: var(--err);
+}
+
+.tool-error-line,
+.tool-note {
+  margin: 8px 4px 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.tool-note {
+  color: var(--text-2);
+}
+
+/* ---------- checksums (Checksum.tsx) ---------- */
+
+.checksum {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.checksum-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.checksum-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.checksum-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  background: var(--hover);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.checksum-state.is-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.checksum-state.is-bad {
+  background: var(--err-soft);
+  color: var(--err);
+}
+
+.checksum-note {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.checksum-note.is-bad {
+  color: var(--err);
+}
+
+.checksum-progress {
+  display: grid;
+  gap: 5px;
+}
+
+.checksum-progress small {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.checksum-sums {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.checksum-sums > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 12px;
+}
+
+.checksum-sums dt {
+  color: var(--text-2);
+}
+
+.checksum-sums dd {
+  margin: 0;
+}
+
+.mono {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.checksum-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.checksum-form .btn {
+  height: 34px;
+}
+
+@media (max-width: 560px) {
+  .checksum-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.checksum-copy {
+  justify-self: start;
+  font-size: 12px;
+}
+
+/* ---------- request options (Requests.tsx) ---------- */
+
+.request-form {
+  display: grid;
+  gap: 14px;
+}
+
+.request-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.request-header {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.request-add {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.request-clear {
+  justify-self: start;
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .request-pair,
+  .request-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.request-pair.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ---------- FTP and SFTP (Remote.tsx) ---------- */
+
+.remote-field {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.remote-field legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.check-row span {
+  display: grid;
+  gap: 2px;
+}
+
+.check-row small {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.server-key {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--hover);
+}
+
+.server-key.is-changed {
+  background: var(--err-soft);
+}
+
+.server-key h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.server-key.is-changed h3 {
+  color: var(--err);
+}
+
+.server-key p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.server-key .btn {
+  justify-self: start;
+}
+
+/* ---------- who posted a video (Poster.tsx) ---------- */
+
+.poster {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.poster-face {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background-color: var(--track);
+  box-shadow: 0 0 0 1px var(--border);
+  object-fit: cover;
+}
+
+.poster-badge {
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+}
+
+.poster-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.poster-text strong,
+.poster-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.poster-text strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.poster-text span {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.poster .btn {
+  flex: none;
+}
+
+@media (max-width: 520px) {
+  .poster {
+    flex-wrap: wrap;
+  }
+}
+
+/* ---------- an Instagram post on Home (InstaPost.tsx) ----------
+   Whose post it is on the left, the post itself on the right; one above the
+   other where the window is narrow. */
+
+.video-card.ig-card {
+  display: grid;
+  grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.ig-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 16px;
+  border-inline-end: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.ig-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* the picture, in Instagram's ring */
+.ig-face {
+  flex: none;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background-color: var(--track);
+  object-fit: cover;
+}
+
+img.ig-face {
+  padding: 2px;
+  background:
+    linear-gradient(var(--surface-solid), var(--surface-solid)) padding-box,
+    conic-gradient(from 210deg, #feda75, #fa7e1e, #d62976, #962fbf, #4f5bd5, #feda75) border-box;
+  border: 2.5px solid transparent;
+}
+
+.ig-badge {
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.ig-who {
+  display: grid;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.ig-name {
+  overflow: hidden;
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ig-handle {
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ig-handle:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.ig-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* posts · followers · following, each figure over its word */
+.ig-numbers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+  text-align: center;
+}
+
+.ig-numbers > div {
+  min-width: 0;
+  padding: 6px 2px;
+  border-radius: var(--r-sm);
+  background: var(--inset, color-mix(in srgb, var(--text) 4%, transparent));
+}
+
+.ig-numbers dt {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.ig-numbers dd {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ig-numbers .shimmer-number {
+  height: 38px;
+}
+
+.ig-profile .profile-about,
+.ig-profile .profile-links,
+.ig-profile .shimmer-lines {
+  margin-top: 0;
+}
+
+.ig-about {
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+}
+
+.ig-profile .profile-link {
+  max-width: 100%;
+}
+
+/* the likes and comments this post has had */
+.ig-post-numbers {
+  display: grid;
+  gap: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.ig-label {
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ig-post-numbers p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ig-post-numbers span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ig-post-numbers svg {
+  color: #e1306c;
+}
+
+.ig-post-numbers strong {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.ig-whole {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+/* the post: its picture beside its caption and choices */
+.ig-media {
+  display: flex;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.ig-thumb {
+  flex: none;
+  align-self: flex-start;
+  width: 150px;
+  max-height: 260px;
+  border-radius: var(--r-md);
+  background: var(--track);
+  object-fit: cover;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.ig-thumb.is-portrait {
+  width: 132px;
+}
+
+.ig-media-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ig-caption {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+
+/* sized by the room Home's welcome has, not the window's (the sidebar takes some) */
+.page-home .welcome {
+  container: home-welcome / inline-size;
+}
+
+@container home-welcome (max-width: 600px) {
+  .video-card.ig-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ig-profile {
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+@container home-welcome (max-width: 400px) {
+  .ig-media {
+    flex-direction: column;
+  }
+
+  .ig-thumb,
+  .ig-thumb.is-portrait {
+    width: 100%;
+    max-height: 320px;
+  }
+}
+
+/* an Instagram post the app cannot download without a sign-in (age-restricted
+   or signed-in-only): the reason, then a button straight to the Sign in page */
+.home-site-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.home-site-error .btn {
+  flex: none;
 }

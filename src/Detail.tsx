@@ -36,6 +36,8 @@ import {
   takesNewLink,
 } from "./api";
 import { amountOf, FileIcon, limitText, Modal, Progress, Sparkline, useApp } from "./ui";
+import { ChecksumPanel } from "./Checksum";
+import { ServerKeyPanel } from "./Remote";
 import { pct as pctText, t } from "./i18n";
 
 type Tab = "progress" | "details" | "options";
@@ -249,7 +251,9 @@ function ItemList({ d }: { d: Download }) {
   const [items, setItems] = useState<DownloadItem[] | null>(null);
   /** The row under the pointer (or focused), and where it is on screen. */
   const [pointed, setPointed] = useState<{ index: number; row: DOMRect } | null>(null);
+  const { actions } = useApp();
   const live = d.status === "downloading" || d.status === "connecting";
+  const fail = (e: unknown) => actions.toast(String(e), "error");
   useEffect(() => {
     let stale = false;
     const load = () =>
@@ -329,6 +333,14 @@ function ItemList({ d }: { d: Download }) {
               onMouseLeave={() => setPointed(null)}
               onFocus={point}
               onBlur={() => setPointed(null)}
+              onDoubleClick={item.path ? () => api.openItem(d.id, i).catch(fail) : undefined}
+              onKeyDown={
+                item.path
+                  ? (e) => {
+                      if (e.key === "Enter" && e.target === e.currentTarget) api.openItem(d.id, i).catch(fail);
+                    }
+                  : undefined
+              }
             >
               <span className="item-index">{i + 1}</span>
               <ItemPicture item={item} />
@@ -355,6 +367,23 @@ function ItemList({ d }: { d: Download }) {
                   t.detail.items.state[item.state]
                 )}
               </span>
+              {item.path ? (
+                <button
+                  type="button"
+                  className="item-reveal"
+                  title={t.detail.options.showInFolder}
+                  aria-label={t.detail.options.showInFolder}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    api.revealItem(d.id, i).catch(fail);
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                >
+                  <FolderOpen size={15} strokeWidth={2} aria-hidden="true" />
+                </button>
+              ) : (
+                <span className="item-reveal item-reveal-empty" aria-hidden="true" />
+              )}
             </li>
           );
         })}
@@ -438,7 +467,10 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
         <FileIcon d={d} large />
         <div className="detail-title">
           <h2 title={displayName(d)}>{displayName(d)}</h2>
-          <p className={`detail-headline detail-${d.status}`}>{headline}</p>
+          {/* A file that failed its checksum is not shown as fine. */}
+          <p className={`detail-headline detail-${d.checksum?.state === "failed" && d.status === "completed" ? "failed" : d.status}`}>
+            {d.checksum?.state === "failed" && d.status === "completed" ? `${headline} · ${t.checksum.rowFailed}` : headline}
+          </p>
           <div className="detail-progress">
             <Progress d={d} tall />
             {/* How far, to three decimals, and the time left beside it while it runs. */}
@@ -470,6 +502,7 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
               <p>{d.error}</p>
             </div>
           )}
+          <ServerKeyPanel d={d} />
           {d.status !== "completed" && (
             <Sparkline
               values={history.get(d.id) ?? []}
@@ -501,6 +534,7 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
           </dl>
           {/* A torrent's files fill side by side: each one's bar, under the whole. */}
           {(d.torrent || d.bundle) && <ItemList d={d} />}
+          <ChecksumPanel d={d} />
         </>
       )}
 

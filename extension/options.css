@@ -1,0 +1,62 @@
+/* The options page: the popup's look, wider and laid out as a form. */
+body.options {
+  width: auto;
+  max-width: 620px;
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 20px 16px;
+}
+.options section {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+.options h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+.options .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 550;
+}
+.options .note,
+.options small {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.options .field {
+  display: grid;
+  gap: 6px;
+}
+.options .field span {
+  font-weight: 550;
+}
+.options input[type="text"],
+.options input[type="number"],
+.options textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--control);
+  color: var(--text);
+  font: inherit;
+}
+.options textarea {
+  resize: vertical;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+.options footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.options #said.ok {
+  color: var(--ok);
+}

@@ -1,0 +1,38 @@
+/* The helper programs: the Engines pane of Settings, Advanced (src/Tools.tsx). */
+export const tools = {
+  title: "Engines",
+  auto: "Install and update automatically",
+  autoHint:
+    "Installs yt-dlp and gallery-dl when they are missing, and checks RushDownload's own copies for a new release once a day. Copies you installed yourself are never changed.",
+  check: "Check for updates",
+  checking: "Checking…",
+  install: "Install",
+  update: (version: string) => `Update to ${version}`,
+  useOwn: "Use RushDownload's copy",
+  useOwnHint: "Installs RushDownload's own copy, kept up to date, and uses it instead of yours.",
+  rollback: (version: string) => `Go back to ${version}`,
+  notes: "Release notes",
+  managed: "Kept up to date by RushDownload",
+  system: (path: string) => `Installed on this computer: ${path}`,
+  missing: "Not installed",
+  noBuild: "No build is published for this computer. Install it yourself and RushDownload will use it.",
+  version: (v: string) => `Version ${v}`,
+  unknownVersion: "Version unknown",
+  latest: (v: string) => `Newest release ${v}`,
+  upToDate: "Up to date",
+  checkedAgo: (when: string) => `checked ${when}`,
+  never: "never checked",
+  phase: {
+    checking: "Looking for the newest release…",
+    downloading: (done: string, total: string) => `Downloading ${done} of ${total}`,
+    downloadingUnsized: (done: string) => `Downloading ${done}`,
+    verifying: "Checking it against the published checksum…",
+    installing: "Putting it in place…",
+  },
+  verified:
+    "Downloaded only from each project's own release page (yt-dlp on GitHub, gallery-dl on Codeberg) and checked against the SHA-256 checksums published with the release. A failed update leaves the working version in place.",
+  ffmpeg: "FFmpeg",
+  ffmpegFound: "Found on this computer",
+  ffmpegMissing: "Not found. Install it yourself (for example: winget install Gyan.FFmpeg); RushDownload uses it once it is there.",
+  ffmpegHint: "Joins video and audio and converts audio. RushDownload does not install it.",
+};

@@ -7,7 +7,7 @@ description = "Multi-connection, resumable download engine"
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "process"] }
 tokio-util = "0.7"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
 encoding_rs = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -21,3 +21,17 @@ aes = "0.8"
 base64 = "0.22"
 # Local time and time zones for download schedules (already built for librqbit).
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
+tracing = "0.1.44"
+tokio-socks = "0.5"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+md-5 = "0.10"
+digest_auth = "0.3"
+suppaftp = { version = "13", default-features = false, features = ["tokio-rustls-ring", "deprecated"] }
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "4"
+
+[dev-dependencies]
+rand = { version = "0.10", features = ["thread_rng"] }

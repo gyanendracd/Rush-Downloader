@@ -111,6 +111,9 @@ export const views = {
       media: (n: number) => plural(n, { one: "with photos or videos", other: "with photos or videos" }),
       followers: (n: number) => plural(n, { one: "follower", other: "followers" }),
       following: (n: number) => plural(n, { one: "following", other: "following" }),
+      videos: (n: number) => plural(n, { one: "video", other: "videos" }),
+      subscribers: (n: number) => plural(n, { one: "subscriber", other: "subscribers" }),
+      likes: (n: number) => plural(n, { one: "like", other: "likes" }),
       /** "Joined Dec 2017" */
       joined: (date: string) => `Joined ${date}`,
     },
@@ -122,6 +125,8 @@ export const views = {
     },
     playlist: "Playlist",
     profileOf: (site: string) => `${site} profile`,
+    links: "Links on this profile",
+    openLink: (link: string) => `Open ${link} in your browser`,
 
     locked: {
       profileShown: (site: string) =>
@@ -164,8 +169,8 @@ export const views = {
     profileNoteAfter: ", sorted into Images and Videos. Some sites only show a profile when you are signed in.",
     profileNoteAfterQuality:
       ", sorted into Images and Videos, in the quality picked above. Some sites only show a profile when you are signed in.",
-    /** The folder's name: "john (Instagram)". */
-    profileFolder: (name: string, site: string) => `${name} (${site})`,
+    /** The folder's name, after the profile itself: "john". */
+    profileFolder: (name: string) => name,
 
     or: "or",
     addFromBrowserTitle: "Paste a page address and pick the media found on it",

@@ -2,12 +2,12 @@
 //! into a folder of its own with `Images` and `Videos` inside. gallery-dl
 //! does the fetching for most sites; yt-dlp for the video-only ones.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -151,8 +151,11 @@ pub(crate) fn detect(link: &str) -> Option<ProfileRef> {
 }
 
 /// The folder name a profile is saved under.
+/// A profile downloads into a new folder named after the profile itself
+/// ("natgeo"), inside the usual download folder. Two profiles that share a
+/// name (on different sites, say) do not clash: `claim_folder` adds a number.
 pub(crate) fn folder_name(profile: &ProfileRef) -> String {
-    sanitize(&format!("{} ({})", profile.name, profile.site))
+    sanitize(&profile.name)
 }
 
 /// Sites whose profiles hold videos only, which yt-dlp fetches.
@@ -255,7 +258,7 @@ const COUNT_FOR: Duration = Duration::from_secs(30);
 
 /// Counts the photos and videos a profile lists. Nothing is downloaded.
 async fn profile_counts(inner: &Arc<Inner>, url: &str, profile: &ProfileRef) -> Result<PlaylistInfo, String> {
-    let tool = find_tool("gallery-dl").ok_or("gallery-dl was not found on this computer")?;
+    let tool = find_tool("gallery-dl").ok_or("gallery-dl is not installed; install it under Settings, Advanced, Engines")?;
     let mut cmd = command(&tool);
     cmd.env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
@@ -265,7 +268,7 @@ async fn profile_counts(inner: &Arc<Inner>, url: &str, profile: &ProfileRef) -> 
         .arg(format!("{LISTED}{{extension}}\t{WHOSE_PICTURE}\t{WHOSE_NAME}"))
         .arg("--range")
         .arg(format!("1-{COUNT_UP_TO}"));
-    inner.add_sign_in(&mut cmd, None);
+    inner.add_sign_in(&mut cmd, None, &crate::ProxyChoice::Default);
     cmd.arg(url).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("could not start gallery-dl: {e}"))?;
 
@@ -358,6 +361,14 @@ pub struct ProfileFace {
     pub following: Option<u64>,
     /// The day it joined the site, as `YYYY-MM-DD`.
     pub joined: Option<String>,
+    /// Its name on the site, as in its link, without the "@".
+    pub username: Option<String>,
+    /// The links it lists: its website, its other accounts.
+    pub links: Vec<String>,
+    /// How many likes its posts have had together, where the site shows that.
+    pub likes: Option<u64>,
+    /// The counts are as the page writes them, rounded ("32K posts").
+    pub rounded: bool,
 }
 
 type Face = ProfileFace;
@@ -379,7 +390,12 @@ const BROWSER_AGENT: &str =
 /// ordinary browser. Nothing here is needed for downloading, so any trouble
 /// simply leaves the card plainer.
 async fn face(inner: &Arc<Inner>, url: &str, profile: &ProfileRef) -> Face {
-    for agent in [PREVIEW_AGENT, BROWSER_AGENT] {
+    // A page whose numbers are in its body is only shown in full to a browser.
+    let agents = match reads_body(&profile.site) {
+        true => [BROWSER_AGENT, PREVIEW_AGENT],
+        false => [PREVIEW_AGENT, BROWSER_AGENT],
+    };
+    for agent in agents {
         let seen = match tokio::time::timeout(FACE_FOR, page_head(inner, url, profile, agent)).await {
             Ok(Some(html)) => read_face(&html, profile),
             _ => Face::default(),
@@ -394,9 +410,10 @@ async fn face(inner: &Arc<Inner>, url: &str, profile: &ProfileRef) -> Face {
 /// The start of a page, as far as its preview goes (further, for sites whose
 /// profile picture is in the page itself), or `None` when the site says no.
 async fn page_head(inner: &Arc<Inner>, url: &str, profile: &ProfileRef, agent: &str) -> Option<String> {
-    let in_body = avatar_in_body(&profile.site);
+    let in_body = reads_body(&profile.site);
     let mut ask = inner
-        .client
+        .client()
+        .ok()?
         .get(url)
         .header(reqwest::header::USER_AGENT, agent)
         .header(reqwest::header::ACCEPT, "text/html")
@@ -443,10 +460,21 @@ fn avatar_in_body(site: &str) -> bool {
     site == "Pornhub"
 }
 
-/// A cookie a site wants before it shows a page at all: an age check that
-/// would otherwise stand in front of the profile.
+/// Sites whose page is read past its head: for the profile's picture, or
+/// for the numbers, description and links its header shows (YouTube).
+fn reads_body(site: &str) -> bool {
+    avatar_in_body(site) || site == "YouTube"
+}
+
+/// A cookie a site wants before it shows a page at all: an age check, or a
+/// consent page (answered "no" to everything optional) that would otherwise
+/// stand in front of the profile.
 fn page_cookie(site: &str) -> Option<&'static str> {
-    (site == "Pornhub").then_some("age_verified=1; accessAgeDisclaimerPH=1; accessAgeDisclaimerUK=1")
+    match site {
+        "Pornhub" => Some("age_verified=1; accessAgeDisclaimerPH=1; accessAgeDisclaimerUK=1"),
+        "YouTube" => Some("SOCS=CAI"),
+        _ => None,
+    }
 }
 
 /// The profile's own picture as the page shows it: the `<img>` the page
@@ -557,15 +585,183 @@ fn read_face(html: &str, profile: &ProfileRef) -> Face {
         .flatten()
         .or_else(|| meta(html, "og:image").filter(|p| own && p.starts_with("http")))
         .filter(|p| !plain(p));
-    // One line of it: a card has no room for more.
-    let about = meta(html, "og:description")
-        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|text| !text.is_empty() && name.is_some())
-        .map(|text| match text.chars().count() > 160 {
-            true => format!("{}\u{2026}", text.chars().take(159).collect::<String>().trim_end()),
-            false => text,
-        });
-    Face { name, picture, about, ..Face::default() }
+    let mut face = Face { name, picture, username: Some(profile.name.clone()), ..Face::default() };
+    // Many sites write the numbers into the line a link preview shows:
+    // "267M Followers, 196 Following, 32K Posts - ...".
+    let described = [meta(html, "description"), meta(html, "og:description")];
+    for text in described.iter().flatten() {
+        read_counts(text, &mut face);
+    }
+    if profile.site == "YouTube" {
+        read_youtube(html, &mut face);
+    }
+    if face.about.is_none() && face.name.is_some() {
+        face.about = described.iter().flatten().find_map(|text| bio_in(text));
+    }
+    if let Some(about) = &face.about {
+        for found in links_in(about) {
+            if !face.links.iter().any(|l| l.eq_ignore_ascii_case(&found)) {
+                face.links.push(found);
+            }
+        }
+        face.about = Some(clip(about, ABOUT_MOST));
+    }
+    face
+}
+
+/// The most of a profile's description the card is given.
+const ABOUT_MOST: usize = 600;
+
+/// Text cut to at most `most` characters, ending in "…" when cut.
+fn clip(text: &str, most: usize) -> String {
+    match text.chars().count() > most {
+        true => format!("{}\u{2026}", text.chars().take(most - 1).collect::<String>().trim_end()),
+        false => text.to_string(),
+    }
+}
+
+/// Text with its runs of spaces made one and its line breaks kept, with at
+/// most one empty line between paragraphs.
+fn tidy(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() && out.last().is_none_or(|l| l.is_empty()) {
+            continue;
+        }
+        out.push(line);
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
+/// A number as a page writes it: "1,234", "32K", "15.1M", "1.2B".
+fn count_text(figure: &str, unit: Option<&str>) -> Option<u64> {
+    let figure = figure.trim().trim_end_matches(['.', ',']);
+    let scale = match unit.map(|u| u.to_ascii_uppercase()).as_deref() {
+        Some("K") => 1e3,
+        Some("M") => 1e6,
+        Some("B") => 1e9,
+        _ => 1.0,
+    };
+    let value: f64 = if scale > 1.0 {
+        figure.replace(',', ".").parse().ok()?
+    } else {
+        // Without a unit, "1,234" and "1.234" are both thousands.
+        figure.replace([',', '.', ' ', '\u{a0}'], "").parse().ok()?
+    };
+    Some((value * scale).round() as u64)
+}
+
+/// The numbers a profile's preview line gives: followers, following, posts
+/// (videos, pins), likes. Only what is not known yet is filled in.
+fn read_counts(text: &str, face: &mut Face) {
+    static COUNT: OnceLock<Regex> = OnceLock::new();
+    let count = COUNT.get_or_init(|| {
+        Regex::new(r"(?i)(\d(?:[\d.,]*\d)?)\s*([KMB])?\+?\s+(followers?|following|subscribers?|posts?|videos?|pins?|likes?)\b").unwrap()
+    });
+    for c in count.captures_iter(text) {
+        let Some(n) = count_text(&c[1], c.get(2).map(|u| u.as_str())) else { continue };
+        let word = c[3].to_ascii_lowercase();
+        let slot = match word.trim_end_matches('s') {
+            "follower" | "subscriber" => &mut face.followers,
+            "following" => &mut face.following,
+            "post" | "video" | "pin" => &mut face.posts,
+            "like" => &mut face.likes,
+            _ => continue,
+        };
+        if slot.is_none() {
+            *slot = Some(n);
+            face.rounded = true;
+        }
+    }
+}
+
+/// The profile's own words in its preview line, without the site's: the
+/// part in quotes after "on Instagram:", else the line once its numbers are
+/// taken off, unless what is left is only the site's own wording.
+fn bio_in(text: &str) -> Option<String> {
+    static QUOTED: OnceLock<Regex> = OnceLock::new();
+    static COUNTS: OnceLock<Regex> = OnceLock::new();
+    let quoted = QUOTED.get_or_init(|| Regex::new(r#"(?s)\bon [^:"]{1,40}:\s*"(.+)"\s*$"#).unwrap());
+    let counts = COUNTS.get_or_init(|| {
+        Regex::new(r"(?i)^(?:\s*\d(?:[\d.,]*\d)?\s*[KMB]?\+?\s+(?:followers?|following|subscribers?|posts?|videos?|pins?|likes?)[,.]?)+\s*(?:[-\u{2013}\u{2014}|\u{b7}]\s*)?").unwrap()
+    });
+    let words = match quoted.captures(text) {
+        Some(c) => c[1].to_string(),
+        None => {
+            let rest = counts.replace(text, "").to_string();
+            // "See Instagram photos and videos from ...", "Watch the latest videos from ..."
+            let lower = rest.trim().to_ascii_lowercase();
+            if ["see ", "watch ", "check out ", "discover ", "explore "].iter().any(|w| lower.starts_with(w)) {
+                return None;
+            }
+            rest
+        }
+    };
+    Some(tidy(&words)).filter(|w| !w.is_empty())
+}
+
+/// Web addresses written in a profile's description, each once, at most ten.
+fn links_in(text: &str) -> Vec<String> {
+    static LINK: OnceLock<Regex> = OnceLock::new();
+    let link = LINK.get_or_init(|| {
+        Regex::new(r"(?i)\b(?:https?://[^\s<>()\[\]]+|(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|co|me|gov|edu|tv|gg|ee|app|link|bio|ly|page|store|shop|in|uk|de|fr|jp|xyz|art|dev|blog|info)\b(?:/[^\s<>()\[\]]*)?)").unwrap()
+    });
+    let mut found: Vec<String> = Vec::new();
+    for m in link.find_iter(text) {
+        // "name@site.com" is an e-mail address, not a page.
+        if text[..m.start()].ends_with('@') {
+            continue;
+        }
+        let raw = m.as_str().trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"']);
+        let url = match raw.to_ascii_lowercase().starts_with("http") {
+            true => raw.to_string(),
+            false => format!("https://{raw}"),
+        };
+        if reqwest::Url::parse(&url).is_ok() && !found.iter().any(|f| f.eq_ignore_ascii_case(&url)) {
+            found.push(url);
+        }
+        if found.len() == 10 {
+            break;
+        }
+    }
+    found
+}
+
+/// What a YouTube channel's page header shows: its subscribers and videos,
+/// its description, its first link, and its handle.
+fn read_youtube(html: &str, face: &mut Face) {
+    static PART: OnceLock<Regex> = OnceLock::new();
+    static ABOUT: OnceLock<Regex> = OnceLock::new();
+    static LINK: OnceLock<Regex> = OnceLock::new();
+    static HANDLE: OnceLock<Regex> = OnceLock::new();
+    let part = PART.get_or_init(|| Regex::new(r#""content":"([^"]{1,40} (?:subscribers?|videos?))""#).unwrap());
+    let about = ABOUT.get_or_init(|| Regex::new(r#""channelMetadataRenderer":\{[^{}]*?"description":"((?:[^"\\]|\\.)*)""#).unwrap());
+    let link = LINK.get_or_init(|| Regex::new(r#""attribution":\{"attributionViewModel":\{"text":\{"content":"\s*([^"\s]+)"#).unwrap());
+    let handle = HANDLE.get_or_init(|| Regex::new(r#""vanityChannelUrl":"https?://(?:www\.)?youtube\.com/@([^"/?]+)""#).unwrap());
+    // The header's own numbers win over the preview line's.
+    let mut header = Face::default();
+    for c in part.captures_iter(html) {
+        read_counts(&c[1], &mut header);
+    }
+    if header.followers.is_some() || header.posts.is_some() {
+        face.followers = header.followers.or(face.followers);
+        face.posts = header.posts.or(face.posts);
+        face.rounded = true;
+    }
+    if let Some(c) = about.captures(html) {
+        let text: Option<String> = serde_json::from_str(&format!("\"{}\"", &c[1])).ok();
+        face.about = text.map(|t| tidy(&t)).filter(|t| !t.is_empty());
+    }
+    if let Some(c) = handle.captures(html) {
+        face.username = Some(percent_encoding::percent_decode_str(&c[1]).decode_utf8_lossy().to_string());
+    }
+    if let Some(first) = link.captures(html).and_then(|c| links_in(&c[1]).into_iter().next()) {
+        face.links.push(first);
+    }
 }
 
 /// Looks up what a playlist or a profile holds: its name, picture, how many
@@ -614,9 +810,7 @@ pub(crate) async fn profile_stats(inner: &Arc<Inner>, url: &str) -> ProfileFace 
     let mut cmd = command(&tool);
     cmd.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8").arg("-j");
     // The lookup still goes the way the app's other requests do.
-    if let Some(proxy) = inner.dns.proxy() {
-        cmd.arg("--proxy").arg(format!("http://{proxy}"));
-    }
+    inner.add_proxy(&mut cmd, &crate::ProxyChoice::Default);
     cmd.arg(link).stdout(Stdio::piped()).stderr(Stdio::null());
     let Ok(child) = cmd.spawn() else { return nothing() };
     let Ok(Ok(out)) = tokio::time::timeout(STATS_FOR, child.wait_with_output()).await else { return nothing() };
@@ -658,6 +852,19 @@ fn read_stats(printed: &serde_json::Value) -> Option<ProfileFace> {
         joined: text(&["date", "createdAt"])
             .and_then(|at| at.get(..10).map(str::to_string))
             .filter(|day| day.as_bytes().get(4) == Some(&b'-')),
+        // X calls the handle "name" (and the shown name "nick"); Bluesky, "handle".
+        username: text(&["handle", "name"]).map(|h| h.trim_start_matches('@').to_string()),
+        links: {
+            let mut links: Vec<String> = link(&["url"]).into_iter().collect();
+            for found in text(&["description"]).map(|d| links_in(&d)).unwrap_or_default() {
+                if !links.iter().any(|l| l.eq_ignore_ascii_case(&found)) {
+                    links.push(found);
+                }
+            }
+            links
+        },
+        likes: None,
+        rounded: false,
     })
 }
 
@@ -707,7 +914,7 @@ async fn ask_ytdlp(inner: &Arc<Inner>, url: &str) -> Option<Option<String>> {
         "3",
         "-J",
     ]);
-    inner.add_sign_in(&mut cmd, None);
+    inner.add_sign_in(&mut cmd, None, &crate::ProxyChoice::Default);
     cmd.arg("--").arg(url).stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = cmd.spawn().ok()?;
     let out = tokio::time::timeout(ASK_FOR, child.wait_with_output()).await.ok()?.ok()?;
@@ -752,7 +959,7 @@ async fn ask_gallerydl(inner: &Arc<Inner>, url: &str) -> Option<bool> {
     cmd.env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .args(["--range", "1-3", "--print", "{category}\t{subcategory}\t{extension}"]);
-    inner.add_sign_in(&mut cmd, None);
+    inner.add_sign_in(&mut cmd, None, &crate::ProxyChoice::Default);
     cmd.arg(url).stdout(Stdio::piped()).stderr(Stdio::null());
     let child = cmd.spawn().ok()?;
     let out = tokio::time::timeout(ASK_FOR, child.wait_with_output()).await.ok()?.ok()?;
@@ -828,10 +1035,10 @@ fn urlencoding_lossy(text: &str) -> String {
 
 /// What yt-dlp lists at a link: a playlist's or a channel's videos.
 async fn listed_info(inner: &Arc<Inner>, url: &str) -> Result<PlaylistInfo, String> {
-    let tool = find_tool("yt-dlp").ok_or("yt-dlp was not found on this computer")?;
+    let tool = find_tool("yt-dlp").ok_or("yt-dlp is not installed; install it under Settings, Advanced, Engines")?;
     let mut cmd = command(&tool);
     cmd.args(["--encoding", "utf-8", "--no-colors", "--flat-playlist", "-J"]);
-    inner.add_sign_in(&mut cmd, None);
+    inner.add_sign_in(&mut cmd, None, &crate::ProxyChoice::Default);
     cmd.arg("--").arg(url).stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = cmd.spawn().map_err(|e| format!("could not start yt-dlp: {e}"))?;
     let out = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
@@ -867,7 +1074,7 @@ async fn playlist_title(inner: &Arc<Inner>, live: &Arc<Live>, tool: &Path, url: 
         "--print",
         "%(playlist_title)s",
     ]);
-    inner.add_sign_in(&mut cmd, None);
+    inner.add_sign_in(&mut cmd, None, &live.route());
     cmd.arg("--").arg(url).stdout(Stdio::piped()).stderr(Stdio::null());
     let child = cmd.spawn().ok()?;
     let out = tokio::select! {
@@ -998,7 +1205,7 @@ async fn list_items(inner: Arc<Inner>, live: Arc<Live>, id: u64, tool: PathBuf, 
     if let Some(n) = &limit {
         cmd.arg("--playlist-end").arg(n);
     }
-    inner.add_sign_in(&mut cmd, None);
+    inner.add_sign_in(&mut cmd, None, &live.route());
     cmd.arg("--").arg(&url).stdout(Stdio::piped()).stderr(Stdio::null());
     let Ok(child) = cmd.spawn() else { return };
     let out = tokio::select! {
@@ -1102,18 +1309,48 @@ impl Following {
     }
 }
 
+/// How long a part-fetched file may stay the same size and still count as
+/// arriving. gallery-dl leaves behind the piece of a try it gave up on (a
+/// video's stream that failed, before it fell back to another copy), and
+/// that piece never grows again.
+const STILL_ARRIVING: Duration = Duration::from_secs(45);
+
 /// The file gallery-dl is part-way through, read from the incoming folder:
-/// it reports nothing itself until a file is complete.
-fn arriving(incoming: &Path) -> Option<CurrentFile> {
-    let (path, size) = arriving_files(incoming).into_iter().find(|(path, _)| extension(path) == "part")?;
-    Some(CurrentFile {
-        id: String::new(),
-        name: path.file_stem()?.to_string_lossy().to_string(),
-        downloaded: size,
-        total: None,
-        index: None,
-        count: None,
-    })
+/// it reports nothing itself until a file is complete. Each `.part` file's
+/// size is followed from one look to the next, so only one that is still
+/// growing is shown as downloading, the most recently grown first.
+#[derive(Default)]
+struct Arrivals {
+    /// Each part-fetched file: its size, and when that size was first seen.
+    seen: HashMap<PathBuf, (u64, Instant)>,
+}
+
+impl Arrivals {
+    fn look(&mut self, incoming: &Path, now: Instant) -> Option<CurrentFile> {
+        let parts: Vec<(PathBuf, u64)> =
+            arriving_files(incoming).into_iter().filter(|(path, _)| extension(path) == "part").collect();
+        self.seen.retain(|path, _| parts.iter().any(|(p, _)| p == path));
+        let mut newest: Option<(&PathBuf, u64, Instant)> = None;
+        for (path, size) in &parts {
+            let entry = self.seen.entry(path.clone()).or_insert((*size, now));
+            if entry.0 != *size {
+                *entry = (*size, now);
+            }
+            let grew = entry.1;
+            if now.saturating_duration_since(grew) <= STILL_ARRIVING && newest.is_none_or(|(_, _, at)| grew > at) {
+                newest = Some((path, *size, grew));
+            }
+        }
+        let (path, size, _) = newest?;
+        Some(CurrentFile {
+            id: String::new(),
+            name: path.file_stem()?.to_string_lossy().to_string(),
+            downloaded: size,
+            total: None,
+            index: None,
+            count: None,
+        })
+    }
 }
 
 fn extension(path: &Path) -> String {
@@ -1288,11 +1525,11 @@ pub(crate) async fn run(
     let by_ytdlp = uses_ytdlp(&profile);
     let tool = if by_ytdlp {
         find_tool("yt-dlp").ok_or_else(|| {
-            Fail::Fatal("Profile downloads from this site need yt-dlp, which was not found on this computer".into())
+            Fail::Fatal("Profile downloads from this site need yt-dlp, which is not installed; install it under Settings, Advanced, Engines".into())
         })?
     } else {
         find_tool("gallery-dl").ok_or_else(|| {
-            Fail::Fatal("Profile downloads need gallery-dl, which was not found on this computer".into())
+            Fail::Fatal("Profile downloads need gallery-dl, which is not installed; install it under Settings, Advanced, Engines".into())
         })?
     };
     std::fs::create_dir_all(&rec.dir)
@@ -1410,7 +1647,7 @@ pub(crate) async fn run(
         }
     }
     // The user's sign-in, if they made one.
-    inner.add_sign_in(&mut cmd, Some(&folder));
+    inner.add_sign_in(&mut cmd, Some(&folder), &rec.proxy);
     if by_ytdlp {
         cmd.arg("--");
     }
@@ -1459,6 +1696,7 @@ pub(crate) async fn run(
         }
     };
     let mut following = Following::default();
+    let mut arrivals = Arrivals::default();
     // Progress lines arrive many times a second; the folder is still
     // measured on its own steady beat.
     let mut beat = tokio::time::interval(Duration::from_millis(500));
@@ -1519,8 +1757,15 @@ pub(crate) async fn run(
                         listed.done = done;
                     }
                 } else {
-                    if let Some(file) = arriving(&incoming) {
-                        *live.current.lock().unwrap() = Some(file);
+                    let now = arrivals.look(&incoming, Instant::now());
+                    let mut current = live.current.lock().unwrap();
+                    match now {
+                        Some(file) => *current = Some(file),
+                        // Nothing is growing: gallery-dl is between files
+                        // (it waits between requests to the site), and a
+                        // piece left from a failed try is not "downloading".
+                        None if current.as_ref().is_some_and(|c| c.total.is_none()) => *current = None,
+                        None => {}
                     }
                 }
             }
@@ -1693,7 +1938,10 @@ mod tests {
             Face {
                 name: Some("Some \"One\" & Co".into()),
                 picture: Some("https://cdn.site.test/pic.jpg?a=1&b=2".into()),
-                about: Some("Makes things. Posts them here.".into()),
+                // the profile's own line breaks are kept
+                about: Some("Makes things.
+Posts them here.".into()),
+                username: Some("someone".into()),
                 ..Face::default()
             }
         );
@@ -1722,7 +1970,8 @@ mod tests {
         assert_eq!(titled("Instagram", "Instagram"), None);
         assert_eq!(titled("@staff", "Tumblr"), None);
         assert_eq!(titled("Check out someone&#39;s Reddit profile", "Reddit"), None);
-        assert_eq!(read_face("<html></html>", &on("X")), Face::default());
+        // a page that says nothing: only the name in the link is known
+        assert_eq!(read_face("<html></html>", &on("X")), Face { username: Some("someone".into()), ..Face::default() });
     }
 
     #[test]
@@ -1843,6 +2092,10 @@ ERROR: [vk:uservideos] @someone: Unable to extract cursor data"));
                 followers: Some(94442),
                 following: Some(166),
                 joined: Some("2017-12-14".into()),
+                username: Some("someone".into()),
+                links: Vec::new(),
+                likes: None,
+                rounded: false,
             })
         );
         // Bluesky's, one level further in
@@ -1861,6 +2114,48 @@ ERROR: [vk:uservideos] @someone: Unable to extract cursor data"));
         assert_eq!(at("https://x.com/someone?s=20").as_deref(), Some("https://x.com/someone/info"));
         assert_eq!(at("https://bsky.app/profile/some.one").as_deref(), Some("https://bsky.app/profile/some.one/info"));
         assert_eq!(at("https://www.instagram.com/someone/"), None);
+    }
+
+    #[test]
+    fn a_profiles_numbers_bio_and_links_are_read_from_its_page() {
+        let on = |site: &str| ProfileRef { site: site.into(), name: "natgeo".into(), by: None };
+        // Instagram's page, as any visitor gets it
+        let page = r#"<head><meta property="og:title" content="National Geographic (&#064;natgeo) &#x2022; Instagram photos and videos" />
+            <meta property="og:image" content="https://cdn.site.test/natgeo.jpg" />
+            <meta property="og:description" content="267M Followers, 196 Following, 32K Posts - See Instagram photos and videos from National Geographic (&#064;natgeo)" />
+            <meta content="267M Followers, 196 Following, 32K Posts - National Geographic (&#064;natgeo) on Instagram: &quot;Step into wonder &#x1f30e; natgeo.com/explore and https://link.site.test/x.&quot;" name="description" /></head>"#;
+        let face = read_face(page, &on("Instagram"));
+        assert_eq!(face.name.as_deref(), Some("National Geographic"));
+        assert_eq!(face.username.as_deref(), Some("natgeo"));
+        assert_eq!((face.followers, face.following, face.posts, face.rounded), (Some(267_000_000), Some(196), Some(32_000), true));
+        assert_eq!(face.about.as_deref(), Some("Step into wonder \u{1f30e} natgeo.com/explore and https://link.site.test/x."));
+        assert_eq!(face.links, ["https://natgeo.com/explore", "https://link.site.test/x"]);
+        // where the preview line is only the site's own words, there is no bio
+        let plain = r#"<head><meta property="og:title" content="Some One (@natgeo)" />
+            <meta property="og:description" content="1,234 Followers, 5 Following, 10 Posts - See Instagram photos and videos from Some One" /></head>"#;
+        let face = read_face(plain, &on("Instagram"));
+        assert_eq!((face.followers, face.about), (Some(1234), None));
+
+        // numbers as pages write them
+        assert_eq!(count_text("15.1", Some("M")), Some(15_100_000));
+        assert_eq!(count_text("6.2", Some("k")), Some(6_200));
+        assert_eq!(count_text("1,234", None), Some(1234));
+        assert_eq!(count_text("1.234", None), Some(1234));
+        // e-mail addresses are not links
+        assert_eq!(links_in("write to me@mail.com or see www.site.com/a, thanks"), ["https://www.site.com/a"]);
+
+        // YouTube's channel header
+        let yt = r#"<head><meta property="og:title" content="NASA"></head><body><script>var ytInitialData = {
+            "channelMetadataRenderer":{"title":"NASA","description":"NASA's mission.\r\n\r\n\r\nMore here.","rssUrl":"x"},
+            "metadataParts":[{"text":{"content":"15.1M subscribers"}},{"text":{"content":"6.2K videos"}}],
+            "attribution":{"attributionViewModel":{"text":{"content":" nasa.gov","styleRuns":[]},"suffix":{"content":"and 5 more links"}}},
+            "vanityChannelUrl":"http://www.youtube.com/@NASA"};</script></body>"#;
+        let face = read_face(yt, &ProfileRef { site: "YouTube".into(), name: "UCabc".into(), by: None });
+        assert_eq!((face.followers, face.posts), (Some(15_100_000), Some(6_200)));
+        assert_eq!(face.about.as_deref(), Some("NASA's mission.\n\nMore here."));
+        assert_eq!(face.username.as_deref(), Some("NASA"));
+        assert_eq!(face.links, ["https://nasa.gov"]);
+        assert!(reads_body("YouTube") && page_cookie("YouTube").is_some());
     }
 
     /// Needs internet: `cargo test -p rushdownload-engine --lib -- --ignored link_previews --nocapture`
@@ -2005,5 +2300,31 @@ ERROR: [vk:uservideos] @someone: Unable to extract cursor data"));
         assert!(folder.join(IMAGES).join("a.jpg").is_file());
         discard_unfinished(&base, "../elsewhere");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn only_a_growing_piece_counts_as_arriving() {
+        let dir = std::env::temp_dir().join(format!("rush-arrivals-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let left = dir.join("123.fdash-1v.mp4.part");
+        std::fs::write(&left, vec![0u8; 300]).unwrap();
+        std::fs::write(dir.join("done.jpg"), b"x").unwrap();
+        let mut arrivals = Arrivals::default();
+        let t0 = Instant::now();
+        assert_eq!(arrivals.look(&dir, t0).map(|f| f.name), Some("123.fdash-1v.mp4".into()), "new pieces count at first");
+        let later = t0 + STILL_ARRIVING + Duration::from_secs(1);
+        assert!(arrivals.look(&dir, later).is_none(), "a piece that stopped growing is not downloading");
+        // the next file starts arriving beside the leftover piece
+        let next = dir.join("456.mp4.part");
+        std::fs::write(&next, vec![0u8; 10]).unwrap();
+        let file = arrivals.look(&dir, later).unwrap();
+        assert_eq!((file.name.as_str(), file.downloaded), ("456.mp4", 10));
+        std::fs::write(&next, vec![0u8; 50]).unwrap();
+        let file = arrivals.look(&dir, later + Duration::from_secs(40)).unwrap();
+        assert_eq!((file.name.as_str(), file.downloaded), ("456.mp4", 50), "still growing");
+        std::fs::remove_file(&next).unwrap();
+        assert!(arrivals.look(&dir, later + Duration::from_secs(41)).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

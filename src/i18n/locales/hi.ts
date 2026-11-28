@@ -265,6 +265,9 @@ const dict: Dict = {
         media: (n: number) => plural(n, { one: "फ़ोटो या वीडियो वाली", other: "फ़ोटो या वीडियो वाली" }),
         followers: (n: number) => plural(n, { one: "फ़ॉलोअर", other: "फ़ॉलोअर" }),
         following: (n: number) => plural(n, { one: "फ़ॉलोइंग", other: "फ़ॉलोइंग" }),
+        videos: () => "वीडियो",
+        subscribers: () => "सब्सक्राइबर",
+        likes: () => "लाइक",
         joined: (date: string) => `${date} में जुड़े`,
       },
       holds: {
@@ -274,6 +277,8 @@ const dict: Dict = {
       },
       playlist: "प्लेलिस्ट",
       profileOf: (site: string) => `${site} प्रोफ़ाइल`,
+      links: "इस प्रोफ़ाइल के लिंक",
+      openLink: (link: string) => `${link} को ब्राउज़र में खोलें`,
 
       locked: {
         profileShown: (site: string) =>
@@ -316,7 +321,7 @@ const dict: Dict = {
         " नाम के फ़ोल्डर में, Images और Videos में बाँटकर सहेजता है। कुछ साइटें प्रोफ़ाइल तभी दिखाती हैं जब आप साइन इन हों।",
       profileNoteAfterQuality:
         " नाम के फ़ोल्डर में, Images और Videos में बाँटकर, ऊपर चुनी गई क्वालिटी में सहेजता है। कुछ साइटें प्रोफ़ाइल तभी दिखाती हैं जब आप साइन इन हों।",
-      profileFolder: (name: string, site: string) => `${name} (${site})`,
+      profileFolder: (name: string) => name,
 
       or: "या",
       addFromBrowserTitle: "किसी पेज का पता पेस्ट करें और उस पर मिला मीडिया चुनें",
@@ -624,6 +629,7 @@ const dict: Dict = {
       resume: "फिर से शुरू करें",
       pause: "रोकें",
       more: "और कार्य",
+      took: (time: string) => `${time} में डाउनलोड हुआ`,
     },
     dismiss: "हटाएँ",
     close: "बंद करें",

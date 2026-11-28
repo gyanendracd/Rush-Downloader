@@ -65,7 +65,8 @@ pub(crate) fn local_name(path: &str) -> String {
 
 /// Where the torrent comes from: bytes of a `.torrent` file, or a link.
 /// The bytes are returned too, where there are any, for the web seeds they list.
-pub(crate) async fn open(inner: &Arc<Inner>, source: &str, saved_copy: Option<&Path>) -> Result<(AddTorrent<'static>, Option<Vec<u8>>), Fail> {
+/// `client`: the connection to fetch a `.torrent` link over.
+pub(crate) async fn open(client: &reqwest::Client, source: &str, saved_copy: Option<&Path>) -> Result<(AddTorrent<'static>, Option<Vec<u8>>), Fail> {
     let file = match saved_copy {
         Some(copy) if copy.is_file() => Some(copy.to_path_buf()),
         _ if is_local_torrent(source) => Some(PathBuf::from(source)),
@@ -78,7 +79,7 @@ pub(crate) async fn open(inner: &Arc<Inner>, source: &str, saved_copy: Option<&P
     // A link to a .torrent file is fetched here, so its web seeds are known
     // (and it is looked up the way the app's other downloads are).
     if !source.to_ascii_lowercase().starts_with("magnet:") {
-        if let Some(bytes) = fetch_torrent_file(inner, source).await {
+        if let Some(bytes) = fetch_torrent_file(client, source).await {
             return Ok((AddTorrent::from_bytes(bytes.clone()), Some(bytes)));
         }
     }
@@ -86,9 +87,9 @@ pub(crate) async fn open(inner: &Arc<Inner>, source: &str, saved_copy: Option<&P
 }
 
 /// A .torrent file from the web, or `None` (the torrent library then tries).
-async fn fetch_torrent_file(inner: &Arc<Inner>, url: &str) -> Option<Vec<u8>> {
+async fn fetch_torrent_file(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
     const MAX: usize = 32 << 20;
-    let mut answer = inner.client.get(url).send().await.ok()?.error_for_status().ok()?;
+    let mut answer = client.get(url).send().await.ok()?.error_for_status().ok()?;
     let mut bytes = Vec::new();
     while let Some(chunk) = tokio::time::timeout(Duration::from_secs(30), answer.chunk()).await.ok()?.ok()? {
         bytes.extend_from_slice(&chunk);
@@ -106,8 +107,13 @@ pub(crate) async fn preview(inner: &Arc<Inner>, source: &str) -> Result<TorrentP
         Fail::Fatal(m) | Fail::Retry(m) => m,
         Fail::Cancelled => "cancelled".to_string(),
     };
-    let (add, _) = open(inner, &source, None).await.map_err(fail)?;
-    let session = session(inner).await.map_err(fail)?;
+    // Through the default connection: a SOCKS5 proxy, or none.
+    let proxy = torrent_proxy(inner, &crate::ProxyChoice::Default).map_err(fail)?;
+    let (add, _) = open(&inner.client()?, &source, None).await.map_err(fail)?;
+    let session = match &proxy {
+        None => session(inner).await.map_err(fail)?,
+        Some(url) => proxied_session(inner, url).await.map_err(fail)?,
+    };
     let options = AddTorrentOptions {
         list_only: true,
         ..Default::default()
@@ -272,6 +278,31 @@ pub(crate) async fn worker_session(inner: &Arc<Inner>) -> Result<Arc<Session>, F
     Err(Fail::Fatal(format!("could not start the torrent engine: {last}")))
 }
 
+/// The SOCKS5 proxy a torrent goes through, `None` for a direct
+/// connection, or why the chosen proxy cannot carry torrents.
+fn torrent_proxy(inner: &Inner, choice: &crate::ProxyChoice) -> Result<Option<String>, Fail> {
+    match inner.upstream(choice).map_err(Fail::Fatal)? {
+        Some(up) => up.torrent_url().map(Some).map_err(Fail::Fatal),
+        None => Ok(None),
+    }
+}
+
+/// A torrent engine that reaches peers and HTTP trackers only through a
+/// SOCKS5 proxy. Nothing that would go around the proxy runs: no DHT, no
+/// local peer discovery, no listening port and no UPnP. (UDP trackers are
+/// asked directly: the library cannot send them through a proxy.)
+async fn proxied_session(inner: &Arc<Inner>, proxy_url: &str) -> Result<Arc<Session>, Fail> {
+    let mut options = session_options(false, None);
+    options.disable_local_service_discovery = true;
+    options.connect = Some(librqbit::ConnectionOptions {
+        proxy_url: Some(proxy_url.to_string()),
+        ..Default::default()
+    });
+    Session::new_with_opts(inner.download_dir(), options)
+        .await
+        .map_err(|e| Fail::Fatal(format!("could not start the torrent engine with the proxy: {e:#}")))
+}
+
 async fn session(inner: &Arc<Inner>) -> Result<Arc<Session>, Fail> {
     inner
         .torrents
@@ -398,14 +429,24 @@ pub(crate) async fn run(
     live.counts_received.store(true, Relaxed);
     live.downloaded.store(had, Relaxed);
 
-    let mut session = session(inner).await?;
+    // Through a SOCKS5 proxy when one is chosen for it; then always on one
+    // engine of its own, set up so nothing goes around the proxy.
+    let proxy = torrent_proxy(inner, &rec.proxy)?;
+    let client = live.client();
+    let own_session = || async {
+        match &proxy {
+            None => private_session(inner).await,
+            Some(url) => proxied_session(inner, url).await,
+        }
+    };
 
     // A torrent of several files can download each file on its own engine,
     // side by side (Settings; see torrent_split.rs).
-    if inner.state.lock().unwrap().settings.torrent_files_apart {
+    if proxy.is_none() && inner.state.lock().unwrap().settings.torrent_files_apart {
+        let shared = session(inner).await?;
         let listed = tokio::select! {
             _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
-            l = crate::torrent_split::list(inner, &session, rec) => l,
+            l = crate::torrent_split::list(&client, &shared, rec) => l,
         };
         if let Some(listed) = listed {
             return crate::torrent_split::run(inner, id, live, rec, &folder, &folder_name, listed, had).await;
@@ -415,7 +456,7 @@ pub(crate) async fn run(
     // Each torrent download runs in a torrent engine of its own: the library
     // can change an engine's speed limit while it runs, but not a single
     // torrent's, so this is how a new limit reaches the peers at once.
-    session = private_session(inner).await?;
+    let mut session = own_session().await?;
     let private = true;
     hold(live, session.clone(), 1);
     let options = || AddTorrentOptions {
@@ -430,7 +471,7 @@ pub(crate) async fn run(
 
     // For a magnet link this first has to find peers and fetch the torrent's
     // details from them, which can take a while.
-    let (source, torrent_bytes) = open(inner, &rec.url, rec.torrent_file.as_deref()).await?;
+    let (source, torrent_bytes) = open(&client, &rec.url, rec.torrent_file.as_deref()).await?;
     let mut added = tokio::select! {
         _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
         r = session.add_torrent(source, Some(options())) => r,
@@ -440,9 +481,9 @@ pub(crate) async fn run(
         // must not take hold of that one (stopping or removing this row would
         // stop it), so the copy runs in a torrent engine of its own.
         session.stop().await;
-        session = private_session(inner).await?;
+        session = own_session().await?;
         hold(live, session.clone(), 1);
-        let (source, _) = open(inner, &rec.url, rec.torrent_file.as_deref()).await?;
+        let (source, _) = open(&client, &rec.url, rec.torrent_file.as_deref()).await?;
         added = tokio::select! {
             _ = live.cancel.cancelled() => {
                 session.stop().await;
@@ -572,7 +613,7 @@ pub(crate) async fn run(
                     fetchers.push(tokio::spawn(webseed::fetcher(
                         plan.clone(),
                         worker,
-                        inner.client.clone(),
+                        client.clone(),
                         webseed::Gate::Session(session.clone()),
                         live.clone(),
                         seeds_stop.clone(),
@@ -608,7 +649,7 @@ pub(crate) async fn run(
     // checked once more now the torrent library has let go of the files.
     let outcome = match (outcome, &plan) {
         (Ok(()), Some(plan)) if !by_swarm => {
-            webseed::settle(plan.clone(), inner.client.clone(), webseed::Gate::Limiter(live.limiter.clone()), live.cancel.clone())
+            webseed::settle(plan.clone(), client.clone(), webseed::Gate::Limiter(live.limiter.clone()), live.cancel.clone())
                 .await
                 .map_err(|e| if live.cancel.is_cancelled() { Fail::Cancelled } else { Fail::Retry(e) })
         }

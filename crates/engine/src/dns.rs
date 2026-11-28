@@ -18,12 +18,64 @@ use tokio::net::{TcpListener, TcpStream};
 /// Cloudflare's resolver, reached by address so no lookup is needed first.
 const RESOLVERS: [&str; 2] = ["https://1.1.1.1/dns-query", "https://1.0.0.1/dns-query"];
 const KEEP: Duration = Duration::from_secs(300);
+/// Lookups sent together for a name. Sites served by several networks
+/// (Microsoft's downloads, among many) answer each lookup with one network
+/// or another; some are far away. Several answers give the near one a
+/// chance to turn up.
+const SAMPLES: usize = 4;
+/// Longest wait for a test connection to an address.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+/// A best address slower than this to connect to is worth one more round
+/// of lookups: a near one may yet turn up.
+const FAR: Duration = Duration::from_millis(60);
+/// The most addresses tried out for one name.
+const MOST_PROBED: usize = 8;
 
 pub(crate) struct SecureDns {
     enabled: AtomicBool,
     client: reqwest::Client,
     cache: Mutex<HashMap<String, (Vec<IpAddr>, Instant)>>,
     proxy: OnceLock<SocketAddr>,
+    /// One name is looked up at a time, so a download opening many
+    /// connections at once looks its site up once, not once per connection.
+    sampling: tokio::sync::Mutex<()>,
+}
+
+/// Addresses in the order first seen, each once.
+fn union(answers: impl IntoIterator<Item = Vec<IpAddr>>) -> Vec<IpAddr> {
+    let mut out: Vec<IpAddr> = Vec::new();
+    for ip in answers.into_iter().flatten() {
+        if !out.contains(&ip) {
+            out.push(ip);
+        }
+    }
+    out
+}
+
+/// Puts the addresses that take a connection soonest first, by opening one
+/// to each (`port`) at the same time. Addresses that do not answer keep
+/// their order, after the rest. Returns the best connect time, if any.
+pub(crate) async fn fastest_first(ips: Vec<IpAddr>, port: u16, timeout: Duration) -> (Vec<IpAddr>, Option<Duration>) {
+    if ips.len() <= 1 {
+        return (ips, None);
+    }
+    let mut set = tokio::task::JoinSet::new();
+    for (i, ip) in ips.iter().copied().enumerate().take(MOST_PROBED) {
+        set.spawn(async move {
+            let started = Instant::now();
+            let ok = matches!(tokio::time::timeout(timeout, TcpStream::connect((ip, port))).await, Ok(Ok(_)));
+            (i, ok.then(|| started.elapsed()))
+        });
+    }
+    let mut timed: Vec<(usize, Option<Duration>)> = Vec::new();
+    while let Some(Ok(result)) = set.join_next().await {
+        timed.push(result);
+    }
+    timed.sort_by_key(|&(i, took)| (took.is_none(), took.unwrap_or_default(), i));
+    let best = timed.first().and_then(|&(_, took)| took);
+    let mut ordered: Vec<IpAddr> = timed.iter().map(|&(i, _)| ips[i]).collect();
+    ordered.extend(ips.iter().skip(MOST_PROBED));
+    (ordered, best)
 }
 
 impl SecureDns {
@@ -36,6 +88,7 @@ impl SecureDns {
                 .unwrap_or_default(),
             cache: Mutex::new(HashMap::new()),
             proxy: OnceLock::new(),
+            sampling: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -60,8 +113,36 @@ impl SecureDns {
             .map_err(|e| format!("could not find {host}: {e}"))
     }
 
+    fn cached(&self, host: &str) -> Option<Vec<IpAddr>> {
+        let cache = self.cache.lock().unwrap();
+        cache.get(host).filter(|(_, at)| at.elapsed() < KEEP).map(|(ips, _)| ips.clone())
+    }
+
+    /// Several lookups of one kind of record at once, from both of
+    /// Cloudflare's addresses: every address any of them gave, whether any
+    /// answered at all, and the last error.
+    async fn sample(&self, host: &str, kind: &'static str) -> (Vec<IpAddr>, bool, Option<String>) {
+        let mut set = tokio::task::JoinSet::new();
+        for n in 0..SAMPLES {
+            let (client, host, resolver) = (self.client.clone(), host.to_string(), RESOLVERS[n % RESOLVERS.len()]);
+            set.spawn(async move { Self::ask_with(&client, resolver, &host, kind).await });
+        }
+        let (mut answers, mut reached, mut last) = (Vec::new(), false, None);
+        while let Some(Ok(result)) = set.join_next().await {
+            match result {
+                Ok(ips) => {
+                    reached = true;
+                    answers.push(ips);
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        (union(answers), reached, last)
+    }
+
     /// The addresses of `host`: from Cloudflare when secure DNS is on,
-    /// otherwise from the system as usual.
+    /// otherwise from the system as usual. Cloudflare's answers are tried
+    /// out, and the address that takes a connection soonest comes first.
     pub(crate) async fn lookup(&self, host: &str) -> Result<Vec<IpAddr>, String> {
         if let Ok(ip) = host.parse::<IpAddr>() {
             return Ok(vec![ip]);
@@ -69,28 +150,40 @@ impl SecureDns {
         if !self.enabled() || Self::is_local(host) {
             return Self::system_lookup(host).await;
         }
-        if let Some((ips, at)) = self.cache.lock().unwrap().get(host) {
-            if at.elapsed() < KEEP {
-                return Ok(ips.clone());
-            }
+        if let Some(ips) = self.cached(host) {
+            return Ok(ips);
+        }
+        let _turn = self.sampling.lock().await;
+        // Looked up meanwhile by the lookup this one waited for.
+        if let Some(ips) = self.cached(host) {
+            return Ok(ips);
         }
         let mut last = String::from("no answer");
         let mut reached = false;
         // Address records first; the newer kind only if there are none.
         for kind in ["A", "AAAA"] {
-            for resolver in RESOLVERS {
-                match self.ask(resolver, host, kind).await {
-                    Ok(ips) if !ips.is_empty() => {
-                        self.cache.lock().unwrap().insert(host.to_string(), (ips.clone(), Instant::now()));
-                        return Ok(ips);
-                    }
-                    Ok(_) => {
-                        reached = true;
-                        break;
-                    }
-                    Err(e) => last = e,
+            let (ips, answered, error) = self.sample(host, kind).await;
+            reached |= answered;
+            if let Some(e) = error {
+                last = e;
+            }
+            if ips.is_empty() {
+                if answered {
+                    continue;
+                }
+                break;
+            }
+            let (mut ordered, mut best) = fastest_first(ips, 443, PROBE_TIMEOUT).await;
+            // Every answer was far: one more round may bring a near one.
+            if best.is_none_or(|b| b > FAR) {
+                let (more, _, _) = self.sample(host, kind).await;
+                if more.iter().any(|ip| !ordered.contains(ip)) {
+                    (ordered, best) = fastest_first(union([ordered, more]), 443, PROBE_TIMEOUT).await;
                 }
             }
+            crate::media::debug(|| format!("secure DNS: {host} -> {ordered:?} (nearest connects in {best:?})"));
+            self.cache.lock().unwrap().insert(host.to_string(), (ordered.clone(), Instant::now()));
+            return Ok(ordered);
         }
         if !reached {
             // Cloudflare itself cannot be reached from here (some networks
@@ -104,9 +197,8 @@ impl SecureDns {
         Err(format!("secure DNS could not find {host}: {last}"))
     }
 
-    async fn ask(&self, resolver: &str, host: &str, kind: &str) -> Result<Vec<IpAddr>, String> {
-        let body = self
-            .client
+    async fn ask_with(client: &reqwest::Client, resolver: &str, host: &str, kind: &str) -> Result<Vec<IpAddr>, String> {
+        let body = client
             .get(resolver)
             .query(&[("name", host), ("type", kind)])
             .header("accept", "application/dns-json")
@@ -155,7 +247,7 @@ impl SecureDns {
         Some(addr)
     }
 
-    async fn connect(&self, host: &str, port: u16) -> Result<TcpStream, String> {
+    pub(crate) async fn connect(&self, host: &str, port: u16) -> Result<TcpStream, String> {
         let mut last = format!("no address for {host}");
         for ip in self.lookup(host).await? {
             match tokio::time::timeout(Duration::from_secs(12), TcpStream::connect((ip, port))).await {
@@ -181,7 +273,7 @@ fn read_answer(answer: &serde_json::Value) -> Vec<IpAddr> {
 }
 
 /// Where a proxied request wants to go, from its first line.
-fn target(first_line: &str) -> Option<(String, u16, bool)> {
+pub(crate) fn target(first_line: &str) -> Option<(String, u16, bool)> {
     let mut parts = first_line.split_whitespace();
     let method = parts.next()?;
     let to = parts.next()?;
@@ -203,7 +295,7 @@ fn target(first_line: &str) -> Option<(String, u16, bool)> {
 /// address on the first line ("GET http://site/page"); servers want only the
 /// path, and not every server accepts the long form. The connection is closed
 /// after this one request, so a later one cannot slip through unchanged.
-fn for_origin(head: &[u8]) -> Vec<u8> {
+pub(crate) fn for_origin(head: &[u8]) -> Vec<u8> {
     let Some(end) = head.windows(4).position(|w| w == b"\r\n\r\n") else {
         return head.to_vec();
     };
@@ -318,6 +410,35 @@ mod tests {
         // a body that came with the headers is kept
         let post = b"POST http://site.test/api HTTP/1.1\r\nHost: site.test\r\nContent-Length: 3\r\n\r\nabc";
         assert!(String::from_utf8(for_origin(post)).unwrap().ends_with("Connection: close\r\n\r\nabc"));
+    }
+
+    #[test]
+    fn answers_are_joined_each_address_once_in_order() {
+        let a: IpAddr = "203.0.113.1".parse().unwrap();
+        let b: IpAddr = "203.0.113.2".parse().unwrap();
+        let c: IpAddr = "198.51.100.9".parse().unwrap();
+        assert_eq!(union([vec![a, b], vec![b, a], vec![c]]), vec![a, b, c]);
+        assert!(union(Vec::<Vec<IpAddr>>::new()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_address_that_answers_comes_first() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                drop(sock);
+            }
+        });
+        // 192.0.2.1 is set aside for documentation: nothing ever answers there.
+        let silent: IpAddr = "192.0.2.1".parse().unwrap();
+        let here: IpAddr = "127.0.0.1".parse().unwrap();
+        let (ordered, best) = fastest_first(vec![silent, here], port, Duration::from_millis(400)).await;
+        assert_eq!(ordered, vec![here, silent]);
+        assert!(best.is_some_and(|b| b < Duration::from_millis(400)));
+        // nothing to choose between: left as it is, nothing opened
+        let (one, none) = fastest_first(vec![silent], port, Duration::from_millis(400)).await;
+        assert_eq!((one, none), (vec![silent], None));
     }
 
     #[test]

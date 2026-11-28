@@ -359,6 +359,9 @@ const dict: Dict = {
             many: "متابَعًا",
             other: "متابَع",
           }),
+        videos: () => "فيديو",
+        subscribers: () => "مشترك",
+        likes: () => "إعجاب",
         joined: (date: string) => `انضم في ${date}`,
       },
       holds: {
@@ -384,6 +387,8 @@ const dict: Dict = {
       },
       playlist: "قائمة تشغيل",
       profileOf: (site: string) => `حساب على ${site}`,
+      links: "روابط هذا الملف الشخصي",
+      openLink: (link: string) => `فتح ${link} في المتصفح`,
 
       locked: {
         profileShown: (site: string) =>
@@ -425,7 +430,7 @@ const dict: Dict = {
       profileNoteAfter: "، مقسّمة إلى Images وVideos. بعض المواقع لا تعرض الحساب إلا بعد تسجيل الدخول.",
       profileNoteAfterQuality:
         "، مقسّمة إلى Images وVideos، بالجودة المختارة أعلاه. بعض المواقع لا تعرض الحساب إلا بعد تسجيل الدخول.",
-      profileFolder: (name: string, site: string) => `${name} (${site})`,
+      profileFolder: (name: string) => name,
 
       or: "أو",
       addFromBrowserTitle: "الصق عنوان صفحة واختر الوسائط الموجودة فيها",
@@ -771,6 +776,7 @@ const dict: Dict = {
       resume: "استئناف",
       pause: "إيقاف مؤقت",
       more: "مزيد من الإجراءات",
+      took: (time: string) => `تم التنزيل في ${time}`,
     },
     dismiss: "تجاهل",
     close: "إغلاق",

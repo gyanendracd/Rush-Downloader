@@ -42,6 +42,7 @@ import {
 } from "./api";
 import { pct, t } from "./i18n";
 import { IconBtn, Modal, Select, useApp } from "./ui";
+import { SumsButton } from "./Checksum";
 import { extractUrls, toCsv, toTxt, type ExtractedUrl, type ExtractionResult, type ExtractionSource } from "./urlExtraction";
 import type { WorkerReply } from "./urlExtraction.worker";
 
@@ -936,6 +937,7 @@ export function BatchDetail({ d, onClose }: { d: Download; onClose: () => void }
           <button type="button" className="btn" onClick={() => api.showFolder(d.id).catch(fail)}>
             <FolderOpen size={15} strokeWidth={2} aria-hidden="true" /> {t.batch.openFolder}
           </button>
+          {(d.batch?.completed ?? 0) > 0 && <SumsButton id={d.id} />}
           <span className="spacer" />
           <button type="button" className="btn btn-danger" onClick={() => actions.remove([d.id])}>
             {finished ? <Trash2 size={15} strokeWidth={2} aria-hidden="true" /> : <X size={15} strokeWidth={2} aria-hidden="true" />}{" "}

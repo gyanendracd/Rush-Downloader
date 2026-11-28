@@ -1,7 +1,9 @@
 // Notes the video and audio files each tab loads, so the popup can list
 // files that never appear in the page itself (a player's stream, say). Only
 // addresses are kept, for as long as the tab stays on that page.
-importScripts("shared.js");
+// Chromium runs this as a service worker, which loads shared.js itself;
+// Firefox loads both files from the manifest.
+if (typeof importScripts === "function") importScripts("shared.js");
 
 const PER_TAB = 80;
 const key = (tabId) => "tab:" + tabId;
@@ -99,10 +101,21 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "Send to RushDownload",
       contexts: ["link", "video", "audio", "page"],
     });
+    // A file the browser should download itself, whatever the settings say.
+    chrome.contextMenus.create({
+      id: "rush-browser",
+      title: "Download with the browser",
+      contexts: ["link"],
+    });
   });
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === "rush-browser") {
+    // Started by this extension, so it is not caught (rushShouldCatch).
+    if (info.linkUrl && /^https?:/i.test(info.linkUrl)) chrome.downloads.download({ url: info.linkUrl }).catch(() => {});
+    return;
+  }
   if (info.menuItemId !== "rush-send") return;
   const page = info.pageUrl || (tab && tab.url) || "";
   let item;
@@ -136,3 +149,57 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 chrome.action.setBadgeBackgroundColor({ color: "#0b63f6" }).catch(() => {});
 if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color: "#ffffff" }).catch(() => {});
+
+/* ---------- downloads the browser starts ---------- */
+
+// The same file asked for twice within moments (a double click) goes once.
+const recentlySent = new Map();
+
+/** The site's cookies for an address, as a Cookie header; "" if none or not allowed. */
+async function cookieHeader(url) {
+  try {
+    const cookies = await chrome.cookies.getAll({ url });
+    return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  } catch (_) {
+    return "";
+  }
+}
+
+async function flash(tabId, worked) {
+  if (tabId == null || tabId < 0) return;
+  await chrome.action.setBadgeBackgroundColor({ tabId, color: worked ? "#16a34a" : "#e5343b" }).catch(() => {});
+  await chrome.action.setBadgeText({ tabId, text: worked ? "OK" : "!" }).catch(() => {});
+  setTimeout(() => {
+    chrome.action.setBadgeBackgroundColor({ tabId, color: "#0b63f6" }).catch(() => {});
+    chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
+  }, 2500);
+}
+
+// A download the browser starts goes to the app when the settings say so,
+// this browser is connected, and the app takes it. Only then is the
+// browser's own download stopped: if anything fails, the browser carries on.
+chrome.downloads.onCreated.addListener(async (item) => {
+  const settings = await rushSettings();
+  if (!rushShouldCatch(item, settings, chrome.runtime.id)) return;
+  if (!(await rushKey())) return;
+  const url = item.finalUrl || item.url;
+  const now = Date.now();
+  for (const [seen, at] of recentlySent) if (now - at > 5000) recentlySent.delete(seen);
+  if (recentlySent.has(url)) {
+    await chrome.downloads.cancel(item.id).catch(() => {});
+    await chrome.downloads.erase({ id: item.id }).catch(() => {});
+    return;
+  }
+  const cookies = settings.sendCookies ? await cookieHeader(url) : "";
+  const sent = await rushSend([{ url, kind: "download", referer: item.referrer || "", cookies }]);
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+  if (!sent.ok || sent.added === 0) {
+    // Left to the browser, which carries on with it.
+    if (sent.ok) flash(tab && tab.id, false);
+    return;
+  }
+  recentlySent.set(url, now);
+  await chrome.downloads.cancel(item.id).catch(() => {});
+  await chrome.downloads.erase({ id: item.id }).catch(() => {});
+  flash(tab && tab.id, true);
+});

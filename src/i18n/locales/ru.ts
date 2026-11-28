@@ -308,6 +308,9 @@ const dict: Dict = {
         followers: (n: number) =>
           plural(n, { one: "подписчик", few: "подписчика", many: "подписчиков", other: "подписчика" }),
         following: (n: number) => plural(n, { one: "подписка", few: "подписки", many: "подписок", other: "подписки" }),
+        videos: (n: number) => plural(n, { one: "видео", few: "видео", many: "видео", other: "видео" }),
+        subscribers: (n: number) => plural(n, { one: "подписчик", few: "подписчика", many: "подписчиков", other: "подписчика" }),
+        likes: (n: number) => plural(n, { one: "отметка «Нравится»", few: "отметки «Нравится»", many: "отметок «Нравится»", other: "отметки «Нравится»" }),
         joined: (date: string) => `С нами с ${date}`,
       },
       holds: {
@@ -324,6 +327,8 @@ const dict: Dict = {
       },
       playlist: "Плейлист",
       profileOf: (site: string) => `Профиль ${site}`,
+      links: "Ссылки профиля",
+      openLink: (link: string) => `Открыть ${link} в браузере`,
 
       locked: {
         profileShown: (site: string) =>
@@ -365,7 +370,7 @@ const dict: Dict = {
       profileNoteAfter: " и разложены по папкам «Images» и «Videos». Некоторые сайты показывают профиль только после входа.",
       profileNoteAfterQuality:
         " и разложены по папкам «Images» и «Videos» в выбранном выше качестве. Некоторые сайты показывают профиль только после входа.",
-      profileFolder: (name: string, site: string) => `${name} (${site})`,
+      profileFolder: (name: string) => name,
 
       or: "или",
       addFromBrowserTitle: "Вставьте адрес страницы и выберите найденные на ней медиа",
@@ -684,6 +689,7 @@ const dict: Dict = {
       resume: "Возобновить",
       pause: "Приостановить",
       more: "Другие действия",
+      took: (time: string) => `Загружено за ${time}`,
     },
     dismiss: "Скрыть",
     close: "Закрыть",

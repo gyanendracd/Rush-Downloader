@@ -42,6 +42,7 @@ import {
 } from "./api";
 import { ScheduleDialog, SchedulerView } from "./Scheduler";
 import { DetailDialog } from "./Detail";
+import { PairPrompt } from "./Bridge";
 import { BatchDetail, BatchDialog } from "./Batch";
 import { Ambient } from "./Ambient";
 import { AddDialog, Palette, ScanDialog, siteBlockedText, TorrentDialog, type Command } from "./dialogs";
@@ -133,6 +134,8 @@ export default function App() {
   appPrefsRef.current = appPrefs;
   /** Each download's status at the last update, to notice one finishing. */
   const lastStatus = useRef<Map<number, Download["status"]> | null>(null);
+  /** Each download's checksum outcome last seen, to tell when one fails. */
+  const lastCheck = useRef<Map<number, string> | null>(null);
   const [nav, setNavState] = useState<Nav>(() => loadPref<Nav>("nav", "home", NAVS));
   /** The page on screen. It trails `nav` by a moment: the old page fades
    *  out first, then this changes and the new page fades in. */
@@ -241,6 +244,19 @@ export default function App() {
       }
     }
     lastStatus.current = new Map(list.map((d) => [d.id, d.status]));
+    // A file that does not match its checksum is always told, in front or not.
+    const checked = lastCheck.current;
+    if (checked) {
+      for (const d of everything) {
+        const state = d.checksum?.state;
+        if (state !== "failed" || checked.get(d.id) === "failed") continue;
+        toast(t.checksum.toastFailed(displayName(d)), "error");
+        if (appPrefsRef.current?.notifications && !document.hasFocus()) {
+          api.notify(t.checksum.notifyFailed, displayName(d)).catch(() => {});
+        }
+      }
+    }
+    lastCheck.current = new Map(everything.map((d) => [d.id, d.checksum?.state ?? ""]));
     setDownloads(list);
     setBatchItems(items);
   }, []);
@@ -1078,6 +1094,7 @@ export default function App() {
             {question.detail && <p className="confirm-detail">{question.detail}</p>}
           </Modal>
         )}
+        <PairPrompt />
         <Toasts toasts={toasts} dismiss={(id) => setToasts((list) => list.filter((item) => item.id !== id))} />
       </div>
     </AppContext.Provider>

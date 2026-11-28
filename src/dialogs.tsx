@@ -7,16 +7,23 @@ import {
   isTorrentSource,
   looksLikeUrl,
   QUALITIES,
+  remoteKind,
   qualityOptions,
   type Download,
   type Found,
   type MediaOptions,
+  type ProxyChoice,
+  type RemoteOptions,
   type SiteFile,
   type SiteKind,
   type TorrentFile,
   type TorrentPreview,
 } from "./api";
 import { FileIcon, Modal, SpeedLimitField, StatusText, useApp, Select } from "./ui";
+import { ConnectionField } from "./Proxies";
+import { ChecksumField } from "./Checksum";
+import { RequestField, requestOf, type RequestChoice } from "./Requests";
+import { BLANK_REMOTE, RemoteField } from "./Remote";
 import { t } from "./i18n";
 
 /* ---------- add download ---------- */
@@ -34,6 +41,11 @@ export function AddDialog(props: {
   const [dir, setDir] = useState("");
   const [connections, setConnections] = useState("");
   const [speedLimit, setSpeedLimit] = useState(0);
+  const [proxy, setProxy] = useState<ProxyChoice>("default");
+  const [checksum, setChecksum] = useState("");
+  const [requestChoice, setRequestChoice] = useState<RequestChoice>({ kind: "default" });
+  const [remote, setRemote] = useState<RemoteOptions>(BLANK_REMOTE);
+  const remoteLink = remoteKind(url);
   const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -73,6 +85,9 @@ export function AddDialog(props: {
         dir: dir || undefined,
         connections: connections && Number.isFinite(n) ? Math.min(32, Math.max(1, Math.round(n))) : undefined,
         speed_limit: speedLimit || undefined,
+        proxy,
+        checksum: checksum.trim() || undefined,
+        ...(remoteLink ? { remote } : requestOf(requestChoice)),
       });
       props.onClose();
     } catch (err) {
@@ -150,8 +165,10 @@ export function AddDialog(props: {
             {t.dialogs.add.scanNote}
           </small>
         )}
+        {!scanMode && remoteLink && <RemoteField kind={remoteLink} value={remote} onChange={setRemote} />}
         {!scanMode && (
         <>
+        {!remoteLink && (
         <label className="field">
           <span>{t.dialogs.add.quality}</span>
           <Select
@@ -162,6 +179,7 @@ export function AddDialog(props: {
           />
           <small>{t.dialogs.add.qualityHint}</small>
         </label>
+        )}
 
         <button
           type="button"
@@ -210,6 +228,9 @@ export function AddDialog(props: {
               <small>{t.dialogs.add.connectionsHint}</small>
             </label>
             <SpeedLimitField value={speedLimit} onChange={setSpeedLimit} id="add-limit" />
+            <ConnectionField value={proxy} onChange={setProxy} />
+            <ChecksumField value={checksum} onChange={setChecksum} />
+            {!remoteLink && <RequestField value={requestChoice} onChange={setRequestChoice} />}
           </>
         )}
         </>
@@ -419,6 +440,8 @@ export function TorrentDialog(props: { source: string; site?: boolean; onClose: 
   const [partial, setPartial] = useState(false);
   /** Its own speed limit, bytes per second; 0 = none. */
   const [speedLimit, setSpeedLimit] = useState(0);
+  /** A torrent's connection (a SOCKS5 proxy, or none). */
+  const [proxy, setProxy] = useState<ProxyChoice>("default");
   /** Files whose size the site did not say. */
   const [unsized, setUnsized] = useState<Set<number>>(new Set());
   const [error, setError] = useState("");
@@ -505,6 +528,7 @@ export function TorrentDialog(props: { source: string; site?: boolean; onClose: 
         torrent_files:
           selected.size === preview.files.length ? undefined : [...selected].sort((a, b) => a - b),
         speed_limit: speedLimit || undefined,
+        proxy,
       });
       actions.toast(t.dialogs.torrent.added);
       props.onClose();
@@ -640,6 +664,7 @@ export function TorrentDialog(props: { source: string; site?: boolean; onClose: 
             <small>{props.site ? t.dialogs.site.folderNote(preview.name) : t.dialogs.torrent.folderNote(preview.name)}</small>
           </div>
           <SpeedLimitField value={speedLimit} onChange={setSpeedLimit} id="torrent-limit" />
+          {!props.site && <ConnectionField value={proxy} onChange={setProxy} />}
           <div className="field">
             <div className="tree-head">
               <span>{t.dialogs.torrent.files}</span>

@@ -84,6 +84,104 @@ export interface Download {
   cancelled?: boolean;
   /** When it ended, in seconds since 1970. */
   finished_at?: number | null;
+  /** For a finished download: seconds it spent running (not queued or paused). */
+  took?: number | null;
+  /** Which connection it uses. */
+  proxy?: ProxyChoice;
+  /** Its file's checksum and how it compares, once one is wanted. */
+  checksum?: Checksum | null;
+  /** Its own request options (private values left out). */
+  request?: RequestOptions | null;
+  /** The saved request profile it uses. */
+  request_profile?: number | null;
+  /** For an FTP or SFTP download: how it signs in (no password). */
+  remote?: RemoteOptions | null;
+  /** An SFTP server key that was refused, to trust or not. */
+  server_key?: ServerKey | null;
+}
+
+/** How an FTP or SFTP download signs in (crates/engine/src/remote.rs). */
+export interface RemoteOptions {
+  username: string;
+  /** In only: the password, or the key file's passphrase. */
+  password?: string | null;
+  has_password?: boolean;
+  key_file: string | null;
+  active_mode: boolean;
+  connect_timeout: number | null;
+}
+
+/** An SFTP server key that was refused. */
+export interface ServerKey {
+  host: string;
+  port: number;
+  fingerprint: string;
+  key: string;
+  /** It differs from the key trusted before. */
+  changed: boolean;
+}
+
+export type AuthKind = "none" | "basic" | "digest" | "bearer";
+
+/** A browser extension asking to connect (src-tauri/src/extension.rs). */
+export interface PairRequest {
+  id: string;
+  origin: string;
+  browser: string;
+}
+
+/** A connected browser extension. */
+export interface PairedExtension {
+  id: string;
+  origin: string;
+  browser: string;
+  created_at: number;
+  last_seen: number | null;
+}
+
+/** How a download's requests are made (crates/engine/src/request.rs).
+ *  Private values go in (password, cookies, header values) and only flags
+ *  saying they are kept come back. */
+export interface RequestOptions {
+  user_agent: string | null;
+  referer: string | null;
+  headers: [string, string][];
+  auth: AuthKind;
+  username: string;
+  read_timeout: number | null;
+  connect_timeout: number | null;
+  password?: string | null;
+  cookies?: string | null;
+  has_password?: boolean;
+  has_cookies?: boolean;
+  private_headers?: string[];
+}
+
+export interface RequestProfile {
+  id: number;
+  name: string;
+  options: RequestOptions;
+}
+
+export interface RequestBook {
+  next_id: number;
+  default: number | null;
+  items: RequestProfile[];
+}
+
+export type HashAlgo = "md5" | "sha1" | "sha256" | "sha512";
+export const HASH_ALGOS: readonly HashAlgo[] = ["sha256", "sha1", "md5", "sha512"];
+export type CheckState = "not_verified" | "calculating" | "verified" | "failed" | "error";
+
+/** A finished file's checksum (crates/engine/src/checksum.rs). */
+export interface Checksum {
+  algorithm: HashAlgo;
+  expected: string | null;
+  actual: string | null;
+  state: CheckState;
+  error: string | null;
+  /** While it is worked out: bytes read so far. */
+  done: number;
 }
 
 /** How a batch's downloads stand (crates/engine/src/batch.rs). */
@@ -178,6 +276,56 @@ export interface NewDownload {
   speed_limit?: number;
   /** For a torrent: indexes of the files to download; leave out for all. */
   torrent_files?: number[];
+  /** Which connection it uses; leave out for the default. */
+  proxy?: ProxyChoice;
+  /** The checksum the file should have, as pasted; checked once it is in. */
+  checksum?: string;
+  /** Its own request options, private values included. */
+  request?: RequestOptions;
+  /** A saved request profile to use instead; neither = the default profile. */
+  request_profile?: number;
+  /** For an FTP or SFTP link: how to sign in. */
+  remote?: RemoteOptions;
+}
+
+/** How the app talks to a proxy server. */
+export type ProxyKind = "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h";
+export const PROXY_KINDS: readonly ProxyKind[] = ["http", "https", "socks4", "socks4a", "socks5", "socks5h"];
+
+/** A saved proxy. Its password is kept by the system, not here. */
+export interface ProxyProfile {
+  /** 0 for one not saved yet. */
+  id: number;
+  name: string;
+  kind: ProxyKind;
+  host: string;
+  port: number;
+  username: string;
+  has_password: boolean;
+  /** Sites reached directly, one rule each. */
+  bypass: string[];
+}
+
+/** Which connection a download uses. */
+export type ProxyChoice = "default" | "direct" | { profile: number };
+
+/** The saved proxies and which one is the default (null: direct). */
+export interface ProxyBook {
+  next_id: number;
+  default: number | null;
+  items: ProxyProfile[];
+}
+
+/** A change to a proxy's saved password. */
+export type PasswordChange = "keep" | "clear" | { set: string };
+
+/** What testing a proxy found. */
+export interface ProxyTest {
+  ok: boolean;
+  url: string;
+  status: number | null;
+  millis: number;
+  error: string | null;
 }
 
 /** One file inside a torrent. */
@@ -232,6 +380,30 @@ export interface MediaInfo {
   /** Picture heights on offer, largest first. */
   heights: number[];
   site: string | null;
+  /** The largest picture's width and height, where known. */
+  width?: number | null;
+  height?: number | null;
+  /** Who posted it, as the site shows their name. */
+  uploader?: string | null;
+  /** Their own page (a profile or channel), where known. */
+  uploader_url?: string | null;
+  /** The post's own words (its caption), where the site gives them. */
+  caption?: string | null;
+  /** How many have liked, commented on and watched it, where the site tells. */
+  likes?: number | null;
+  comments?: number | null;
+  views?: number | null;
+}
+
+/** A link to Instagram (other than a profile, which Home reads as a
+ *  profile first): read by the engine's own Instagram reader. */
+export function isInstagramLink(text: string): boolean {
+  try {
+    const host = new URL(text.trim()).hostname.toLowerCase();
+    return host === "instagram.com" || host.endsWith(".instagram.com") || host === "instagr.am";
+  } catch {
+    return false;
+  }
 }
 
 /** A media link found by scanning a page. */
@@ -267,6 +439,31 @@ export interface Settings {
   after_failures: boolean;
   /** Sorting finished files into folders by kind (crates/engine/src/organize.rs). */
   organize: Organize;
+  /** Install yt-dlp and gallery-dl when missing and keep the app's own copies up to date. */
+  auto_update_tools: boolean;
+  /** Work out this kind of checksum for every finished file; null = only when one is given. */
+  auto_checksum: HashAlgo | null;
+}
+
+/** A helper program the app can install and update (crates/engine/src/deps.rs). */
+export interface ToolInfo {
+  name: string;
+  /** managed: installed by the app; system: installed by the user, left alone. */
+  source: "managed" | "system" | "missing";
+  path: string | null;
+  version: string | null;
+  /** The newest release seen at the last check. */
+  latest: string | null;
+  update_available: boolean;
+  /** The project publishes a build for this computer. */
+  can_install: boolean;
+  installed_at: number | null;
+  last_checked: number | null;
+  /** The version kept to go back to. */
+  previous: string | null;
+  notes_url: string | null;
+  busy: { phase: "checking" | "downloading" | "verifying" | "installing"; done: number; total: number | null } | null;
+  error: string | null;
 }
 
 /** One kind of file and the folder it goes to. */
@@ -302,7 +499,8 @@ export interface LinkCheck {
 
 /** A direct file download, the kind that can take a new link. */
 export function takesNewLink(d: Download): boolean {
-  return !d.torrent && !d.media && !d.profile && !d.bundle && !d.batch && (d.status === "failed" || d.status === "paused");
+  // only a web link can be swapped for a fresh one (not FTP or SFTP)
+  return !d.torrent && !d.media && !d.profile && !d.bundle && !d.batch && !remoteKind(d.url) && (d.status === "failed" || d.status === "paused");
 }
 
 /** What the backend says while it is about to act after all downloads finished. */
@@ -513,6 +711,14 @@ export interface ProfileFace {
   following: number | null;
   /** The day it joined the site, as YYYY-MM-DD. */
   joined: string | null;
+  /** Its name on the site, without the "@". */
+  username?: string | null;
+  /** The links it lists: its website, its other accounts. */
+  links?: string[];
+  /** Likes its posts have had together, where the site shows that. */
+  likes?: number | null;
+  /** The counts are as the page writes them, rounded ("32K"). */
+  rounded?: boolean;
 }
 
 /** A social media profile recognised in a link. */
@@ -546,6 +752,38 @@ export const api = {
     invoke<LinkCheck>("use_new_link", { id, url, headers: headers ?? null, restart }),
   /** A download's own speed limit, bytes per second; 0 = none. Takes effect while it runs. */
   setSpeedLimit: (id: number, rate: number) => invoke<void>("set_download_speed_limit", { id, rate }),
+  /** The saved proxies and the default connection. */
+  proxies: () => invoke<ProxyBook>("list_proxies"),
+  /** Saves a new proxy (id 0) or changes one; answers with the list as it now is. */
+  saveProxy: (profile: ProxyProfile, password: PasswordChange) => invoke<ProxyBook>("save_proxy", { profile, password }),
+  /** Refused while an unfinished download uses it. */
+  deleteProxy: (id: number) => invoke<ProxyBook>("delete_proxy", { id }),
+  /** null: downloads on the default connection connect directly. */
+  setDefaultProxy: (id: number | null) => invoke<ProxyBook>("set_default_proxy", { id }),
+  /** Tries a proxy as filled in, saved or not; "keep" uses its saved password. */
+  testProxy: (profile: ProxyProfile, password: PasswordChange, url?: string) =>
+    invoke<ProxyTest>("test_proxy", { profile, password, url: url ?? null }),
+  /** Trusts the SFTP server key a download was refused for, and tries it again. */
+  trustServerKey: (id: number) => invoke<void>("trust_server_key", { id }),
+  /** Picks any one file; null when cancelled. */
+  pickAnyFile: async (title: string): Promise<string | null> => {
+    const picked = await openDialog({ multiple: false, directory: false, title });
+    return typeof picked === "string" ? picked : null;
+  },
+  /** Checks a finished file against a pasted checksum, or (none) works its own out to see. */
+  verifyChecksum: (id: number, expected: string | null, algorithm: HashAlgo | null) =>
+    invoke<void>("verify_checksum", { id, expected, algorithm }),
+  /** Checks a batch's files (or one file) against a sums file's text; answers how many it named. */
+  verifyWithSums: (id: number, sums: string) => invoke<number>("verify_with_sums", { id, sums }),
+  /** The saved request profiles and the default. */
+  requestProfiles: () => invoke<RequestBook>("list_request_profiles"),
+  /** Saves a new profile (id 0) or changes one; "keep" leaves a saved secret as it is. */
+  saveRequestProfile: (id: number, name: string, options: RequestOptions, password: PasswordChange, cookies: PasswordChange) =>
+    invoke<RequestBook>("save_request_profile", { id, name, options, password, cookies }),
+  deleteRequestProfile: (id: number) => invoke<RequestBook>("delete_request_profile", { id }),
+  setDefaultRequestProfile: (id: number | null) => invoke<RequestBook>("set_default_request_profile", { id }),
+  /** Changes a download's connection; a running one restarts with it and carries on. */
+  setDownloadProxy: (id: number, choice: ProxyChoice) => invoke<void>("set_download_proxy", { id, choice }),
   mediaInfo: (url: string) => invoke<MediaInfo>("media_info", { url }),
   /** The profile a link points at, or null for any other link. */
   profileOf: (url: string) => invoke<ProfileRef | null>("profile_of", { url }),
@@ -556,6 +794,8 @@ export const api = {
   playlistInfo: (url: string) => invoke<PlaylistInfo>("playlist_info", { url }),
   /** Whose profile a link points at. Quick, and works without being signed in. */
   profileFace: (url: string) => invoke<ProfileFace>("profile_face", { url }),
+  /** Opens a web page (a link a profile lists) in the user's browser. */
+  openWebLink: (url: string) => invoke<void>("open_web_link", { url }),
   /** The same with its numbers (posts, followers, joined), asked as a visitor who is not signed in. */
   profileStats: (url: string) => invoke<ProfileFace>("profile_stats", { url }),
   /** Calls back with true while files are dragged over the window, false once they leave or drop. */
@@ -607,10 +847,25 @@ export const api = {
     invoke<void>("remove_download", { id, deleteFile }),
   open: (id: number) => invoke<void>("open_file", { id }),
   reveal: (id: number) => invoke<void>("reveal_file", { id }),
+  /** Opens one finished file of a profile, playlist or torrent, by its place in the list. */
+  openItem: (id: number, index: number) => invoke<void>("open_item", { id, index }),
+  /** Shows one finished file of a profile, playlist or torrent in its folder. */
+  revealItem: (id: number, index: number) => invoke<void>("reveal_item", { id, index }),
   /** Shows where a download is: its file once finished, or else its folder. */
   showFolder: (id: number) => invoke<void>("show_download_folder", { id }),
   openDownloadDir: () => invoke<void>("open_download_dir"),
   tools: () => invoke<ToolStatus>("tool_status"),
+  /** yt-dlp and gallery-dl: which copy is used, its version and the newest release. */
+  toolsInfo: () => invoke<ToolInfo[]>("tools_info"),
+  /** Looks for new releases now. */
+  checkTools: () => invoke<ToolInfo[]>("check_tools"),
+  /** Installs or updates one tool, checked against its published sums; answers when done. */
+  installTool: (name: string) => invoke<ToolInfo>("install_tool", { name }),
+  /** Goes back to the version used before the last update. */
+  rollbackTool: (name: string) => invoke<ToolInfo>("rollback_tool", { name }),
+  /** Opens a tool's release notes on its project's own site. */
+  openReleaseNotes: (name: string) => invoke<void>("open_release_notes", { name }),
+  onTools: (cb: (tools: ToolInfo[]) => void) => listen<ToolInfo[]>("tools", (e) => cb(e.payload)),
   getSettings: () => invoke<Settings>("get_settings"),
   schedules: () => invoke<Schedule[]>("list_schedules"),
   /** Makes a schedule (`id` null) or changes one; resolves with its id. */
@@ -679,6 +934,11 @@ export const api = {
   onBrowserDownloadFailed: (cb: (why: string) => void) => listen<string>("browser-download-failed", (e) => cb(e.payload)),
   /** Calls back with how many downloads the browser extension just started. */
   onExtensionAdded: (cb: (count: number) => void) => listen<number>("extension-added", (e) => cb(e.payload)),
+  /** A browser extension asks to connect; the user allows it or not. */
+  onExtensionPair: (cb: (ask: PairRequest) => void) => listen<PairRequest>("extension-pair", (e) => cb(e.payload)),
+  answerExtensionPair: (id: string, allow: boolean) => invoke<PairedExtension[]>("answer_extension_pair", { id, allow }),
+  pairedExtensions: () => invoke<PairedExtension[]>("paired_extensions"),
+  revokeExtension: (id: string) => invoke<PairedExtension[]>("revoke_extension", { id }),
   /** Picks a cookies file exported from a browser; null when cancelled. */
   pickCookiesFile: async (): Promise<string | null> => {
     const picked = await openDialog({
@@ -752,6 +1012,18 @@ export function formatEta(seconds: number): string {
     if (count > 0 || parts.length > 0 || unit === "s") parts.push(t.common.eta[unit](count));
   }
   return t.common.eta.left(parts.join(t.common.eta.join));
+}
+
+/** How long a download took: "45s", "3m 12s", "1h 0m 5s". */
+export function formatTook(seconds: number): string {
+  let rest = Math.max(0, Math.round(seconds));
+  const parts: string[] = [];
+  for (const [unit, size] of ETA_UNITS) {
+    const count = Math.floor(rest / size);
+    rest -= count * size;
+    if (count > 0 || parts.length > 0 || unit === "s") parts.push(t.common.eta[unit](count));
+  }
+  return parts.join(t.common.eta.join);
 }
 
 const ETA_UNITS: ["y" | "d" | "h" | "m" | "s", number][] = [
@@ -946,7 +1218,13 @@ export function isTorrentSource(text: string) {
 
 /** Anything the one link box accepts: web links, magnet links and .torrent files. */
 export function looksLikeUrl(text: string) {
-  return /^(https?:\/\/|magnet:\?)\S+$/i.test(text.trim()) || isLocalTorrentPath(text);
+  return /^(https?:\/\/|s?ftps?:\/\/|ftpes:\/\/|magnet:\?)\S+$/i.test(text.trim()) || isLocalTorrentPath(text);
+}
+
+/** An FTP, FTPS or SFTP link, which signs in its own way. */
+export function remoteKind(text: string): "ftp" | "sftp" | null {
+  const scheme = /^([a-z]+):\/\//i.exec(text.trim())?.[1].toLowerCase();
+  return scheme === "sftp" ? "sftp" : scheme === "ftp" || scheme === "ftps" || scheme === "ftpes" ? "ftp" : null;
 }
 
 /** A web page that may hold a video, as opposed to a link to a file. */

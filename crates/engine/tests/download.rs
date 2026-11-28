@@ -110,6 +110,8 @@ fn temp_dir(name: &str) -> PathBuf {
 fn engine(dir: &PathBuf) -> Engine {
     let mut settings = Settings::new(dir.join("out"));
     settings.organize.enabled = false;
+    // never download helper programs during tests
+    settings.auto_update_tools = false;
     Engine::new(dir.join("state"), settings).unwrap()
 }
 
@@ -1720,6 +1722,8 @@ async fn finished_files_are_sorted_by_kind_unless_given_a_folder() {
     // sorting off: it stays in the download folder
     let mut settings = engine.settings();
     settings.organize.enabled = false;
+    // never download helper programs during tests
+    settings.auto_update_tools = false;
     engine.set_settings(settings);
     let id = engine.add(new(&format!("{base}song.mp3"))).unwrap();
     assert_eq!(wait_for(&engine, id, |t| t.status == Status::Completed).await.path, out.join("song.mp3"));

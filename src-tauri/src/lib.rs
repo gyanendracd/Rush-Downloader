@@ -7,8 +7,12 @@ use tauri_plugin_opener::OpenerExt;
 
 mod after;
 mod extension;
+mod logging;
+mod proxies;
+mod requests;
 mod shell;
 mod textfile;
+mod tools;
 
 struct AppState(Engine);
 
@@ -660,6 +664,16 @@ async fn profile_face(state: State<'_, AppState>, url: String) -> Result<Profile
     Ok(engine.profile_face(&url).await)
 }
 
+/// Opens a link a profile lists in the user's browser: web pages only.
+#[tauri::command]
+fn open_web_link(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = tauri::Url::parse(url.trim()).map_err(|_| "This link cannot be opened".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Only web links are opened".into());
+    }
+    app.opener().open_url(parsed.as_str(), None::<&str>).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn profile_stats(state: State<'_, AppState>, url: String) -> Result<ProfileFace, String> {
     let engine = state.0.clone();
@@ -747,6 +761,24 @@ async fn use_new_link(
 #[tauri::command]
 fn set_download_speed_limit(state: State<AppState>, id: u64, rate: u64) {
     state.0.set_speed_limit(id, rate);
+}
+
+/// Trusts the SFTP server key a download was refused for, and retries it.
+#[tauri::command]
+fn trust_server_key(state: State<AppState>, id: u64) -> Result<(), String> {
+    state.0.trust_server_key(id)
+}
+
+/// Checks a finished file against a pasted checksum, or works its own out.
+#[tauri::command]
+fn verify_checksum(state: State<AppState>, id: u64, expected: Option<String>, algorithm: Option<rushdownload_engine::HashAlgo>) -> Result<(), String> {
+    state.0.verify_checksum(id, expected, algorithm)
+}
+
+/// Checks a batch's files (or one file) against a sums file's text.
+#[tauri::command]
+fn verify_with_sums(state: State<AppState>, id: u64, sums: String) -> Result<usize, String> {
+    state.0.verify_with_sums(id, &sums)
 }
 
 #[tauri::command]
@@ -874,6 +906,38 @@ fn reveal_file(app: AppHandle, state: State<AppState>, id: u64) -> Result<(), St
         .map_err(|e| e.to_string())
 }
 
+/// Where one finished file of a profile, playlist or torrent is, by its place
+/// in the download's list. Looked up here, so the window never names a path.
+async fn item_path(state: &AppState, id: u64, index: usize) -> Result<std::path::PathBuf, String> {
+    let engine = state.0.clone();
+    // The folder may be read for this, which must not hold up the window.
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .items(id)
+            .into_iter()
+            .nth(index)
+            .and_then(|item| item.path)
+            .filter(|path| path.exists())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "That file is not on this computer".to_string())
+}
+
+#[tauri::command]
+async fn open_item(app: AppHandle, state: State<'_, AppState>, id: u64, index: usize) -> Result<(), String> {
+    let path = item_path(&state, id, index).await?;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn reveal_item(app: AppHandle, state: State<'_, AppState>, id: u64, index: usize) -> Result<(), String> {
+    let path = item_path(&state, id, index).await?;
+    app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string())
+}
+
 /// Shows where a download is, in Explorer: its file picked out once it is
 /// there, or else the folder it is being saved into.
 #[tauri::command]
@@ -946,6 +1010,10 @@ pub fn run() {
                 Some(dir) => std::path::PathBuf::from(dir),
                 None => app.path().app_data_dir()?,
             };
+            // The log first, so whatever happens from here on is in it.
+            if let Some(guard) = logging::init(&state_dir) {
+                app.manage(guard);
+            }
             // Everything lands in its own folder inside the user's Downloads.
             let system_downloads = app
                 .path()
@@ -988,6 +1056,7 @@ pub fn run() {
                 Ok(port) => port.parse().ok(),
                 Err(_) => std::env::var_os("RUSHDOWNLOAD_STATE_DIR").is_none().then_some(extension::PORT),
             };
+            app.manage(extension::Bridge::load(&state_dir));
             if let Some(port) = extension_port {
                 extension::listen(app.handle().clone(), engine.clone(), port);
             }
@@ -1000,7 +1069,15 @@ pub fn run() {
                 // Schedules go out only when they look different, as most
                 // changes are a download's progress.
                 let mut last_schedules = String::new();
+                let mut tools_seen = 0;
                 while changes.changed().await.is_ok() {
+                    // The helper programs, when something about them changed
+                    // (an install, a check, progress).
+                    let revision = watched.tools_revision();
+                    if revision != tools_seen {
+                        tools_seen = revision;
+                        let _ = handle.emit("tools", watched.tools_info());
+                    }
                     let _ = handle.emit("downloads", watched.list());
                     let schedules = watched.schedules();
                     let text = serde_json::to_string(&schedules).unwrap_or_default();
@@ -1033,6 +1110,7 @@ pub fn run() {
             collection_of,
             profile_face,
             profile_stats,
+            open_web_link,
             playlist_info,
             signin_open,
             signin_bounds,
@@ -1045,6 +1123,9 @@ pub fn run() {
             import_browser_sign_in,
             forget_sign_ins,
             pause_download,
+            verify_checksum,
+            trust_server_key,
+            verify_with_sums,
             resume_download,
             remove_download,
             add_batch,
@@ -1066,13 +1147,33 @@ pub fn run() {
             set_settings,
             open_file,
             reveal_file,
+            open_item,
+            reveal_item,
             open_download_dir,
             show_download_folder,
             import_links,
             tool_status,
             shell::get_app_prefs,
             shell::set_app_prefs,
-            shell::set_tray_text
+            shell::set_tray_text,
+            proxies::list_proxies,
+            proxies::save_proxy,
+            proxies::delete_proxy,
+            proxies::set_default_proxy,
+            proxies::test_proxy,
+            proxies::set_download_proxy,
+            tools::tools_info,
+            tools::check_tools,
+            tools::install_tool,
+            tools::rollback_tool,
+            tools::open_release_notes,
+            requests::list_request_profiles,
+            requests::save_request_profile,
+            requests::delete_request_profile,
+            requests::set_default_request_profile,
+            extension::paired_extensions,
+            extension::revoke_extension,
+            extension::answer_extension_pair
         ])
         .run(tauri::generate_context!())
         .expect("error while running RushDownload");

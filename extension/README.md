@@ -1,35 +1,60 @@
 # RushDownload browser extension
 
-Finds the videos on the page you are looking at and sends them to the RushDownload app on the same computer. For Chrome, Edge, Brave and other Chromium browsers.
+Sends the downloads your browser starts, and the videos on the page you are looking at, to the RushDownload app on the same computer. One source tree for Chrome, Edge, Brave (Chromium, Manifest V3) and Firefox (121 and later).
 
-## Install
+## Install for development
 
-1. Open `chrome://extensions` (or `edge://extensions`).
-2. Turn on **Developer mode**.
-3. Choose **Load unpacked** and pick this `extension` folder.
+- **Chrome, Edge, Brave:** open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**, choose **Load unpacked** and pick this `extension` folder. It installs as "RushDownload (development)".
+- **Firefox:** run `npm run extension:build:dev`, open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on** and pick `dist-extension/firefox-dev/manifest.json`. Firefox asks for host permissions separately: allow "Access your data for all websites" under the add-on's Permissions, or nothing can be caught.
 
-The app has to be open for links to reach it. The popup says whether it is.
+## Connect it to the app
+
+The app must be open. Open the extension and press **Connect**: the app asks "Connect a browser extension?" and names the browser. Allow it, and the extension keeps the key the app gives it. Until then the app refuses everything the extension sends.
+
+Connected browsers are listed in the app under **Settings, Advanced, Browser extension**, where **Disconnect** removes one; that browser must connect again.
 
 ## Use
 
-- **The toolbar button** lists every video, audio file and stream found on the page. Tick the ones you want and press **Send to app**: they start downloading straight away.
-- **Send page** hands the page's own link to the app, which looks it up and lets you pick a quality on Home. Use this for sites whose player shows no file of its own (YouTube and the like).
-- **Right-click → Send to RushDownload** on a video, a link or the page does the same without opening the popup. The badge shows OK or ! for a moment.
-- The number on the button is how many files the tab has loaded so far.
+- **Downloads the browser starts** go to the app instead, when the extension is connected and the app takes them. If the app is closed, not connected, or refuses a link, the browser keeps downloading as usual. The browser's own download is stopped only after the app has taken it.
+- **Options** (the extension's options page, or the link in its popup): turn catching off, leave chosen sites, file types, or files under a size to the browser, and choose whether the site's cookies go along.
+- **Right-click a link, Download with the browser** keeps that one file in the browser.
+- **The toolbar button** lists every video, audio file and stream found on the page. Tick the ones you want and press **Send to app**.
+- **Send page** hands the page's link to the app, which looks it up and lets you pick a quality on Home (YouTube and the like).
+- **Right-click, Send to RushDownload** on a video, a link or the page does the same without the popup.
 
-## What it reads
+## What it reads, and why it asks for each permission
 
-- `scan.js` runs in the page, and each frame inside it, only when the popup is opened. It collects addresses from video and audio elements, links to media files, embedded players of other sites, and media addresses written in the page's code.
-- `background.js` notes the address of each video, audio file or stream playlist a tab loads, until the tab moves to another page. Pieces of a stream are left out.
+| Permission | Why |
+|---|---|
+| `downloads` | To see downloads the browser starts, and to stop the browser's copy once the app has taken it. |
+| `cookies` | To send a file's site cookies along, which a download behind a sign-in needs. Off in Options if you prefer. |
+| `webRequest`, host access to all sites | To note the address of each video, audio file or stream a tab loads (pieces of a stream are left out), so the popup can list files the page itself does not show. |
+| `scripting`, `activeTab` | To read the page you are on for video and audio addresses, only when you open the popup. |
+| `contextMenus` | The right-click items. |
+| `storage` | The key from the app, the Options, and each tab's list of found files. |
 
-Only addresses, the page's link and its title leave the browser, and only to the app on this computer (`127.0.0.1:38951`). Cookies are not sent: a file that needs your sign-in is better sent with **Send page**, which uses the sign-ins kept in the app.
+Only addresses, the page's link and title, and (if allowed) the cookies of a caught download leave the browser, and only to the app on this computer (`127.0.0.1:38951`). Nothing is collected or sent anywhere else. In the app, cookies are kept encrypted with the download and never sent on to another site.
 
 ## How it reaches the app
 
-The app listens on `127.0.0.1:38951` (`src-tauri/src/extension.rs`; the port is also in `shared.js`, and the two must match). It adds links only for requests a browser marks as coming from an extension, so a web page cannot start downloads, and it takes nothing but plain `http` and `https` addresses.
+The app listens on `127.0.0.1:38951` (`src-tauri/src/extension.rs`; the port is also in `shared.js`, and the two must match). Pairing (`POST /pair`, then `GET /pair/<id>`) needs the user's yes in the app; afterwards every request carries `Authorization: Bearer <key>`, which must belong to the same extension (`Origin`). The app keeps only a hash of each key. `/ping` says only that the app is open and whether the asking extension is connected.
 
 `RUSHDOWNLOAD_EXT_PORT` gives the app another port. A test copy of the app (one started with `RUSHDOWNLOAD_STATE_DIR`) does not listen unless that is set.
 
+## Build for the stores
+
+```
+npm run extension:build
+```
+
+writes `dist-extension/chromium/` and `dist-extension/firefox/`, and a `.zip` of each ready to upload to the Chrome Web Store, Microsoft Edge Add-ons and Firefox Add-ons. `npm run extension:build:dev` writes development builds ("RushDownload (Dev)", their own Firefox id) beside them. The version comes from `package.json`, so the extension and the app carry the same number; the build warns when `src-tauri/tauri.conf.json` says otherwise. `extension/manifest.json` itself is the development manifest.
+
+## Known limits
+
+- A download the browser could only make with a form (POST) or a one-time link may not download again in the app; leave such sites to the browser in Options.
+- A sign-in made with the browser's own password box (HTTP authentication) cannot be read by extensions; give the app the user name and password in the download's Request options instead.
+- A file whose size the site does not say is always sent, whatever the size limit.
+
 ## Trying it out
 
-`popup.html?tab=<tab id>` opened in a tab of its own reads that tab instead of the one in front, which lets the popup be driven by a test. `e2e/video_page.py` serves pages to try it on.
+`popup.html?tab=<tab id>` opened in a tab of its own reads that tab instead of the one in front, which lets the popup be driven by a test. `e2e/video_page.py` serves pages to try it on, and `e2e/t23_extension_pair.mjs` checks pairing against a test copy of the app.

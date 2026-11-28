@@ -7,6 +7,7 @@ export const app = {
     label: "Main",
     home: "Home",
     downloads: "Downloads",
+    scheduler: "Scheduler",
     history: "History",
     browser: "Browser",
     signin: "Sign in",

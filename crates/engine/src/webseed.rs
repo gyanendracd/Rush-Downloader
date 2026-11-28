@@ -3,9 +3,14 @@
 //! pieces from them alongside the swarm; the torrent library the app uses
 //! does not, so this does it beside it.
 //!
-//! The swarm fetches pieces from the start of the torrent, so the web seeds
-//! work from the end and the two meet in the middle. Every piece fetched
-//! here is checked against the torrent's own hash before it is written.
+//! The torrent is cut into lanes, one for each worker: the first for the
+//! swarm, which fetches from the start of the torrent, and one for each web
+//! seed fetcher, which works through its own lane from its start. A fetcher
+//! whose lane is done takes over the back half of the lane with the most
+//! left, the way a download split over several connections does. Each lane
+//! is one bar in the interface, so every bar shown is someone working.
+//! Every piece fetched here is checked against the torrent's own hash
+//! before it is written.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -20,6 +25,23 @@ use tokio_util::sync::CancellationToken;
 
 use crate::limiter::Limiter;
 use crate::task::{write_all_at, ConnGuard, Live};
+
+/// What a web seed's bytes are counted against: the torrent engine's limit,
+/// shared with its peers, or (once the engine has let go) the download's.
+#[derive(Clone)]
+pub(crate) enum Gate {
+    Session(Arc<librqbit::Session>),
+    Limiter(Arc<Limiter>),
+}
+
+impl Gate {
+    async fn take(&self, n: usize) {
+        match self {
+            Gate::Session(session) => crate::torrent::take(session, n).await,
+            Gate::Limiter(limiter) => limiter.acquire(n).await,
+        }
+    }
+}
 
 /* ---------- reading the .torrent file ---------- */
 
@@ -242,6 +264,16 @@ struct Mirror {
     dead: bool,
 }
 
+/// A stretch of the torrent's pieces and who is working through it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Lane {
+    start: usize,
+    end: usize,
+    /// The fetcher working on it; `None` for the swarm's lane, or a lane its
+    /// fetcher has finished.
+    worker: Option<usize>,
+}
+
 #[derive(Default)]
 struct Progress {
     /// Pieces the torrent library has (checked by it).
@@ -252,6 +284,7 @@ struct Progress {
     busy: Vec<bool>,
     mirrors: Vec<Mirror>,
     turn: usize,
+    lanes: Vec<Lane>,
 }
 
 /// One torrent's web-seed work, shared by its fetchers and the loop that
@@ -290,6 +323,7 @@ impl Plan {
             busy: vec![false; pieces],
             mirrors: seeds.mirrors.iter().map(|_| Mirror::default()).collect(),
             turn: 0,
+            lanes: Vec::new(),
         };
         Plan { seeds, folder, selected, needed, progress: Mutex::new(progress), received: AtomicU64::new(0) }
     }
@@ -315,12 +349,6 @@ impl Plan {
         }
     }
 
-    /// Whether a piece is on disk, from either side.
-    pub(crate) fn has(&self, piece: usize) -> bool {
-        let p = self.progress.lock().unwrap();
-        p.swarm.get(piece).is_some_and(|b| *b) || p.ours.get(piece).is_some_and(|b| *b)
-    }
-
     /// Bytes on disk from here that the torrent library does not count.
     pub(crate) fn extra_bytes(&self) -> u64 {
         let p = self.progress.lock().unwrap();
@@ -344,12 +372,72 @@ impl Plan {
         self.progress.lock().unwrap().mirrors.iter().any(|m| !m.dead)
     }
 
-    /// The next piece to fetch here, and the web seed to fetch it from.
-    fn claim(&self) -> Option<(usize, usize)> {
+    /// Cuts the torrent into `workers` + 1 equal lanes: the first for the
+    /// swarm, one for each fetcher (numbered from 0).
+    pub(crate) fn assign(&self, workers: usize) {
+        let count = self.piece_count();
+        let parts = (workers + 1).min(count).max(1);
+        let lanes = (0..parts)
+            .map(|k| Lane {
+                start: k * count / parts,
+                end: (k + 1) * count / parts,
+                worker: k.checked_sub(1),
+            })
+            .filter(|l| l.start < l.end)
+            .collect();
+        self.progress.lock().unwrap().lanes = lanes;
+    }
+
+    /// Each lane, in order, as (first piece, first piece + pieces done, end):
+    /// one bar each in the interface.
+    pub(crate) fn lanes(&self) -> Vec<(usize, usize, usize)> {
+        let p = self.progress.lock().unwrap();
+        let mut lanes = p.lanes.clone();
+        lanes.sort_by_key(|l| l.start);
+        lanes
+            .iter()
+            .map(|l| {
+                let done = (l.start..l.end).filter(|&i| p.swarm[i] || p.ours[i] || !self.needed[i]).count();
+                (l.start, l.start + done, l.end)
+            })
+            .collect()
+    }
+
+    /// The next piece for fetcher `worker`, and the web seed to fetch it from:
+    /// the first one left in its own lane, or else one from the back half of
+    /// the lane with the most left, which becomes its lane.
+    fn claim(&self, worker: usize) -> Option<(usize, usize)> {
         let mut p = self.progress.lock().unwrap();
         let count = p.mirrors.len();
         let mirror = (0..count).map(|k| (p.turn + k) % count).find(|&m| !p.mirrors[m].dead)?;
-        let piece = (0..self.piece_count()).rev().find(|&i| self.needed[i] && !p.swarm[i] && !p.ours[i] && !p.busy[i])?;
+        let open = |p: &Progress, i: usize| self.needed[i] && !p.swarm[i] && !p.ours[i] && !p.busy[i];
+
+        let own = p.lanes.iter().position(|l| l.worker == Some(worker));
+        let mut piece = own.and_then(|k| (p.lanes[k].start..p.lanes[k].end).find(|&i| open(&p, i)));
+        if piece.is_none() {
+            // Its lane is done (or it had none): it is let go, and the lane
+            // with the most left is split. A fetcher's lane is split only
+            // while it has two pieces left, so its own fetcher keeps one.
+            if let Some(k) = own {
+                p.lanes[k].worker = None;
+            }
+            let best = p
+                .lanes
+                .iter()
+                .enumerate()
+                .map(|(k, l)| (k, (l.start..l.end).filter(|&i| open(&p, i)).collect::<Vec<_>>()))
+                .filter(|(k, left)| !left.is_empty() && (p.lanes[*k].worker.is_none() || left.len() >= 2))
+                .max_by_key(|(_, left)| left.len());
+            if let Some((k, left)) = best {
+                let from = left[left.len() / 2];
+                let end = p.lanes[k].end;
+                p.lanes[k].end = from;
+                p.lanes.push(Lane { start: from, end, worker: Some(worker) });
+                p.lanes.retain(|l| l.start < l.end);
+                piece = Some(from);
+            }
+        }
+        let piece = piece?;
         p.turn = mirror + 1;
         p.busy[piece] = true;
         Some((piece, mirror))
@@ -375,7 +463,7 @@ impl Plan {
     }
 
     /// Fetches one piece from one web seed and checks it against its hash.
-    async fn fetch(&self, client: &Client, limiter: &Limiter, piece: usize, mirror: usize) -> Result<Vec<u8>, String> {
+    async fn fetch(&self, client: &Client, gate: &Gate, piece: usize, mirror: usize) -> Result<Vec<u8>, String> {
         let (start, end) = self.seeds.piece_range(piece);
         let mut data = Vec::with_capacity((end - start) as usize);
         for (_, file, from, to) in self.seeds.parts(start, end) {
@@ -413,7 +501,7 @@ impl Plan {
                     return Err("the web seed sent more than was asked".into());
                 }
                 self.received.fetch_add(chunk.len() as u64, Relaxed);
-                limiter.acquire(chunk.len()).await;
+                gate.take(chunk.len()).await;
                 data.extend_from_slice(&chunk);
             }
             if got != want {
@@ -472,7 +560,7 @@ impl Plan {
 }
 
 #[cfg(windows)]
-fn read_exact_at(f: &File, mut buf: &mut [u8], mut off: u64) -> io::Result<()> {
+pub(crate) fn read_exact_at(f: &File, mut buf: &mut [u8], mut off: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         let n = f.seek_read(buf, off)?;
@@ -486,19 +574,27 @@ fn read_exact_at(f: &File, mut buf: &mut [u8], mut off: u64) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn read_exact_at(f: &File, buf: &mut [u8], off: u64) -> io::Result<()> {
+pub(crate) fn read_exact_at(f: &File, buf: &mut [u8], off: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     f.read_exact_at(buf, off)
 }
 
-/// One fetcher: takes pieces from the end of the torrent until every chosen
-/// piece is on disk, the web seeds all stop answering, or it is stopped.
-pub(crate) async fn fetcher(plan: Arc<Plan>, client: Client, limiter: Arc<Limiter>, live: Arc<Live>, stop: CancellationToken) {
+/// One fetcher (`worker`, from 0): works through its lane, then helps with
+/// others, until every chosen piece is on disk, the web seeds all stop
+/// answering, or it is stopped.
+pub(crate) async fn fetcher(
+    plan: Arc<Plan>,
+    worker: usize,
+    client: Client,
+    gate: Gate,
+    live: Arc<Live>,
+    stop: CancellationToken,
+) {
     loop {
         if stop.is_cancelled() || plan.complete() || !plan.alive() {
             return;
         }
-        let Some((piece, mirror)) = plan.claim() else {
+        let Some((piece, mirror)) = plan.claim(worker) else {
             // Everything left is being fetched by someone; look again shortly.
             tokio::select! {
                 _ = stop.cancelled() => return,
@@ -509,7 +605,7 @@ pub(crate) async fn fetcher(plan: Arc<Plan>, client: Client, limiter: Arc<Limite
             let _conn = ConnGuard::new(&live.conns);
             tokio::select! {
                 _ = stop.cancelled() => None,
-                r = plan.fetch(&client, &limiter, piece, mirror) => Some(r),
+                r = plan.fetch(&client, &gate, piece, mirror) => Some(r),
             }
         };
         let Some(fetched) = fetched else {
@@ -541,7 +637,7 @@ pub(crate) async fn fetcher(plan: Arc<Plan>, client: Client, limiter: Arc<Limite
 /// piece only fetched here (a peer's bad data may have been written over
 /// one before the library threw it away) and fetches again any that are
 /// not right. A piece shared with a file not chosen is always fetched again.
-pub(crate) async fn settle(plan: Arc<Plan>, client: Client, limiter: Arc<Limiter>, stop: CancellationToken) -> Result<(), String> {
+pub(crate) async fn settle(plan: Arc<Plan>, client: Client, gate: Gate, stop: CancellationToken) -> Result<(), String> {
     for piece in plan.ours_only() {
         let checker = plan.clone();
         let intact = tokio::task::spawn_blocking(move || checker.intact_on_disk(piece)).await.unwrap_or(false);
@@ -553,7 +649,7 @@ pub(crate) async fn settle(plan: Arc<Plan>, client: Client, limiter: Arc<Limiter
         for mirror in (0..plan.mirror_count()).cycle().take(plan.mirror_count() * 2) {
             let fetched = tokio::select! {
                 _ = stop.cancelled() => return Err("cancelled".into()),
-                r = plan.fetch(&client, &limiter, piece, mirror) => r,
+                r = plan.fetch(&client, &gate, piece, mirror) => r,
             };
             match fetched {
                 Ok(data) => {
@@ -649,15 +745,18 @@ mod tests {
     }
 
     #[test]
-    fn web_seeds_work_from_the_end_and_skip_what_the_swarm_has() {
+    fn each_fetcher_works_through_its_own_lane_and_skips_what_the_swarm_has() {
         let content = vec![0u8; 16];
         let raw = torrent(false, &[("a", 8), ("b", 8)], 4, &content, &["https://m.test/", "https://n.test/"]);
         let plan = Plan::new(WebSeeds::read(&raw).unwrap(), PathBuf::from("."), Some(&[0]));
         assert_eq!(plan.needed, vec![true, true, false, false], "only the chosen file's pieces");
+        plan.assign(1);
+        assert_eq!(plan.lanes(), vec![(0, 0, 2), (2, 4, 4)], "the swarm's lane, then the fetcher's (not needed: done)");
         plan.set_swarm(|i| i == 0);
-        let (piece, first) = plan.claim().unwrap();
-        assert_eq!(piece, 1, "from the end, past what the swarm has");
-        assert!(plan.claim().is_none(), "nothing else is needed");
+        // its own lane has nothing left, so it takes over from the swarm's
+        let (piece, first) = plan.claim(0).unwrap();
+        assert_eq!(piece, 1, "past what the swarm has");
+        assert!(plan.claim(0).is_none(), "nothing else is needed");
         plan.release(piece, first, true);
         assert!(plan.complete());
         assert_eq!(plan.extra_bytes(), 4);
@@ -665,12 +764,44 @@ mod tests {
 
         // A web seed that keeps failing is given up.
         let plan = Plan::new(WebSeeds::read(&raw).unwrap(), PathBuf::from("."), None);
+        plan.assign(2);
         for _ in 0..MIRROR_TRIES * 2 {
-            let (piece, mirror) = plan.claim().unwrap();
+            let (piece, mirror) = plan.claim(0).unwrap();
             plan.release(piece, mirror, false);
         }
         assert!(!plan.alive());
-        assert!(plan.claim().is_none());
+        assert!(plan.claim(0).is_none());
+    }
+
+    #[test]
+    fn lanes_fill_side_by_side_and_a_finished_fetcher_helps_the_busiest() {
+        let content = vec![0u8; 48];
+        let raw = torrent(true, &[("big", 48)], 4, &content, &["https://m.test/big"]);
+        let plan = Plan::new(WebSeeds::read(&raw).unwrap(), PathBuf::from("."), None);
+        plan.assign(2);
+        // 12 pieces: the swarm's lane 0..4, fetcher 0 has 4..8, fetcher 1 has 8..12
+        assert_eq!(plan.lanes(), vec![(0, 0, 4), (4, 4, 8), (8, 8, 12)]);
+        let (a, m) = plan.claim(0).unwrap();
+        let (b, n) = plan.claim(1).unwrap();
+        assert_eq!((a, b), (4, 8), "each starts at the front of its own lane");
+        plan.release(a, m, true);
+        plan.release(b, n, true);
+        assert_eq!(plan.lanes(), vec![(0, 0, 4), (4, 5, 8), (8, 9, 12)], "both bars move");
+
+        // fetcher 0 finishes its lane
+        for _ in 0..3 {
+            let (piece, mirror) = plan.claim(0).unwrap();
+            assert!((5..8).contains(&piece));
+            plan.release(piece, mirror, true);
+        }
+        // then takes the back half of the lane with the most left: the swarm's (4 left)
+        let (piece, mirror) = plan.claim(0).unwrap();
+        assert_eq!(piece, 2);
+        plan.release(piece, mirror, true);
+        let lanes = plan.lanes();
+        assert!(lanes.contains(&(0, 0, 2)), "the swarm keeps the front half: {lanes:?}");
+        assert!(lanes.contains(&(2, 3, 4)), "the fetcher has the back half: {lanes:?}");
+        assert_eq!(lanes.iter().map(|l| l.2 - l.0).sum::<usize>(), 12, "the lanes still cover the torrent");
     }
 
     /// Needs internet. Set RUSH_TEST_TORRENT to a .torrent file with web seeds:
@@ -687,11 +818,11 @@ mod tests {
             .read_timeout(Duration::from_secs(20))
             .build()
             .unwrap();
-        let limiter = Limiter::new(0);
+        let gate = Gate::Limiter(Arc::new(Limiter::new(0)));
         let piece = plan.piece_count() - 2;
         for mirror in 0..plan.mirror_count() {
             let started = std::time::Instant::now();
-            let got = plan.fetch(&client, &limiter, piece, mirror).await;
+            let got = plan.fetch(&client, &gate, piece, mirror).await;
             println!(
                 "{:6.1}s  {}  {}",
                 started.elapsed().as_secs_f64(),

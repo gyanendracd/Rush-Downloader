@@ -1,12 +1,14 @@
 use rushdownload_engine::{
-    Engine, Found, ItemInfo, MediaInfo, NewDownload, PlaylistInfo, ProfileFace, ProfileRef, Settings, SiteFile, SiteFiles, SiteKind, Status, TaskInfo, ToolStatus,
+    Engine, Found, ItemInfo, LinkCheck, MediaInfo, MediaOptions, NewDownload, PlaylistInfo, ProfileFace, ProfileRef, ScheduleInfo, ScheduleSpec, Settings, SiteFile, SiteFiles, SiteKind, Status, TaskInfo, ToolStatus,
     TorrentPreview,
 };
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl};
 use tauri_plugin_opener::OpenerExt;
 
+mod after;
 mod extension;
 mod shell;
+mod textfile;
 
 struct AppState(Engine);
 
@@ -705,8 +707,46 @@ fn add_site_files(
     title: String,
     files: Vec<SiteFile>,
     dir: Option<String>,
+    speed_limit: Option<u64>,
 ) -> Result<u64, String> {
-    state.0.add_files(&url, &title, files, dir.filter(|d| !d.is_empty()).map(Into::into))
+    let id = state.0.add_files(&url, &title, files, dir.filter(|d| !d.is_empty()).map(Into::into))?;
+    if let Some(rate) = speed_limit.filter(|r| *r > 0) {
+        state.0.set_speed_limit(id, rate);
+    }
+    Ok(id)
+}
+
+/// What a new link for a download would do: carry on, or start over and why.
+/// `headers`: request headers for it ("Name: value"); none keeps the old ones.
+#[tauri::command]
+async fn check_new_link(
+    state: State<'_, AppState>,
+    id: u64,
+    url: String,
+    headers: Option<Vec<(String, String)>>,
+) -> Result<LinkCheck, String> {
+    let engine = state.0.clone();
+    engine.check_new_link(id, &url, headers).await
+}
+
+/// Gives a download a new link: it carries on only when the link gives the
+/// same file, or starts over when `restart` is set.
+#[tauri::command]
+async fn use_new_link(
+    state: State<'_, AppState>,
+    id: u64,
+    url: String,
+    headers: Option<Vec<(String, String)>>,
+    restart: bool,
+) -> Result<LinkCheck, String> {
+    let engine = state.0.clone();
+    engine.use_new_link(id, &url, headers, restart).await
+}
+
+/// A download's own speed limit, bytes per second; 0 = none.
+#[tauri::command]
+fn set_download_speed_limit(state: State<AppState>, id: u64, rate: u64) {
+    state.0.set_speed_limit(id, rate);
 }
 
 #[tauri::command]
@@ -722,6 +762,81 @@ fn resume_download(state: State<AppState>, id: u64) {
 #[tauri::command]
 fn remove_download(state: State<AppState>, id: u64, delete_file: bool) {
     state.0.remove(id, delete_file);
+}
+
+/// Moves a finished download's file (or folder) into another folder; a
+/// file of the same name there is never written over.
+#[tauri::command]
+async fn move_download(state: State<'_, AppState>, id: u64, dir: String) -> Result<String, String> {
+    let engine = state.0.clone();
+    engine.move_to(id, dir.into()).await.map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Downloads many links as one batch, into a folder named after it.
+#[tauri::command]
+fn add_batch(
+    state: State<AppState>,
+    name: String,
+    urls: Vec<String>,
+    dir: Option<String>,
+    media: MediaOptions,
+    speed_limit: Option<u64>,
+) -> Result<u64, String> {
+    let id = state.0.add_batch(&name, urls, dir.filter(|d| !d.is_empty()).map(Into::into), media)?;
+    if let Some(rate) = speed_limit.filter(|r| *r > 0) {
+        state.0.set_speed_limit(id, rate);
+    }
+    Ok(id)
+}
+
+/// Puts a batch's failed downloads back in the queue.
+#[tauri::command]
+fn retry_failed_downloads(state: State<AppState>, id: u64) {
+    state.0.retry_failed(id);
+}
+
+/// Cancels one download of a batch; it stays listed, and can be retried.
+#[tauri::command]
+fn cancel_download(state: State<AppState>, id: u64) {
+    state.0.cancel(id);
+}
+
+/// Reads a file of links as text, for a batch download. Binary files are
+/// turned away. Read off the window's thread, as a file may be large.
+#[tauri::command]
+async fn read_text_file(path: String) -> Result<textfile::TextFile, String> {
+    tauri::async_runtime::spawn_blocking(move || textfile::read(std::path::Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Saves text (a list of links) to a file the user picked in the save window.
+#[tauri::command]
+async fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || textfile::write(std::path::Path::new(&path), &contents))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn list_schedules(state: State<AppState>) -> Vec<ScheduleInfo> {
+    state.0.schedules()
+}
+
+/// Makes a schedule (`id` null) or changes one; returns its id.
+#[tauri::command]
+fn save_schedule(state: State<AppState>, id: Option<u64>, spec: ScheduleSpec) -> Result<u64, String> {
+    state.0.save_schedule(id, spec)
+}
+
+#[tauri::command]
+fn set_schedule_enabled(state: State<AppState>, id: u64, enabled: bool) {
+    state.0.set_schedule_enabled(id, enabled);
+}
+
+#[tauri::command]
+fn delete_schedule(state: State<AppState>, id: u64) {
+    state.0.delete_schedule(id);
 }
 
 #[tauri::command]
@@ -756,6 +871,27 @@ fn reveal_file(app: AppHandle, state: State<AppState>, id: u64) -> Result<(), St
     let task = completed(&state, id)?;
     app.opener()
         .reveal_item_in_dir(&task.path)
+        .map_err(|e| e.to_string())
+}
+
+/// Shows where a download is, in Explorer: its file picked out once it is
+/// there, or else the folder it is being saved into.
+#[tauri::command]
+fn show_download_folder(app: AppHandle, state: State<AppState>, id: u64) -> Result<(), String> {
+    let task = state
+        .0
+        .list()
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| "That download is no longer in the list".to_string())?;
+    if task.status == Status::Completed && task.path.exists() {
+        return app.opener().reveal_item_in_dir(&task.path).map_err(|e| e.to_string());
+    }
+    // the folder may not be made yet, or may have been moved away since
+    let dir = if task.dir.is_dir() { task.dir } else { state.0.settings().download_dir };
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 
@@ -861,10 +997,22 @@ pub fn run() {
             let watched = engine.clone();
             let mut changes = engine.subscribe();
             tauri::async_runtime::spawn(async move {
+                // Schedules go out only when they look different, as most
+                // changes are a download's progress.
+                let mut last_schedules = String::new();
                 while changes.changed().await.is_ok() {
                     let _ = handle.emit("downloads", watched.list());
+                    let schedules = watched.schedules();
+                    let text = serde_json::to_string(&schedules).unwrap_or_default();
+                    if text != last_schedules {
+                        let _ = handle.emit("schedules", schedules);
+                        last_schedules = text;
+                    }
                 }
             });
+
+            // What happens once every download has finished (after.rs).
+            after::watch(app.handle().clone(), engine.clone());
 
             app.manage(AppState(engine));
             Ok(())
@@ -899,11 +1047,27 @@ pub fn run() {
             pause_download,
             resume_download,
             remove_download,
+            add_batch,
+            move_download,
+            retry_failed_downloads,
+            cancel_download,
+            read_text_file,
+            write_text_file,
+            set_download_speed_limit,
+            check_new_link,
+            use_new_link,
+            list_schedules,
+            save_schedule,
+            set_schedule_enabled,
+            delete_schedule,
+            after::after_all_cancel,
+            after::after_all_now,
             get_settings,
             set_settings,
             open_file,
             reveal_file,
             open_download_dir,
+            show_download_folder,
             import_links,
             tool_status,
             shell::get_app_prefs,

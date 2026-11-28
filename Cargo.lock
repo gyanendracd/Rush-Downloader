@@ -4513,6 +4513,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4521,6 +4522,7 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "base64 0.22.1",
+ "chrono",
  "encoding_rs",
  "librqbit",
  "percent-encoding",

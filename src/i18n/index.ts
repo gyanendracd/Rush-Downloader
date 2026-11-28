@@ -9,7 +9,7 @@
  *
  * English is built in. Every other language is its own file in ./locales,
  * typed as `Dict`, so a missing key fails the build, and loaded on first use. */
-import { en, type Dict } from "./en";
+import { en, type Dict, type LocaleDict } from "./en";
 import { applyFormatLocale } from "./format";
 
 export type { Dict };
@@ -35,7 +35,7 @@ export type Locale = (typeof LOCALES)[number]["code"];
 
 const CODES = LOCALES.map((l) => l.code) as Locale[];
 
-const LOADERS: Record<Exclude<Locale, "en">, () => Promise<{ default: Dict }>> = {
+const LOADERS: Record<Exclude<Locale, "en">, () => Promise<{ default: LocaleDict }>> = {
   hi: () => import("./locales/hi"),
   es: () => import("./locales/es"),
   fr: () => import("./locales/fr"),
@@ -89,7 +89,7 @@ export function savedLocale(): Locale {
 /** Switches the language: loads its text, sets the document's language and
  *  direction. Remembers the choice when `remember` is set. */
 export async function setLocale(code: Locale, remember = false): Promise<void> {
-  const dict = code === "en" ? en : (await LOADERS[code]()).default;
+  const dict = code === "en" ? en : withEnglish((await LOADERS[code]()).default);
   t = dict;
   locale = code;
   applyFormatLocale(code);
@@ -106,6 +106,11 @@ export async function setLocale(code: Locale, remember = false): Promise<void> {
   }
 }
 
+/** A translation with the sections it does not have yet in English. */
+function withEnglish(dict: LocaleDict): Dict {
+  return { ...dict, batch: dict.batch ?? en.batch, organize: dict.organize ?? en.organize };
+}
+
 /** Whether the language switched on now is written right to left. */
 export const isRtl = () => RTL.includes(locale);
 
@@ -115,13 +120,6 @@ const listeners = new Set<() => void>();
 export function onLocaleChange(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
-}
-
-/** "Change language", always with the English words too, so someone who
- *  picked a language they cannot read by mistake can still find the way back. */
-export function changeLanguageLabel(): string {
-  const own = t.common.changeLanguage;
-  return own === en.common.changeLanguage ? own : `${own} · ${en.common.changeLanguage}`;
 }
 
 /** A language's name in the picker: its own name, and its English name

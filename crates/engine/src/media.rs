@@ -962,8 +962,10 @@ pub(crate) async fn run(
         "-N",
     ])
     .arg(rec.connections.clamp(1, 16).to_string());
-    // The limit in force when the download starts applies to it throughout.
-    let limit = inner.limiter.rate();
+    // The limit in force when the download starts applies to it throughout:
+    // the lower of its own and the global one. A change of its own restarts
+    // it (Engine::set_speed_limit).
+    let limit = live.limiter.effective_rate();
     if limit > 0 {
         cmd.arg("--limit-rate").arg(limit.to_string());
     }

@@ -16,7 +16,7 @@ import {
   type TorrentFile,
   type TorrentPreview,
 } from "./api";
-import { FileIcon, Modal, StatusText, useApp, Select } from "./ui";
+import { FileIcon, Modal, SpeedLimitField, StatusText, useApp, Select } from "./ui";
 import { t } from "./i18n";
 
 /* ---------- add download ---------- */
@@ -33,6 +33,7 @@ export function AddDialog(props: {
   const [filename, setFilename] = useState("");
   const [dir, setDir] = useState("");
   const [connections, setConnections] = useState("");
+  const [speedLimit, setSpeedLimit] = useState(0);
   const [advanced, setAdvanced] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -71,6 +72,7 @@ export function AddDialog(props: {
         filename: filename.trim() || undefined,
         dir: dir || undefined,
         connections: connections && Number.isFinite(n) ? Math.min(32, Math.max(1, Math.round(n))) : undefined,
+        speed_limit: speedLimit || undefined,
       });
       props.onClose();
     } catch (err) {
@@ -207,6 +209,7 @@ export function AddDialog(props: {
               />
               <small>{t.dialogs.add.connectionsHint}</small>
             </label>
+            <SpeedLimitField value={speedLimit} onChange={setSpeedLimit} id="add-limit" />
           </>
         )}
         </>
@@ -414,6 +417,8 @@ export function TorrentDialog(props: { source: string; site?: boolean; onClose: 
   const [siteFiles, setSiteFiles] = useState<SiteFile[]>([]);
   const [siteName, setSiteName] = useState("");
   const [partial, setPartial] = useState(false);
+  /** Its own speed limit, bytes per second; 0 = none. */
+  const [speedLimit, setSpeedLimit] = useState(0);
   /** Files whose size the site did not say. */
   const [unsized, setUnsized] = useState<Set<number>>(new Set());
   const [error, setError] = useState("");
@@ -481,7 +486,7 @@ export function TorrentDialog(props: { source: string; site?: boolean; onClose: 
     if (props.site) {
       try {
         const chosen = siteFiles.filter((_, i) => selected.has(i));
-        await api.addSiteFiles(props.source, preview.name, chosen, dir || undefined);
+        await api.addSiteFiles(props.source, preview.name, chosen, dir || undefined, speedLimit || undefined);
         actions.toast(t.dialogs.site.added(chosen.length));
         props.onClose();
         props.onAdded();
@@ -499,6 +504,7 @@ export function TorrentDialog(props: { source: string; site?: boolean; onClose: 
         // Leaving the list out means "everything".
         torrent_files:
           selected.size === preview.files.length ? undefined : [...selected].sort((a, b) => a - b),
+        speed_limit: speedLimit || undefined,
       });
       actions.toast(t.dialogs.torrent.added);
       props.onClose();
@@ -633,6 +639,7 @@ export function TorrentDialog(props: { source: string; site?: boolean; onClose: 
             </div>
             <small>{props.site ? t.dialogs.site.folderNote(preview.name) : t.dialogs.torrent.folderNote(preview.name)}</small>
           </div>
+          <SpeedLimitField value={speedLimit} onChange={setSpeedLimit} id="torrent-limit" />
           <div className="field">
             <div className="tree-head">
               <span>{t.dialogs.torrent.files}</span>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
+  CalendarClock,
   Download as DownloadGlyph,
   FolderOpen,
   Globe,
@@ -7,6 +8,7 @@ import {
   House,
   Info,
   KeyRound,
+  Layers,
   Minus,
   Moon,
   Pause,
@@ -32,11 +34,16 @@ import {
   QUALITIES,
   qualityOptions,
   savePref,
+  type AfterAllNotice,
   type AppPrefs,
   type Download,
+  type Schedule,
   type Settings,
 } from "./api";
+import { ScheduleDialog, SchedulerView } from "./Scheduler";
 import { DetailDialog } from "./Detail";
+import { BatchDetail, BatchDialog } from "./Batch";
+import { Ambient } from "./Ambient";
 import { AddDialog, Palette, ScanDialog, siteBlockedText, TorrentDialog, type Command } from "./dialogs";
 import {
   AppContext,
@@ -44,6 +51,8 @@ import {
   Logo,
   Menu,
   Modal,
+  RefreshLinkDialog,
+  SpeedLimitDialog,
   Toasts,
   type Actions,
   type MenuItem,
@@ -70,6 +79,7 @@ interface Question {
 import {
   AboutDialog,
   BrowserView,
+  durationText,
   DownloadsView,
   HomeView,
   NAVS,
@@ -93,6 +103,7 @@ const PAGE_FADE_OUT = 170;
 const MAIN_NAV: { nav: Nav; icon: LucideIcon }[] = [
   { nav: "home", icon: House },
   { nav: "downloads", icon: DownloadGlyph },
+  { nav: "scheduler", icon: CalendarClock },
   { nav: "history", icon: HistoryGlyph },
   { nav: "browser", icon: Globe },
   { nav: "signin", icon: KeyRound },
@@ -107,7 +118,14 @@ function isTyping(target: EventTarget | null) {
 export default function App() {
   // Renders the whole interface again when the language changes in Settings.
   useLocale();
+  /** The list as it shows: every download except those inside a batch. */
   const [downloads, setDownloads] = useState<Download[]>([]);
+  /** The downloads inside each batch, by the batch's id, in order. */
+  const [batchItems, setBatchItems] = useState<Map<number, Download[]>>(new Map());
+  /** The Batch Download dialog is open. */
+  const [batchOpen, setBatchOpen] = useState(false);
+  /** Where files dropped onto the window go while a dialog wants them. */
+  const dropTo = useRef<((paths: string[]) => void) | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   /** Starting with the system, the tray, notifications, graphics. */
   const [appPrefs, setAppPrefs] = useState<AppPrefs | null>(null);
@@ -139,6 +157,15 @@ export default function App() {
   const [siteSource, setSiteSource] = useState<string | null>(null);
   const qualityRef = useRef("best");
   const [aboutOpen, setAboutOpen] = useState(false);
+  /** Schedules, as the engine keeps them; the dialog making or changing one. */
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [scheduling, setScheduling] = useState<{ schedule?: Schedule; picked?: number[] } | null>(null);
+  /** The download being given a new link. */
+  const [relinking, setRelinking] = useState<Download | null>(null);
+  /** The download whose own speed limit is being set. */
+  const [limiting, setLimiting] = useState<Download | null>(null);
+  /** The countdown before the action after all downloads, while it runs. */
+  const [afterAll, setAfterAll] = useState<AfterAllNotice | null>(null);
   const [question, setQuestion] = useState<Question | null>(null);
   /** The link last copied anywhere on the computer, handed to the Home box. */
   const [copied, setCopied] = useState<{ text: string; n: number } | null>(null);
@@ -184,7 +211,14 @@ export default function App() {
 
   /* ---------- data ---------- */
 
-  const receive = useCallback((list: Download[]) => {
+  const receive = useCallback((everything: Download[]) => {
+    // A batch's own downloads are listed in its details, not as rows.
+    const items = new Map<number, Download[]>();
+    const list: Download[] = [];
+    for (const d of everything) {
+      if (d.parent == null) list.push(d);
+      else items.set(d.parent, [...(items.get(d.parent) ?? []), d]);
+    }
     const h = history.current;
     const alive = new Set(list.map((d) => d.id));
     for (const id of h.keys()) if (!alive.has(id)) h.delete(id);
@@ -208,15 +242,19 @@ export default function App() {
     }
     lastStatus.current = new Map(list.map((d) => [d.id, d.status]));
     setDownloads(list);
+    setBatchItems(items);
   }, []);
 
   useEffect(() => {
     api.list().then(receive);
     api.getSettings().then(setSettings);
     api.getAppPrefs().then(setAppPrefs).catch(() => {});
+    api.schedules().then(setSchedules).catch(() => {});
     const unlisten = api.onChange(receive);
+    const unlistenSchedules = api.onSchedules(setSchedules);
     return () => {
       unlisten.then((f) => f());
+      unlistenSchedules.then((f) => f());
     };
   }, [receive]);
 
@@ -260,6 +298,24 @@ export default function App() {
       tone === "error" ? 8000 : 3000,
     );
   }, []);
+
+  // Once every download has finished: a notification, or the countdown
+  // (kept by the backend, after.rs) before the window, the app or the
+  // computer goes.
+  useEffect(() => {
+    const a = t.views.settings.after;
+    const unlisten = api.onAfterAll((n) => {
+      if (n.left != null) return setAfterAll(n);
+      setAfterAll(null);
+      if (n.reason === "done" && n.action === "notify") api.notify(a.notifyTitle, a.notifyBody).catch(() => {});
+      if (n.reason === "busy") toast(a.busy, "info");
+    });
+    const unlistenFailed = api.onAfterAllFailed((why) => toast(t.views.settings.after.failed(why), "error"));
+    return () => {
+      unlisten.then((f) => f());
+      unlistenFailed.then((f) => f());
+    };
+  }, [toast]);
 
   const setNav = useCallback((next: Nav) => {
     setNavState(next);
@@ -345,8 +401,22 @@ export default function App() {
       }
       return reply ? "go" : "cancel";
     };
+    // The torrent window (folder and files) shows only when Settings asks
+    // where to save; otherwise the whole torrent starts in the usual folder.
     const openTorrent = async (source: string) => {
-      if ((await checkDuplicate(source)) === "go") setTorrentSource(source.trim());
+      if ((await checkDuplicate(source)) !== "go") return;
+      if (askFolderRef.current) {
+        setTorrentSource(source.trim());
+        return;
+      }
+      try {
+        await api.add({ url: source.trim(), media: { max_height: null, audio_only: false } });
+        toast(t.dialogs.torrent.added);
+        setNavState("downloads");
+        savePref("nav", "downloads");
+      } catch (e) {
+        fail(e);
+      }
     };
     const all: Actions = {
       toast,
@@ -361,10 +431,13 @@ export default function App() {
           const text = t.app.cancelDownload;
           const what =
             unfinished.length === 1 ? unfinished[0].filename : text.unfinished(unfinished.length);
+          const batch = unfinished.length === 1 && unfinished[0].batch;
           const ok = await ask({
-            title: unfinished.length === 1 ? text.titleOne : text.titleMany,
+            title: batch ? t.batch.cancelConfirm.title : unfinished.length === 1 ? text.titleOne : text.titleMany,
             message: what,
-            detail: unfinished.every((d) => d.profile) ? text.detailProfile : text.detailFile,
+            detail: batch
+              ? t.batch.cancelConfirm.detail
+              : unfinished.every((d) => d.profile) ? text.detailProfile : text.detailFile,
             okLabel: text.ok,
             cancelLabel: text.cancel,
           });
@@ -398,6 +471,7 @@ export default function App() {
       scan: (url) => setScanUrl(url),
       inspect,
       openAdd: (url, mode) => setAdd({ url: url ?? "", mode: mode ?? "download" }),
+      openBatch: () => setBatchOpen(true),
       openTorrent,
       browse: (url, fetch = false) => {
         setBrowseStart({ url, fetch });
@@ -426,9 +500,10 @@ export default function App() {
           return true;
         }
         try {
-          // A profile or playlist is a whole folder: the user may want to say where it goes.
+          // With "Ask where to save" on in Settings, every download (a file,
+          // a video, a playlist or a profile) is given its folder first.
           let dir: string | undefined;
-          if (askFolderRef.current && (await api.profileOf(link).catch(() => null))) {
+          if (askFolderRef.current) {
             const picked = await api.pickFolder(saveDirRef.current);
             // Closing the folder window without choosing leaves the link in the box.
             if (!picked) return false;
@@ -449,6 +524,9 @@ export default function App() {
       again: (d) => {
         void all.submitLink(d.url);
       },
+      schedule: (ids) => setScheduling({ picked: ids }),
+      limit: (d) => setLimiting(d),
+      refreshLink: (d) => setRelinking(d),
     };
     return all;
   }, [toast, ask]);
@@ -548,8 +626,13 @@ export default function App() {
     scanUrl != null ||
     torrentSource != null ||
     siteSource != null ||
+    batchOpen ||
     paletteOpen ||
     aboutOpen ||
+    scheduling != null ||
+    limiting != null ||
+    relinking != null ||
+    afterAll != null ||
     menu != null ||
     question != null ||
     inspectedDownload != null;
@@ -664,6 +747,11 @@ export default function App() {
   // Dropping a .torrent file onto the window opens it.
   useEffect(() => {
     const unlisten = api.onFileDrop((paths) => {
+      // The Batch Download dialog takes any files dropped while it is open.
+      if (dropTo.current) {
+        dropTo.current(paths);
+        return;
+      }
       const torrent = paths.find((p) => /\.torrent$/i.test(p));
       if (torrent) actions.openTorrent(torrent);
       else if (paths.length > 0) toast(t.app.toast.onlyTorrents, "error");
@@ -681,6 +769,7 @@ export default function App() {
       return [
         { id: "add", group: c.groupActions, label: c.add, icon: Plus, shortcut: "Ctrl N", run: () => setAdd({ url: "", mode: "download" }) },
         { id: "scan", group: c.groupActions, label: c.scan, icon: ScanSearch, run: () => setAdd({ url: "", mode: "scan" }) },
+        { id: "batch", group: c.groupActions, label: t.batch.command, icon: Layers, run: () => setBatchOpen(true) },
         { id: "pause-all", group: c.groupActions, label: c.pauseAll, icon: Pause, shortcut: "Ctrl Shift P", run: pauseAll },
         { id: "resume-all", group: c.groupActions, label: c.resumeAll, icon: Play, shortcut: "Ctrl Shift R", run: resumeAll },
         {
@@ -699,6 +788,7 @@ export default function App() {
         },
         { id: "nav-home", group: c.groupGoTo, label: c.home, icon: House, shortcut: "Ctrl 1", run: () => setNav("home") },
         { id: "nav-downloads", group: c.groupGoTo, label: c.downloads, icon: DownloadGlyph, shortcut: "Ctrl 2", run: () => setNav("downloads") },
+        { id: "nav-scheduler", group: c.groupGoTo, label: t.app.nav.scheduler, icon: CalendarClock, run: () => setNav("scheduler") },
         { id: "nav-settings", group: c.groupGoTo, label: c.settings, icon: SettingsGlyph, shortcut: "Ctrl ,", run: () => setNav("settings") },
         { id: "about", group: c.groupGoTo, label: c.about, icon: Info, run: () => setAboutOpen(true) },
       ];
@@ -707,12 +797,13 @@ export default function App() {
     [dark, pauseAll, resumeAll, chooseTheme, setNav, toast, t],
   );
 
-  const context = { downloads, settings, history: history.current, actions, progressStyle };
+  const context = { downloads, batchItems, settings, history: history.current, actions, progressStyle };
   const rowHandlers = { selection, onSelect, onMenu };
 
   return (
     <AppContext.Provider value={context}>
       <div className="app">
+        <Ambient />
         <nav className="sidebar" aria-label={t.app.nav.label}>
           <div className="brand" data-tauri-drag-region>
             <Logo size={24} />
@@ -790,9 +881,20 @@ export default function App() {
                 setNav("signin");
               }}
               copied={copied}
+              onSettings={(s) => {
+                setSettings(s);
+                api.setSettings(s).catch((e) => toast(String(e), "error"));
+              }}
             />}
           {shownNav === "downloads" && (
             <DownloadsView {...rowHandlers} clearSelection={() => setSelection(new Set())} go={setNav} />
+          )}
+          {shownNav === "scheduler" && (
+            <SchedulerView
+              schedules={schedules}
+              onNew={() => setScheduling({})}
+              onEdit={(schedule) => setScheduling({ schedule })}
+            />
           )}
           {shownNav === "history" && <HistoryView onMenu={onMenu} />}
           {shownNav === "browser" && (
@@ -828,6 +930,8 @@ export default function App() {
               section={settingsSection}
               onSection={setSettingsSection}
               appPrefs={appPrefs}
+              scheduleCount={schedules.length}
+              onOpenScheduler={() => setNav("scheduler")}
               onAppPrefs={(next) => {
                 const before = appPrefs;
                 setAppPrefs(next);
@@ -844,7 +948,17 @@ export default function App() {
           )}
         </main>
 
-        {inspectedDownload && (
+        {inspectedDownload?.batch && (
+          <BatchDetail
+            d={inspectedDownload}
+            onClose={() => {
+              setInspected(null);
+              setSelection(new Set());
+              anchor.current = null;
+            }}
+          />
+        )}
+        {inspectedDownload && !inspectedDownload.batch && (
           <DetailDialog
             d={inspectedDownload}
             onClose={() => {
@@ -854,6 +968,14 @@ export default function App() {
               setSelection(new Set());
               anchor.current = null;
             }}
+          />
+        )}
+        {batchOpen && (
+          <BatchDialog
+            quality={quality}
+            onClose={() => setBatchOpen(false)}
+            onStarted={() => setNav("downloads")}
+            takeDrops={(take) => (dropTo.current = take)}
           />
         )}
         {add && (
@@ -884,6 +1006,41 @@ export default function App() {
           <ScanDialog url={scanUrl} media={qualityOptions(quality)} onClose={() => setScanUrl(null)} />
         )}
         {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
+        {limiting && <SpeedLimitDialog d={limiting} onClose={() => setLimiting(null)} />}
+        {relinking && <RefreshLinkDialog d={relinking} onClose={() => setRelinking(null)} />}
+        {afterAll && afterAll.left != null && afterAll.action !== "nothing" && afterAll.action !== "notify" && (
+          <Modal
+            title={t.views.settings.after.dialog.title[afterAll.action]}
+            onClose={() => api.afterAllCancel().catch(() => {})}
+            footer={
+              <>
+                <span className="spacer" />
+                <button type="button" className="btn" data-autofocus onClick={() => api.afterAllCancel().catch(() => {})}>
+                  {t.dialogs.cancel}
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${["sleep", "hibernate", "shutdown", "exit"].includes(afterAll.action) ? "btn-danger-solid" : "btn-primary"}`}
+                  onClick={() => api.afterAllNow().catch(() => {})}
+                >
+                  {t.views.settings.after.dialog.now[afterAll.action]}
+                </button>
+              </>
+            }
+          >
+            <p>{t.views.settings.after.dialog.body}</p>
+            <p className="after-count" aria-live="polite">
+              {t.views.settings.after.dialog.in(durationText(afterAll.left))}
+            </p>
+          </Modal>
+        )}
+        {scheduling && (
+          <ScheduleDialog
+            schedule={scheduling.schedule}
+            picked={scheduling.picked}
+            onClose={() => setScheduling(null)}
+          />
+        )}
         {paletteOpen && <Palette commands={commands} onClose={() => setPaletteOpen(false)} />}
         {menu && <Menu {...menu} onClose={() => setMenu(null)} />}
         {question && (

@@ -131,7 +131,7 @@ pub fn tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// Shows the main window again, in front.
-fn bring_back(app: &AppHandle) {
+pub(crate) fn bring_back(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();

@@ -274,7 +274,9 @@ export const views = {
     chooseFolder: "Choose folder",
     general: {
       clipWatch: "Put links I copy into the Home box",
-      askFolder: "Ask where to save each profile or playlist",
+      askFolder: "Ask where to save each download",
+      askFolderHint:
+        "Choose a folder before each file, video, audio file, playlist, profile or torrent starts. Off: everything goes to the default download location.",
       startup: "Launch on system startup",
       tray: "Minimize to tray",
       notifications: "Show download notifications",
@@ -321,12 +323,46 @@ export const views = {
       unlimited: "Unlimited",
       manual: "Set manually",
     },
-    /** "... with Ctrl Shift P and Ctrl Shift R." The keys are drawn between the parts. */
-    scheduler: {
-      before:
-        "Scheduling downloads for a set time is not built yet. Until then, downloads start as soon as a slot is free, and you can pause or resume all of them at once with ",
-      and: " and ",
-      after: ".",
+    /** What happens once every download has finished (Settings → Downloads). */
+    after: {
+      title: "When all downloads complete",
+      hint: "Done once nothing is left downloading. A paused download, or a schedule still in its time, holds it back.",
+      actions: {
+        nothing: "Do nothing",
+        notify: "Show a notification",
+        close: "Close the window",
+        exit: "Quit RushDownload",
+        sleep: "Sleep",
+        hibernate: "Hibernate",
+        shutdown: "Shut down",
+      },
+      countdown: "Wait before doing it",
+      countdownHint: "A countdown with Cancel shows first. A download that starts during it cancels it.",
+      failures: "Also when a download failed or was cancelled",
+      failuresHint: "Off: nothing is done after a batch in which something went wrong.",
+      notifyTitle: "All downloads are complete",
+      notifyBody: "RushDownload has finished everything it was downloading.",
+      dialog: {
+        title: {
+          close: "The window will close",
+          exit: "RushDownload will quit",
+          sleep: "The computer will go to sleep",
+          hibernate: "The computer will hibernate",
+          shutdown: "The computer will shut down",
+        },
+        body: "All downloads are complete.",
+        /** `time`: how long is left, already written out ("45 seconds"). */
+        in: (time: string) => `In ${time}.`,
+        now: {
+          close: "Close now",
+          exit: "Quit now",
+          sleep: "Sleep now",
+          hibernate: "Hibernate now",
+          shutdown: "Shut down now",
+        },
+      },
+      busy: "Cancelled: a download started.",
+      failed: (why: string) => `It could not be done: ${why}`,
     },
     appearance: {
       theme: "Theme",

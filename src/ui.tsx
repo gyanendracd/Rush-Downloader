@@ -4,8 +4,10 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
+  type FormEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -13,11 +15,19 @@ import { createPortal } from "react-dom";
 import {
   Archive,
   Check,
+  Clock,
+  ArrowRight,
+  CalendarDays,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleAlert,
   CircleCheck,
   Copy,
   Ellipsis,
+  FolderInput,
+  Gauge,
+  Layers,
   File as FileGlyph,
   FileText,
   Film,
@@ -32,6 +42,7 @@ import {
   RotateCw,
   ScanSearch,
   SquareArrowOutUpRight,
+  CalendarClock,
   Trash2,
   X,
   type LucideIcon,
@@ -50,13 +61,17 @@ import {
   formatSpeed,
   percentOf,
   STATUS_LABEL,
+  takesNewLink,
   type Category,
   type Download,
+  type LinkCheck,
   type MediaOptions,
   type Settings,
 } from "./api";
 import { DocIcon } from "./DocIcon";
-import { t } from "./i18n";
+import { BatchMeta, BatchTile } from "./Batch";
+import { dateText, t } from "./i18n";
+import { formatLocale } from "./i18n/format";
 
 /* ---------- shared app state ---------- */
 
@@ -72,6 +87,8 @@ export interface Actions {
   scan: (url: string) => void;
   inspect: (id: number) => void;
   openAdd: (url?: string, mode?: "download" | "scan") => void;
+  /** Opens the Batch Download dialog. */
+  openBatch: () => void;
   /** Opens the torrent dialog (folder and file selection) for a magnet link,
    *  a link to a .torrent file, or a .torrent file's path. */
   openTorrent: (source: string) => void;
@@ -89,6 +106,12 @@ export interface Actions {
   /** Fetches a download again from its link, as a new download: for one
    *  whose file has been deleted. */
   again: (d: Download) => void;
+  /** Opens the dialog making a schedule, with these downloads picked. */
+  schedule: (ids: number[]) => void;
+  /** Opens the dialog setting one download's own speed limit. */
+  limit: (d: Download) => void;
+  /** Opens the dialog giving a download a new link (one that expired). */
+  refreshLink: (d: Download) => void;
   toast: (message: string, tone?: "error" | "info") => void;
 }
 
@@ -96,7 +119,10 @@ export interface Actions {
 export type ProgressStyle = "single" | "threads";
 
 export interface AppState {
+  /** Every download shown as a row: a batch's own downloads are not among them. */
   downloads: Download[];
+  /** The downloads inside each batch, by the batch's id. */
+  batchItems: Map<number, Download[]>;
   progressStyle: ProgressStyle;
   settings: Settings | null;
   /** Recent speed samples per download id, oldest first. */
@@ -243,6 +269,7 @@ function useProfilePicture(d: Download): [string | null, () => void] {
  *  being saved shows whose it is instead: the profile's own picture. */
 export function FileIcon({ d, large }: { d: Download; large?: boolean }) {
   const [picture, pictureFailed] = useProfilePicture(d);
+  if (d.batch) return <BatchTile large={large} />;
   // A video from a site (or a playlist of them) shows the site's picture of
   // it, in the tile's own shape. One that will not load gives way to the tile.
   const [thumbFailed, setThumbFailed] = useState<string | null>(null);
@@ -430,6 +457,7 @@ export function amountOf(d: Download): string {
 
 /** Line under the file name: status word in colour, then the facts. */
 export function RowMeta({ d }: { d: Download }) {
+  if (d.batch) return <BatchMeta d={d} />;
   switch (d.status) {
     case "downloading":
       return <>{amountOf(d)} · {formatSpeed(d.speed)}</>;
@@ -968,6 +996,793 @@ export function Select<T extends string>(props: {
   );
 }
 
+/* ---------- a download's own speed limit ---------- */
+
+const KB = 1024;
+const MB = 1024 * 1024;
+
+/** A speed limit in words: "2 MB/s", or "No limit" for 0. */
+export function limitText(rate: number): string {
+  return rate > 0 ? formatSpeed(rate) : t.ui.limit.none;
+}
+
+/**
+ * A download's own speed limit: off, or an amount in KB/s or MB/s. The value
+ * is in bytes per second; 0 means no limit of its own (the global limit in
+ * Settings applies either way).
+ */
+export function SpeedLimitField(props: { value: number; onChange: (rate: number) => void; id?: string }) {
+  const [on, setOn] = useState(props.value > 0);
+  const [unit, setUnit] = useState<"kb" | "mb">(props.value > 0 && props.value < MB ? "kb" : "mb");
+  const [amount, setAmount] = useState(() =>
+    props.value > 0 ? String(+(props.value / (props.value < MB ? KB : MB)).toFixed(2)) : "2",
+  );
+  const base = props.id ?? "speed-limit";
+
+  const emit = (nextOn: boolean, nextAmount: string, nextUnit: "kb" | "mb") => {
+    const n = Number(nextAmount);
+    props.onChange(nextOn && Number.isFinite(n) && n > 0 ? Math.round(n * (nextUnit === "kb" ? KB : MB)) : 0);
+  };
+
+  return (
+    <div className="field speed-limit">
+      <label className="check-line">
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(e) => {
+            setOn(e.target.checked);
+            emit(e.target.checked, amount, unit);
+          }}
+        />
+        <span>{t.ui.limit.enable}</span>
+      </label>
+      <div className="field-row">
+        <input
+          type="number"
+          min={1}
+          step="any"
+          inputMode="decimal"
+          aria-label={t.ui.limit.amount}
+          id={`${base}-amount`}
+          disabled={!on}
+          value={amount}
+          onChange={(e) => {
+            setAmount(e.target.value);
+            emit(on, e.target.value, unit);
+          }}
+        />
+        <Select<"kb" | "mb">
+          aria-label={t.ui.limit.unit}
+          disabled={!on}
+          value={unit}
+          onChange={(v) => {
+            setUnit(v);
+            emit(on, amount, v);
+          }}
+          options={[
+            { value: "kb", label: t.common.perSecond(t.common.units[1]) },
+            { value: "mb", label: t.common.perSecond(t.common.units[2]) },
+          ]}
+        />
+      </div>
+      <small>{t.ui.limit.hint}</small>
+    </div>
+  );
+}
+
+/** Sets one download's own speed limit, from its menu or its details. */
+export function SpeedLimitDialog({ d, onClose }: { d: Download; onClose: () => void }) {
+  const { actions } = useApp();
+  const [rate, setRate] = useState(d.speed_limit);
+  const running = d.status === "downloading" || d.status === "connecting";
+  async function save() {
+    try {
+      await api.setSpeedLimit(d.id, rate);
+      actions.toast(rate > 0 ? t.ui.limit.set(limitText(rate)) : t.ui.limit.cleared, "info");
+      onClose();
+    } catch (e) {
+      actions.toast(String(e), "error");
+    }
+  }
+  return (
+    <Modal
+      title={t.ui.limit.title}
+      subtitle={displayName(d)}
+      onClose={onClose}
+      footer={
+        <>
+          <span className="spacer" />
+          <button type="button" className="btn" onClick={onClose}>
+            {t.ui.close}
+          </button>
+          <button type="button" className="btn btn-primary" onClick={save}>
+            {t.ui.limit.save}
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        <SpeedLimitField value={d.speed_limit} onChange={setRate} id="limit-dialog" />
+        {running && d.torrent && <small className="form-note">{t.ui.limit.torrentNote}</small>}
+        {running && (d.media || d.profile) && <small className="form-note">{t.ui.limit.programNote}</small>}
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- a new link for a download ---------- */
+
+/** "Name: value" lines as headers; the line that is not one, if any. */
+function parseHeaders(text: string): { headers: [string, string][]; bad: string | null } {
+  const headers: [string, string][] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const at = line.indexOf(":");
+    if (at <= 0 || !/^[A-Za-z0-9-]+$/.test(line.slice(0, at).trim())) return { headers, bad: line };
+    headers.push([line.slice(0, at).trim(), line.slice(at + 1).trim()]);
+  }
+  return { headers, bad: null };
+}
+
+/**
+ * Gives a download whose link stopped working a new one. The new link is
+ * checked first (the engine compares pieces of it with what is on disk); the
+ * download carries on only if it is the same file, and otherwise can only
+ * start over, which is said plainly with what would be lost.
+ */
+export function RefreshLinkDialog({ d, onClose }: { d: Download; onClose: () => void }) {
+  const { actions } = useApp();
+  const r = t.ui.refresh;
+  const [url, setUrl] = useState("");
+  const [headersOpen, setHeadersOpen] = useState(false);
+  const [headerText, setHeaderText] = useState("");
+  const [check, setCheck] = useState<LinkCheck | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const headersFor = (): [string, string][] | undefined | null => {
+    if (!headerText.trim()) return undefined;
+    const { headers, bad } = parseHeaders(headerText);
+    if (bad) {
+      setError(r.badHeader(bad));
+      return null;
+    }
+    return headers;
+  };
+
+  async function runCheck(e?: FormEvent) {
+    e?.preventDefault();
+    const headers = headersFor();
+    if (headers === null || !url.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    setCheck(null);
+    try {
+      setCheck(await api.checkNewLink(d.id, url.trim(), headers));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function use(restart: boolean) {
+    const headers = headersFor();
+    if (headers === null || busy) return;
+    setBusy(true);
+    try {
+      await api.useNewLink(d.id, url.trim(), headers, restart);
+      actions.toast(r.done, "info");
+      onClose();
+    } catch (err) {
+      setError(String(err));
+      setBusy(false);
+    }
+  }
+
+  const reset = () => {
+    setCheck(null);
+    setError("");
+  };
+
+  return (
+    <Modal
+      title={r.title}
+      subtitle={displayName(d)}
+      onClose={onClose}
+      footer={
+        <>
+          <span className="spacer" />
+          <button type="button" className="btn" onClick={onClose}>
+            {t.ui.close}
+          </button>
+          {!check ? (
+            <button type="submit" form="refresh-form" className="btn btn-primary" disabled={busy || !url.trim()}>
+              {busy ? r.checking : r.check}
+            </button>
+          ) : check.resume ? (
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => use(false)}>
+              {r.use}
+            </button>
+          ) : (
+            <button type="button" className="btn btn-danger-solid" disabled={busy} onClick={() => use(true)}>
+              {r.restart}
+            </button>
+          )}
+        </>
+      }
+    >
+      <form id="refresh-form" className="form" onSubmit={runCheck}>
+        <label className="field">
+          <span>{r.link}</span>
+          <input
+            data-autofocus
+            type="text"
+            value={url}
+            spellCheck={false}
+            placeholder="https://"
+            onChange={(e) => {
+              setUrl(e.target.value);
+              reset();
+            }}
+          />
+          <small className="refresh-old" title={d.url}>
+            {r.old(d.url)}
+          </small>
+        </label>
+        <button type="button" className="disclosure" aria-expanded={headersOpen} onClick={() => setHeadersOpen((v) => !v)}>
+          {headersOpen ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
+          {r.headers}
+        </button>
+        {headersOpen && (
+          <label className="field">
+            <textarea
+              rows={3}
+              spellCheck={false}
+              aria-label={r.headers}
+              placeholder="Authorization: Bearer …"
+              value={headerText}
+              onChange={(e) => {
+                setHeaderText(e.target.value);
+                reset();
+              }}
+            />
+            <small>{r.headersHint}</small>
+          </label>
+        )}
+        {error && (
+          <small className="field-error" role="alert">
+            {error}
+          </small>
+        )}
+        {check && (
+          <div className={`refresh-verdict ${check.resume ? "is-ok" : "is-warn"}`} role="status">
+            {check.resume ? (
+              <p>{check.downloaded > 0 ? r.same(formatBytes(check.downloaded)) : r.fresh}</p>
+            ) : (
+              <>
+                <p>
+                  <strong>{check.problem ? r.problems[check.problem] : r.problems.content_differs}</strong>
+                </p>
+                <p>{r.restartNote(formatBytes(check.downloaded))}</p>
+              </>
+            )}
+          </div>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
+/* ---------- a button with an arrow that fills it ---------- */
+
+/**
+ * A pill button with a round mark at its end holding an arrow. Under the
+ * pointer (or the keyboard's focus) the mark grows until it fills the
+ * button, the text takes the mark's colour, and a new arrow slides in as
+ * the old one leaves. The look is in styles.css ("arrow fill").
+ */
+export function ArrowFillButton({
+  children,
+  className,
+  ref,
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { ref?: React.Ref<HTMLButtonElement> }) {
+  return (
+    <button {...rest} ref={ref} className={`arrow-fill${className ? ` ${className}` : ""}`}>
+      <span className="arrow-fill-text">{children}</span>
+      <span className="arrow-fill-fill" aria-hidden="true" />
+      <span className="arrow-fill-clone" aria-hidden="true">
+        <span>{children}</span>
+      </span>
+      <span className="arrow-fill-mark" aria-hidden="true">
+        <ArrowRight className="arrow-fill-in" size={16} strokeWidth={2.2} />
+        <ArrowRight className="arrow-fill-out" size={16} strokeWidth={2.2} />
+      </span>
+    </button>
+  );
+}
+
+/* ---------- pickers that open under a field ---------- */
+
+/**
+ * Places a picker under its field, inside the window (above the field when
+ * there is no room below, mirrored in right-to-left text), and closes it
+ * when the window is resized, loses focus, or the page scrolls under it.
+ * Returns the position to give the picker; null until it is measured.
+ */
+function usePopover(
+  open: boolean,
+  trigger: React.RefObject<HTMLElement | null>,
+  pop: React.RefObject<HTMLElement | null>,
+  close: () => void,
+) {
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    const field = trigger.current?.getBoundingClientRect();
+    const el = pop.current;
+    if (!field || !el) return;
+    const gap = 6;
+    const margin = 8;
+    const height = el.offsetHeight;
+    const width = el.offsetWidth;
+    const down = window.innerHeight - field.bottom - gap - margin >= height || field.top < height + gap + margin;
+    const rtl = document.documentElement.dir === "rtl";
+    const start = rtl ? field.right - width : field.left;
+    setPos({
+      top: down ? field.bottom + gap : field.top - gap - height,
+      left: Math.max(margin, Math.min(start, window.innerWidth - width - margin)),
+    });
+    // measured once, when it opens
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onScroll = (e: Event) => {
+      if (pop.current && e.target instanceof Node && pop.current.contains(e.target)) return;
+      close();
+    };
+    window.addEventListener("resize", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("resize", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  return pos;
+}
+
+/* ---------- time of day ---------- */
+
+/** A name the browser gives a part of a date ("hour", "Stunde"), in the
+ *  interface's language; `fallback` where it has none. */
+function fieldName(field: "hour" | "minute" | "dayPeriod", fallback: string): string {
+  try {
+    return new Intl.DisplayNames(formatLocale(), { type: "dateTimeField" }).of(field) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * A time of day, in minutes after midnight, picked from three columns
+ * (hours, minutes, and AM/PM where the language uses a 12-hour clock) in
+ * the Float material, in place of the system's grey time picker.
+ * Arrow keys move through a column, Enter or Escape closes it.
+ */
+export function TimeField(props: {
+  value: number;
+  onChange: (minutes: number) => void;
+  disabled?: boolean;
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+}) {
+  const trigger = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const pos = usePopover(open, trigger, pop, () => close(false));
+  const locale = formatLocale();
+
+  const { h12, periods, names } = useMemo(() => {
+    const cycle = new Intl.DateTimeFormat(locale, { hour: "numeric" }).resolvedOptions().hourCycle;
+    const period = (h: number, fallback: string) =>
+      new Intl.DateTimeFormat(locale, { hour: "numeric", hour12: true })
+        .formatToParts(new Date(2024, 0, 1, h))
+        .find((part) => part.type === "dayPeriod")?.value ?? fallback;
+    return {
+      h12: cycle === "h11" || cycle === "h12",
+      periods: [period(9, "AM"), period(21, "PM")],
+      names: [fieldName("hour", "Hour"), fieldName("minute", "Minute"), fieldName("dayPeriod", "AM/PM")],
+    };
+  }, [locale]);
+
+  const hour = Math.floor(props.value / 60) % 24;
+  const minute = props.value % 60;
+  const pm = hour >= 12;
+  const hours = h12 ? [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] : Array.from({ length: 24 }, (_, i) => i);
+  const shownHour = h12 ? hour % 12 || 12 : hour;
+  const minutes = Array.from({ length: 60 }, (_, i) => i);
+
+  const set = (h: number, m: number) => {
+    const next = (((h % 24) + 24) % 24) * 60 + m;
+    if (next !== props.value) props.onChange(next);
+  };
+  const pickHour = (shown: number) => set(h12 ? (shown % 12) + (pm ? 12 : 0) : shown, minute);
+  const pickMinute = (m: number) => set(hour, m);
+  const pickPeriod = (toPm: boolean) => set((hour % 12) + (toPm ? 12 : 0), minute);
+
+  function close(refocus = true) {
+    setOpen(false);
+    if (refocus) trigger.current?.focus();
+  }
+
+  // Each column shows its choice in the middle; the hour takes the focus.
+  useEffect(() => {
+    if (!open || !pos) return;
+    pop.current?.querySelectorAll<HTMLElement>(".time-col").forEach((col) => {
+      const chosen = col.querySelector<HTMLElement>(".is-checked");
+      if (chosen) col.scrollTop = chosen.offsetTop - col.clientHeight / 2 + chosen.offsetHeight / 2;
+    });
+    pop.current?.querySelector<HTMLElement>(".time-col .is-checked")?.focus({ preventScroll: true });
+    // the value changes while open; only the first placing scrolls
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, pos != null]);
+
+  /** Up and down move a column's choice and keep it in view and in focus. */
+  function onColumnKey(e: React.KeyboardEvent, step: (by: number) => void) {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    step(e.key === "ArrowDown" ? 1 : -1);
+    const col = e.currentTarget;
+    requestAnimationFrame(() => {
+      const chosen = col.querySelector<HTMLElement>(".is-checked");
+      chosen?.focus({ preventScroll: true });
+      chosen?.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  function onPopKey(e: React.KeyboardEvent) {
+    // Keys stay here: Escape closes the picker, not the dialog it is in.
+    e.stopPropagation();
+    if (e.key === "Escape" || e.key === "Enter") {
+      e.preventDefault();
+      close();
+    }
+  }
+
+  const column = (
+    label: string,
+    items: { key: string; text: string; on: boolean; pick: () => void }[],
+    step: (by: number) => void,
+  ) => (
+    <div className="time-col" role="listbox" aria-label={label} onKeyDown={(e) => onColumnKey(e, step)}>
+      {items.map((item) => (
+        <button
+          key={item.key}
+          type="button"
+          role="option"
+          aria-selected={item.on}
+          tabIndex={item.on ? 0 : -1}
+          className={item.on ? "is-checked" : undefined}
+          onClick={item.pick}
+        >
+          {item.text}
+        </button>
+      ))}
+    </div>
+  );
+
+  const hourIndex = hours.indexOf(shownHour);
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        className="select-btn time-btn"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={props["aria-label"]}
+        aria-labelledby={props["aria-labelledby"]}
+        disabled={props.disabled}
+        onClick={() => (open ? close() : setOpen(true))}
+        onKeyDown={(e) => {
+          if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <span className="select-value">
+          {dateText(new Date(2024, 0, 1, hour, minute), { hour: "numeric", minute: "2-digit" })}
+        </span>
+        <Clock className="select-chevron" size={15} strokeWidth={2} aria-hidden="true" />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            className="menu-layer"
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              close(false);
+            }}
+          >
+            <div
+              ref={pop}
+              className="menu time-pop"
+              role="dialog"
+              aria-label={props["aria-label"]}
+              aria-labelledby={props["aria-labelledby"]}
+              style={pos ? { top: pos.top, left: pos.left } : { visibility: "hidden", top: 0, left: 0 }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onKeyDown={onPopKey}
+            >
+              {column(
+                names[0],
+                hours.map((h) => ({
+                  key: String(h),
+                  text: h12 ? String(h) : pad2(h),
+                  on: h === shownHour,
+                  pick: () => pickHour(h),
+                })),
+                (by) => pickHour(hours[(hourIndex + by + hours.length) % hours.length]),
+              )}
+              {column(
+                names[1],
+                minutes.map((m) => ({ key: String(m), text: pad2(m), on: m === minute, pick: () => pickMinute(m) })),
+                (by) => pickMinute((minute + by + 60) % 60),
+              )}
+              {h12 &&
+                column(
+                  names[2],
+                  periods.map((text, i) => ({ key: text, text, on: pm === (i === 1), pick: () => pickPeriod(i === 1) })),
+                  () => pickPeriod(!pm),
+                )}
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+/* ---------- a day ---------- */
+
+/** "2026-11-28" for a date, on this computer's calendar. */
+export function dayValue(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** The date "2026-11-28" stands for, at midnight; null for anything else. */
+export function dateOfDay(value: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+
+const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const addMonths = (d: Date, n: number) => {
+  // the same day of the month, or the month's last day where it is shorter
+  const last = new Date(d.getFullYear(), d.getMonth() + n + 1, 0).getDate();
+  return new Date(d.getFullYear(), d.getMonth() + n, Math.min(d.getDate(), last));
+};
+
+/**
+ * A day, as "YYYY-MM-DD", picked from a month in the Float material, in
+ * place of the system's grey calendar. Weeks start on Monday, as in the
+ * Scheduler's day picker. Arrow keys move by a day or a week, Page Up and
+ * Page Down by a month, Enter picks, Escape closes.
+ */
+export function DateField(props: {
+  value: string;
+  onChange: (day: string) => void;
+  /** The first day that can be picked. */
+  min?: string;
+  disabled?: boolean;
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+}) {
+  const trigger = useRef<HTMLButtonElement>(null);
+  const pop = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const pos = usePopover(open, trigger, pop, () => close(false));
+  const chosen = dateOfDay(props.value);
+  const min = props.min ? dateOfDay(props.min) : null;
+  /** The day the keyboard is on; its month is the one shown. */
+  const [focus, setFocus] = useState<Date>(() => chosen ?? new Date());
+  const today = dayValue(new Date());
+
+  function show() {
+    if (props.disabled) return;
+    setFocus(chosen ?? min ?? new Date());
+    setOpen(true);
+  }
+
+  function close(refocus = true) {
+    setOpen(false);
+    if (refocus) trigger.current?.focus();
+  }
+
+  const allowed = (d: Date) => !min || d >= min;
+
+  function pick(d: Date) {
+    if (!allowed(d)) return;
+    close();
+    const value = dayValue(d);
+    if (value !== props.value) props.onChange(value);
+  }
+
+  // The day the keyboard is on holds the focus as it moves.
+  useEffect(() => {
+    if (!open || !pos) return;
+    pop.current?.querySelector<HTMLElement>(`[data-day="${dayValue(focus)}"]`)?.focus({ preventScroll: true });
+  }, [open, pos, focus]);
+
+  const first = new Date(focus.getFullYear(), focus.getMonth(), 1);
+  // the Monday on or before the 1st, then six weeks
+  const start = addDays(first, -((first.getDay() + 6) % 7));
+  const days = Array.from({ length: 42 }, (_, i) => addDays(start, i));
+  const weekdays = Array.from({ length: 7 }, (_, i) => addDays(new Date(2024, 0, 1), i));
+  const monthName = (d: Date) => dateText(d, { month: "long", year: "numeric" });
+  const previous = addMonths(first, -1);
+  const next = addMonths(first, 1);
+  const canGoBack = !min || new Date(first.getFullYear(), first.getMonth(), 0) >= min;
+
+  function onGridKey(e: React.KeyboardEvent) {
+    const move: Record<string, () => Date> = {
+      ArrowLeft: () => addDays(focus, document.documentElement.dir === "rtl" ? 1 : -1),
+      ArrowRight: () => addDays(focus, document.documentElement.dir === "rtl" ? -1 : 1),
+      ArrowUp: () => addDays(focus, -7),
+      ArrowDown: () => addDays(focus, 7),
+      PageUp: () => addMonths(focus, -1),
+      PageDown: () => addMonths(focus, 1),
+      Home: () => addDays(focus, -((focus.getDay() + 6) % 7)),
+      End: () => addDays(focus, 6 - ((focus.getDay() + 6) % 7)),
+    };
+    if (move[e.key]) {
+      e.preventDefault();
+      const to = move[e.key]();
+      setFocus(min && to < min ? min : to);
+    }
+  }
+
+  function onPopKey(e: React.KeyboardEvent) {
+    // Keys stay here: Escape closes the calendar, not the dialog it is in.
+    e.stopPropagation();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  }
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        className="select-btn date-btn"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={props["aria-label"]}
+        aria-labelledby={props["aria-labelledby"]}
+        disabled={props.disabled}
+        onClick={() => (open ? close() : show())}
+        onKeyDown={(e) => {
+          if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
+            e.preventDefault();
+            show();
+          }
+        }}
+      >
+        <span className="select-value">
+          {chosen ? dateText(chosen, { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : props.value}
+        </span>
+        <CalendarDays className="select-chevron" size={15} strokeWidth={2} aria-hidden="true" />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            className="menu-layer"
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              close(false);
+            }}
+          >
+            <div
+              ref={pop}
+              className="menu date-pop"
+              role="dialog"
+              aria-label={props["aria-label"]}
+              aria-labelledby={props["aria-labelledby"]}
+              style={pos ? { top: pos.top, left: pos.left } : { visibility: "hidden", top: 0, left: 0 }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onKeyDown={onPopKey}
+            >
+              <div className="date-head">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={monthName(previous)}
+                  title={monthName(previous)}
+                  disabled={!canGoBack}
+                  onClick={() => setFocus(min && previous < min ? min : previous)}
+                >
+                  <ChevronLeft size={16} strokeWidth={2.2} aria-hidden="true" />
+                </button>
+                <strong aria-live="polite">{monthName(first)}</strong>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={monthName(next)}
+                  title={monthName(next)}
+                  onClick={() => setFocus(next)}
+                >
+                  <ChevronRight size={16} strokeWidth={2.2} aria-hidden="true" />
+                </button>
+              </div>
+              <div className="date-grid" role="grid" aria-label={monthName(first)} onKeyDown={onGridKey}>
+                {weekdays.map((d) => (
+                  <span key={d.getDay()} className="date-weekday" role="columnheader" title={dateText(d, { weekday: "long" })}>
+                    {dateText(d, { weekday: "narrow" })}
+                  </span>
+                ))}
+                {days.map((d) => {
+                  const value = dayValue(d);
+                  const inMonth = d.getMonth() === first.getMonth();
+                  const isChosen = value === props.value;
+                  const isFocus = value === dayValue(focus);
+                  const cls = [
+                    !inMonth && "is-outside",
+                    value === today && "is-today",
+                    isChosen && "is-checked",
+                  ]
+                    .filter(Boolean)
+                    .join(" ");
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      role="gridcell"
+                      data-day={value}
+                      aria-selected={isChosen}
+                      aria-current={value === today ? "date" : undefined}
+                      aria-label={dateText(d, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+                      tabIndex={isFocus ? 0 : -1}
+                      disabled={!allowed(d)}
+                      className={cls || undefined}
+                      onClick={() => pick(d)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          pick(d);
+                        }
+                      }}
+                    >
+                      {d.getDate()}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
 /** Pill button that opens a list of choices under itself. */
 export function Dropdown<T extends string>(props: {
   label: string;
@@ -1013,11 +1828,43 @@ export function Dropdown<T extends string>(props: {
 }
 
 /** Every action that applies to one download, in menu order. */
+/** Asks for a folder, then moves a finished download there (never over a file). */
+export async function moveDownload(d: Download, a: Actions) {
+  const dir = await api.pickFolder(d.dir);
+  if (!dir) return;
+  try {
+    const now = await api.moveDownload(d.id, dir);
+    a.toast(t.organize.moved(now));
+  } catch (e) {
+    a.toast(String(e), "error");
+  }
+}
+
 export function downloadMenu(d: Download, a: Actions): MenuItem[] {
   const items: MenuItem[] = [];
+  if (d.batch) {
+    const b = d.batch;
+    const fail = (e: unknown) => a.toast(String(e), "error");
+    items.push({ label: t.batch.details, icon: Layers, onSelect: () => a.inspect(d.id) });
+    if (b.downloading + b.queued > 0) items.push({ label: t.batch.pauseAll, icon: Pause, onSelect: () => a.pause([d.id]) });
+    if (b.paused > 0) items.push({ label: t.batch.resumeAll, icon: Play, onSelect: () => a.resume([d.id]) });
+    if (b.failed + b.cancelled > 0) items.push({ label: t.batch.retryFailed, icon: RotateCw, onSelect: () => api.retryFailed(d.id).catch(fail) });
+    if (d.status !== "completed" && d.status !== "failed") {
+      items.push({ label: t.scheduler.menu, icon: CalendarClock, onSelect: () => a.schedule([d.id]) });
+      items.push({ label: t.ui.limit.menu, icon: Gauge, onSelect: () => a.limit(d) });
+    }
+    items.push({ label: t.batch.openFolder, icon: FolderOpen, onSelect: () => api.showFolder(d.id).catch(fail) });
+    if (d.status === "completed") items.push({ label: t.organize.moveTo, icon: FolderInput, onSelect: () => moveDownload(d, a) });
+    items.push({ label: t.ui.menu.copyPath, icon: Copy, onSelect: () => a.copy(d.path, t.ui.copyWhat.path) });
+    items.push("separator");
+    const ended = d.status === "completed" || d.status === "failed";
+    items.push({ label: ended ? t.ui.menu.removeFromList : t.batch.cancelBatch, icon: X, onSelect: () => a.remove([d.id]) });
+    return items;
+  }
   if (canPause(d)) items.push({ label: t.ui.menu.pause, icon: Pause, onSelect: () => a.pause([d.id]) });
   if (d.status === "paused") items.push({ label: t.ui.menu.resume, icon: Play, onSelect: () => a.resume([d.id]) });
   if (d.status === "failed") items.push({ label: t.ui.menu.retry, icon: RotateCw, onSelect: () => a.resume([d.id]) });
+  if (takesNewLink(d)) items.push({ label: t.ui.refresh.menu, icon: LinkGlyph, onSelect: () => a.refreshLink(d) });
   if (d.status === "failed" && d.media && !d.profile && /^https?:/i.test(d.url)) {
     items.push({ label: t.ui.menu.openOnBrowser, icon: Globe, onSelect: () => a.browse(d.url) });
     items.push({ label: t.ui.menu.findMedia, icon: ScanSearch, onSelect: () => a.scan(d.url) });
@@ -1027,9 +1874,14 @@ export function downloadMenu(d: Download, a: Actions): MenuItem[] {
   if (gone && /^(https?|magnet):/i.test(d.url)) {
     items.push({ label: t.ui.menu.downloadAgain, icon: RotateCw, onSelect: () => a.again(d) });
   }
+  if (d.status !== "completed" && !gone) {
+    items.push({ label: t.scheduler.menu, icon: CalendarClock, onSelect: () => a.schedule([d.id]) });
+    items.push({ label: t.ui.limit.menu, icon: Gauge, onSelect: () => a.limit(d) });
+  }
   if (d.status === "completed" && !gone) {
     items.push({ label: t.ui.menu.openFile, icon: SquareArrowOutUpRight, onSelect: () => a.open(d) });
     items.push({ label: t.ui.menu.showInFolder, icon: FolderOpen, onSelect: () => a.reveal(d) });
+    items.push({ label: t.organize.moveTo, icon: FolderInput, onSelect: () => moveDownload(d, a) });
   }
   items.push("separator");
   items.push({ label: t.ui.menu.copyLink, icon: LinkGlyph, onSelect: () => a.copy(d.url, t.ui.copyWhat.link) });
@@ -1104,6 +1956,7 @@ export function DownloadRow(props: {
   onMenu: (x: number, y: number) => void;
 }) {
   const { d } = props;
+  const { actions } = useApp();
   const active = d.status === "downloading" || d.status === "connecting";
   const eta = etaOf(d);
 
@@ -1120,6 +1973,9 @@ export function DownloadRow(props: {
       <FileIcon d={d} />
       <div className="row-main">
         <div className="row-name" title={displayName(d)}>{displayName(d)}</div>
+        {d.batch?.current && active && (
+          <div className="row-now" title={d.batch.current}>{t.batch.now(d.batch.current)}</div>
+        )}
         <div className="row-line">
           <span className="row-meta" title={d.status === "failed" ? d.error ?? undefined : undefined}>
             <RowMeta d={d} />
@@ -1129,6 +1985,11 @@ export function DownloadRow(props: {
         {(active || (d.status === "paused" && d.total)) && <Progress d={d} />}
       </div>
       <div className="row-actions" onClick={(e) => e.stopPropagation()}>
+        <IconBtn
+          icon={FolderOpen}
+          label={t.ui.menu.showInFolder}
+          onClick={() => api.showFolder(d.id).catch((err) => actions.toast(String(err), "error"))}
+        />
         <RowAction d={d} />
         <IconBtn
           icon={Ellipsis}

@@ -3,7 +3,10 @@ import { flushSync } from "react-dom";
 import {
   Archive,
   ArrowLeft,
+  AppWindow,
   ArrowRight,
+  Ban,
+  Bell,
   Brush,
   CalendarClock,
   Download as DownloadGlyph,
@@ -17,18 +20,22 @@ import {
   Image as ImageGlyph,
   Info,
   KeyRound,
-  Languages,
+  Layers,
   LayoutGrid,
   ListFilter,
+  LogOut,
+  Moon,
   Music,
   Package,
   Pause,
   Play,
+  Power,
   Puzzle,
   RotateCw,
   Search,
   Settings as SettingsGlyph,
   ShieldCheck,
+  Snowflake,
   Users,
   Wifi,
   Wrench,
@@ -37,6 +44,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  type AfterAll,
   type AppPrefs,
   api,
   canPause,
@@ -73,13 +81,15 @@ import {
   type Settings,
   type ToolStatus,
 } from "./api";
+import { DEFAULT_ORGANIZE, OrganizeSettings } from "./Organize";
 import { siteBlockedText } from "./dialogs";
 import { SITE_LOGOS } from "./siteLogos";
+import { LumenButton } from "./LumenButton";
 import { DownloadRow, Dropdown, FileIcon, IconBtn, Modal, useApp, type ProgressStyle, Select } from "./ui";
-import { changeLanguageLabel, dateText, ENGLISH_CHANGE_LANGUAGE, formatLocale, languageOptionLabel, listText, type Locale, locale, LOCALES, num, pct, setLocale, t } from "./i18n";
+import { dateText, ENGLISH_CHANGE_LANGUAGE, formatLocale, languageOptionLabel, listText, type Locale, locale, LOCALES, num, pct, setLocale, t } from "./i18n";
 
-export type Nav = "home" | "downloads" | "history" | "browser" | "signin" | "settings";
-export const NAVS: readonly Nav[] = ["home", "downloads", "history", "browser", "signin", "settings"];
+export type Nav = "home" | "downloads" | "scheduler" | "history" | "browser" | "signin" | "settings";
+export const NAVS: readonly Nav[] = ["home", "downloads", "scheduler", "history", "browser", "signin", "settings"];
 
 export interface RowHandlers {
   selection: Set<number>;
@@ -878,8 +888,10 @@ export function HomeView(props: {
   signIn: (site: string) => void;
   /** A link the user just copied somewhere; it goes straight into the box. */
   copied?: { text: string; n: number } | null;
+  /** Saves the settings, for the choice of what happens after all downloads. */
+  onSettings: (settings: Settings) => void;
 }) {
-  const { downloads, actions } = useApp();
+  const { downloads, actions, settings } = useApp();
   const [url, setUrl] = useState(props.copied?.text ?? keptLink);
   keptLink = url;
   /** The link's site will not show this to a visitor who is not signed in. */
@@ -1345,20 +1357,22 @@ export function HomeView(props: {
 
   return (
     <div className="page page-home">
+      {/* What happens once every download has finished: the same setting as
+          in Settings → Downloads, at hand where downloads are started. */}
+      {settings && (
+        <div className="home-corner">
+          <Dropdown<AfterAll>
+            label={t.views.settings.after.title}
+            value={settings.after_all}
+            showValue
+            onChange={(v) => props.onSettings({ ...settings, after_all: v })}
+            options={AFTER_ALL.map((a) => ({ value: a, label: t.views.settings.after.actions[a], icon: AFTER_ICON[a] }))}
+          />
+        </div>
+      )}
       <div className="welcome">
         <h1>{t.views.home.welcome}</h1>
         <p>{t.views.home.subtitle}</p>
-
-        <label className="lang-switch">
-          <Languages size={14} strokeWidth={2} aria-hidden="true" />
-          <ChangeLanguageText />
-          <Select<Locale>
-            aria-label={changeLanguageLabel()}
-            value={locale}
-            onChange={(code) => void setLocale(code, true)}
-            options={LOCALES.map((l) => ({ value: l.code, label: languageOptionLabel(l), lang: l.code }))}
-          />
-        </label>
 
         <form className="paste" onSubmit={submit}>
           <input
@@ -1370,18 +1384,31 @@ export function HomeView(props: {
             spellCheck={false}
             autoFocus
           />
-          <button
+          <LumenButton
             ref={downloadButton}
             type="submit"
-            className="btn btn-primary"
+            className="btn"
+            // fills with water once the link (or torrent) can be downloaded
+            ready={valid && !gated}
             // Always takes the click: with no usable link, or a profile that
             // needs a sign-in (`gated`), it shakes and points at what is missing.
             aria-disabled={!valid || gated || undefined}
-            onAnimationEnd={(e) => e.currentTarget.classList.remove("is-shaking")}
+            onAnimationEnd={(e) => {
+              // only the shake's own end, not one of the arrow's inside it
+              if (e.target === e.currentTarget) e.currentTarget.classList.remove("is-shaking");
+            }}
           >
             {t.views.home.download}
-          </button>
+          </LumenButton>
         </form>
+
+        {/* Many links at once: under Download, and quieter than it. */}
+        <div className="batch-entry">
+          <span className="batch-entry-hint">{t.batch.buttonHint}</span>
+          <button type="button" className="btn batch-entry-btn" title={t.batch.buttonHint} onClick={() => actions.openBatch()}>
+            <Layers size={15} strokeWidth={2} aria-hidden="true" /> {t.batch.button}
+          </button>
+        </div>
 
         {((looking && !video) || (catchLink && catching && caughtOffers.length === 0)) && (
           <p className="video-looking" role="status">
@@ -2032,7 +2059,8 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
         />
       </header>
 
-      <div className="chips" role="tablist" aria-label={t.views.downloads.filterByStatus}>
+      {/* Tabs as Settings has them: the one in front is part of the panel under it. */}
+      <div className="dl-tabs" role="tablist" aria-label={t.views.downloads.filterByStatus}>
         {CHIPS.map((c) => {
           const count = downloads.filter(c.match).length;
           // Queued only earns a chip while something is actually waiting, and
@@ -2044,7 +2072,8 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
               type="button"
               role="tab"
               aria-selected={chip === c.id}
-              className={`chip${chip === c.id ? " is-active" : ""}`}
+              aria-controls="downloads-panel"
+              className={chip === c.id ? "is-active" : undefined}
               onClick={() => {
                 setChip(c.id);
                 savePref("chip", c.id);
@@ -2056,6 +2085,7 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
         })}
       </div>
 
+      <div className="dl-panel" id="downloads-panel" role="tabpanel" aria-label={t.views.downloads.filterByStatus}>
       {filtersOpen && (
         <div className="filters">
           <Dropdown label={t.views.downloads.type} value={type} options={TYPES} onChange={setType} showValue />
@@ -2139,6 +2169,7 @@ export function DownloadsView(props: RowHandlers & { clearSelection: () => void;
           ))}
         </ul>
       )}
+      </div>
     </div>
   );
 }
@@ -2277,6 +2308,26 @@ function Segmented<T extends string>(props: {
   );
 }
 
+/** What can happen once every download has finished, in the order offered. */
+const AFTER_ALL: AfterAll[] = ["nothing", "notify", "close", "exit", "sleep", "hibernate", "shutdown"];
+
+/** The mark beside each of those in the Home page's list. */
+const AFTER_ICON: Record<AfterAll, LucideIcon> = {
+  nothing: Ban,
+  notify: Bell,
+  close: AppWindow,
+  exit: LogOut,
+  sleep: Moon,
+  hibernate: Snowflake,
+  shutdown: Power,
+};
+
+/** "10 seconds", "2 minutes", the language's way. */
+export function durationText(seconds: number): string {
+  const [n, unit] = seconds % 60 === 0 ? [seconds / 60, "minute"] : [seconds, "second"];
+  return new Intl.NumberFormat(formatLocale(), { style: "unit", unit, unitDisplay: "long" }).format(n);
+}
+
 export function SettingsView(props: {
   theme: Theme;
   onTheme: (t: Theme) => void;
@@ -2294,6 +2345,9 @@ export function SettingsView(props: {
   /** How the app sits on the desktop; null until known. */
   appPrefs: AppPrefs | null;
   onAppPrefs: (prefs: AppPrefs) => void;
+  /** How many schedules there are, and the way to the Scheduler page. */
+  scheduleCount: number;
+  onOpenScheduler: () => void;
   /** Which tab is in front, and what picks another. */
   section: Section;
   onSection: (section: Section) => void;
@@ -2408,6 +2462,7 @@ export function SettingsView(props: {
                 />
                 <SettingToggle
                   label={t.views.settings.general.askFolder}
+                  hint={t.views.settings.general.askFolderHint}
                   checked={props.askFolder}
                   onChange={props.onAskFolder}
                 />
@@ -2469,6 +2524,21 @@ export function SettingsView(props: {
                   </button>
                 </SettingRow>
               </div>
+              <h3 className="setting-group">{t.organize.title}</h3>
+              <p className="setting-group-hint">{t.organize.hint}</p>
+              <div className="setting-card">
+                <SettingToggle
+                  label={t.organize.enabled}
+                  hint={t.organize.enabledHint}
+                  checked={(settings.organize ?? DEFAULT_ORGANIZE).enabled}
+                  onChange={(on) => update({ organize: { ...(settings.organize ?? DEFAULT_ORGANIZE), enabled: on } })}
+                />
+                <OrganizeSettings
+                  value={settings.organize ?? DEFAULT_ORGANIZE}
+                  downloadDir={settings.download_dir}
+                  onChange={(organize) => update({ organize })}
+                />
+              </div>
               <div className="setting-card">
                 <SettingRow
                   label={t.views.settings.downloads.quality}
@@ -2504,6 +2574,31 @@ export function SettingsView(props: {
                   hint={t.views.settings.downloads.torrentApartHint}
                   checked={settings.torrent_files_apart}
                   onChange={(on) => update({ torrent_files_apart: on })}
+                />
+              </div>
+              <div className="setting-card">
+                <SettingRow label={t.views.settings.after.title} id="set-after" hint={t.views.settings.after.hint}>
+                  <Select<AfterAll>
+                    aria-labelledby="set-after"
+                    value={settings.after_all}
+                    onChange={(v) => update({ after_all: v })}
+                    options={AFTER_ALL.map((a) => ({ value: a, label: t.views.settings.after.actions[a] }))}
+                  />
+                </SettingRow>
+                <SettingRow label={t.views.settings.after.countdown} id="set-after-wait" hint={t.views.settings.after.countdownHint}>
+                  <Select
+                    aria-labelledby="set-after-wait"
+                    disabled={settings.after_all === "nothing" || settings.after_all === "notify"}
+                    value={String(settings.after_countdown)}
+                    onChange={(v) => update({ after_countdown: Number(v) })}
+                    options={[10, 30, 60, 120, 300].map((s) => ({ value: String(s), label: durationText(s) }))}
+                  />
+                </SettingRow>
+                <SettingToggle
+                  label={t.views.settings.after.failures}
+                  hint={t.views.settings.after.failuresHint}
+                  checked={settings.after_failures}
+                  onChange={(on) => update({ after_failures: on })}
                 />
               </div>
             </>
@@ -2604,14 +2699,18 @@ export function SettingsView(props: {
           {section === "scheduler" && (
             <>
               <h2>{t.views.settings.sections.scheduler}</h2>
-              <div className="setting-card setting-note">
-                <p className="note">
-                  {t.views.settings.scheduler.before}
-                  <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd>
-                  {t.views.settings.scheduler.and}
-                  <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>R</kbd>
-                  {t.views.settings.scheduler.after}
-                </p>
+              <div className="setting-card">
+                <SettingToggle
+                  label={t.scheduler.settings.onLaunch}
+                  hint={t.scheduler.settings.onLaunchHint}
+                  checked={settings.start_scheduled_on_launch}
+                  onChange={(on) => update({ start_scheduled_on_launch: on })}
+                />
+                <SettingRow label={t.scheduler.title} hint={t.scheduler.settings.count(props.scheduleCount)}>
+                  <button type="button" className="btn" onClick={props.onOpenScheduler}>
+                    {t.scheduler.settings.open}
+                  </button>
+                </SettingRow>
               </div>
             </>
           )}

@@ -19,3 +19,5 @@ ring = "0.17"
 # MEGA encrypts every file with AES; its links carry the key.
 aes = "0.8"
 base64 = "0.22"
+# Local time and time zones for download schedules (already built for librqbit).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

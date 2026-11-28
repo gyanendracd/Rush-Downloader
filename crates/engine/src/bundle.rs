@@ -86,6 +86,8 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>, rec: &Rec
             let Some(i) = waiting.next() else { break };
             let mut child = Live::new();
             child.cancel = live.cancel.child_token();
+            // every file of the bundle counts against the download's own limit
+            child.limiter = live.limiter.clone();
             let child = Arc::new(child);
             running.push((i, child.clone()));
             let (inner, file, dest) = (inner.clone(), rec.bundle[i].clone(), file_path(&folder, &rec.bundle[i]));
@@ -248,7 +250,7 @@ async fn stream(
         let Some(chunk) = chunk else { break };
         tokio::select! {
             _ = child.cancel.cancelled() => return Err(Fail::Cancelled),
-            _ = inner.limiter.acquire(chunk.len()) => {}
+            _ = child.limiter.acquire(chunk.len()) => {}
         }
         write_all_at(&file, &chunk, off).map_err(|e| Fail::Fatal(format!("could not write to disk: {e}")))?;
         off += chunk.len() as u64;

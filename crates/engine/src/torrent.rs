@@ -294,6 +294,52 @@ async fn private_session(inner: &Arc<Inner>) -> Result<Arc<Session>, Fail> {
     }
 }
 
+/// Sets a torrent engine's download limit to its share of `rate` (bytes per
+/// second; 0 = none). The library reads it for every block it asks peers
+/// for, so a change applies to a running torrent at once.
+fn set_session_limit(session: &Session, rate: u64, share: u64) {
+    let per = if rate == 0 { 0 } else { (rate / share.max(1)).max(1) };
+    session.ratelimits.set_download_bps(NonZeroU32::new(u32::try_from(per).unwrap_or(u32::MAX)));
+}
+
+/// A torrent engine now working for this download: it takes the download's
+/// limit (its own and the global one, the lower), and keeps to it as it
+/// changes (`retune`).
+pub(crate) fn hold(live: &Live, session: Arc<Session>, share: u64) {
+    set_session_limit(&session, live.limiter.effective_rate(), share);
+    live.torrent_sessions.lock().unwrap().push((session, share));
+}
+
+/// The download's limit changed (its own, or the global one): every torrent
+/// engine working for it takes the new one now. Blocks already asked of
+/// peers still arrive at the old speed; on a fast swarm the speed comes down
+/// to the new limit over some seconds (about fifteen, measured), and holds
+/// there. (Pausing the torrent to drop them stalls it: its peers come back
+/// slowly.)
+pub(crate) fn retune(live: &Live) {
+    let rate = live.limiter.effective_rate();
+    for (session, share) in live.torrent_sessions.lock().unwrap().iter() {
+        set_session_limit(session, rate, *share);
+    }
+}
+
+/// Bytes from a torrent's web seeds counted in the same budget as its peers'
+/// (the engine's limit), so the two together keep to the download's limit.
+/// The library takes at most a second's worth at a time.
+pub(crate) async fn take(session: &Session, n: usize) {
+    let Some(bps) = session.ratelimits.get_download_bps() else {
+        return;
+    };
+    let mut left = n as u64;
+    while left > 0 {
+        let step = left.min(u64::from(bps.get()));
+        if let Some(step) = NonZeroU32::new(step as u32) {
+            let _ = session.ratelimits.prepare_for_download(step).await;
+        }
+        left -= step.max(1);
+    }
+}
+
 /// Picks and creates this torrent's folder the first time it runs.
 pub(crate) fn claim_folder(dir: &Path, base: &str) -> Result<String, Fail> {
     for n in 0..10_000 {
@@ -366,17 +412,19 @@ pub(crate) async fn run(
         }
     }
 
-    let mut private = false;
-    let limit = u32::try_from(inner.limiter.rate()).unwrap_or(u32::MAX);
+    // Each torrent download runs in a torrent engine of its own: the library
+    // can change an engine's speed limit while it runs, but not a single
+    // torrent's, so this is how a new limit reaches the peers at once.
+    session = private_session(inner).await?;
+    let private = true;
+    hold(live, session.clone(), 1);
     let options = || AddTorrentOptions {
         overwrite: true,
         // `None` downloads everything; otherwise only the chosen files.
         only_files: rec.only_files.clone(),
         output_folder: Some(folder.to_string_lossy().into_owned()),
-        ratelimits: LimitsConfig {
-            upload_bps: None,
-            download_bps: NonZeroU32::new(limit),
-        },
+        // the engine's own limit applies (see `hold`)
+        ratelimits: LimitsConfig::default(),
         ..Default::default()
     };
 
@@ -391,8 +439,9 @@ pub(crate) async fn run(
         // The same torrent is already running under another row. This row
         // must not take hold of that one (stopping or removing this row would
         // stop it), so the copy runs in a torrent engine of its own.
+        session.stop().await;
         session = private_session(inner).await?;
-        private = true;
+        hold(live, session.clone(), 1);
         let (source, _) = open(inner, &rec.url, rec.torrent_file.as_deref()).await?;
         added = tokio::select! {
             _ = live.cancel.cancelled() => {
@@ -417,9 +466,8 @@ pub(crate) async fn run(
         Err(e) => return Err(Fail::Retry(format!("could not open the torrent: {e:#}"))),
     };
 
-    // Reads which pieces are done, for the per-part progress bars.
+    // Reads which pieces are done, for the progress bars.
     let pieces = librqbit::Api::new(session.clone(), None);
-    let part_count = rec.connections.clamp(2, 16);
 
     // Web servers the .torrent file lists as holding its files are fetched
     // from as well, the way other clients do (see webseed.rs).
@@ -492,31 +540,20 @@ pub(crate) async fn run(
         if total > 0 {
             live.total_hint.store(total, Relaxed);
         }
-        // A torrent's pieces arrive from many peers at once, all over the
-        // file. The file is cut into equal stretches and each one reports how
-        // many of its pieces are done, so the bars fill side by side.
-        if let Some((have, count)) = &haves {
+        // One bar for each worker there really is: the swarm's lane and each
+        // web seed fetcher's (webseed.rs). With no web seeds the swarm is the
+        // only worker, and the torrent shows as one bar.
+        let lanes = plan.map(|p| p.lanes()).filter(|l| !l.is_empty());
+        if let Some(lanes) = lanes {
+            *live.segs.lock().unwrap() = lanes
+                .into_iter()
+                .map(|(start, pos, end)| Seg { start: start as u64, pos: pos as u64, end: end as u64, owned: false })
+                .collect();
+        } else if let Some((have, count)) = &haves {
             let count = *count as usize;
-            let parts = part_count.min(count);
-            if parts > 1 {
-                let segs: Vec<Seg> = (0..parts)
-                    .map(|p| {
-                        let from = p * count / parts;
-                        let to = (p + 1) * count / parts;
-                        let done = (from..to)
-                            .filter(|i| {
-                                have.get(*i).map(|b| *b).unwrap_or(false) || plan.is_some_and(|plan| plan.has(*i))
-                            })
-                            .count();
-                        Seg {
-                            start: from as u64,
-                            pos: (from + done) as u64,
-                            end: to as u64,
-                            owned: false,
-                        }
-                    })
-                    .collect();
-                *live.segs.lock().unwrap() = segs;
+            let done = (0..count).filter(|i| have.get(*i).map(|b| *b).unwrap_or(false)).count();
+            if count > 0 {
+                *live.segs.lock().unwrap() = vec![Seg { start: 0, pos: done as u64, end: count as u64, owned: false }];
             }
         }
         if let Some(error) = stats.error {
@@ -530,11 +567,13 @@ pub(crate) async fn run(
                 // One fetcher per web seed at most: when the swarm already
                 // fills the line, more only split the same bandwidth.
                 let count = rec.connections.clamp(2, 16).min(plan.mirror_count());
-                for _ in 0..count {
+                plan.assign(count);
+                for worker in 0..count {
                     fetchers.push(tokio::spawn(webseed::fetcher(
                         plan.clone(),
+                        worker,
                         inner.client.clone(),
-                        inner.limiter.clone(),
+                        webseed::Gate::Session(session.clone()),
                         live.clone(),
                         seeds_stop.clone(),
                     )));
@@ -569,7 +608,7 @@ pub(crate) async fn run(
     // checked once more now the torrent library has let go of the files.
     let outcome = match (outcome, &plan) {
         (Ok(()), Some(plan)) if !by_swarm => {
-            webseed::settle(plan.clone(), inner.client.clone(), inner.limiter.clone(), live.cancel.clone())
+            webseed::settle(plan.clone(), inner.client.clone(), webseed::Gate::Limiter(live.limiter.clone()), live.cancel.clone())
                 .await
                 .map_err(|e| if live.cancel.is_cancelled() { Fail::Cancelled } else { Fail::Retry(e) })
         }

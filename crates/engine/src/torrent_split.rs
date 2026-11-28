@@ -128,7 +128,9 @@ pub(crate) async fn run(
     let torrent = Arc::new(torrent);
     // The speed limit is shared out between the files running at once.
     let workers = AT_ONCE.min(files.len());
-    let limit = u32::try_from(inner.limiter.rate() / workers as u64).unwrap_or(u32::MAX);
+    // Each engine takes its share of the download's limit (see torrent::hold);
+    // a change while it runs reaches them all.
+    let limit = 0;
 
     let _conn = ConnGuard::new(&live.conns);
     let mut running = JoinSet::new();
@@ -137,12 +139,14 @@ pub(crate) async fn run(
             (inner.clone(), slots.clone(), queue.clone(), stop.clone(), torrent.clone(), known.clone());
         let places: Vec<usize> = files.iter().map(|(i, _, _)| *i).collect();
         let folder = folder.to_path_buf();
+        let live = live.clone();
         running.spawn(async move {
             // One engine for this worker, kept from file to file.
             let session = tokio::select! {
                 _ = stop.cancelled() => return Err(Fail::Cancelled),
                 s = worker_session(&inner) => s?,
             };
+            crate::torrent::hold(&live, session.clone(), workers as u64);
             let outcome = loop {
                 let Some(pos) = queue.lock().unwrap().pop_front() else {
                     break Ok(());

@@ -71,6 +71,13 @@ pub(crate) struct Live {
     pub checked: AtomicU64,
     /// A torrent's files with how far each is, refreshed while it runs.
     pub files: Mutex<Vec<crate::TorrentFileProgress>>,
+    /// This download's own speed limiter, inside the global one (see
+    /// limiter.rs); every byte it fetches goes through it.
+    pub limiter: Arc<Limiter>,
+    /// For a torrent: the torrent engines working for this download, each
+    /// with the share of the limit it gets (1, or the number of engines
+    /// side by side). Their limit is set again when the limit changes.
+    pub torrent_sessions: Mutex<Vec<(Arc<librqbit::Session>, u64)>>,
     fatal: Mutex<Option<String>>,
 }
 
@@ -91,6 +98,8 @@ impl Live {
             checking: AtomicBool::new(false),
             checked: AtomicU64::new(0),
             files: Mutex::new(Vec::new()),
+            limiter: Arc::new(Limiter::new(0)),
+            torrent_sessions: Mutex::new(Vec::new()),
             fatal: Mutex::new(None),
         }
     }
@@ -457,7 +466,7 @@ pub(crate) async fn fetch_stream(
         headers: headers.to_vec(),
         file,
         live: live.clone(),
-        limiter: inner.limiter.clone(),
+        limiter: live.limiter.clone(),
         settled: AtomicUsize::new(0),
         saturated: AtomicBool::new(false),
         no_work: AtomicBool::new(false),
@@ -682,7 +691,7 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>) -> Result
             headers: rec.headers.clone(),
             file,
             live: live.clone(),
-            limiter: inner.limiter.clone(),
+            limiter: live.limiter.clone(),
             settled: AtomicUsize::new(0),
             saturated: AtomicBool::new(false),
             no_work: AtomicBool::new(false),
@@ -728,7 +737,7 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>) -> Result
                 c = resp.chunk() => c.map_err(net_err)?,
             };
             let Some(chunk) = chunk else { break };
-            inner.limiter.acquire(chunk.len()).await;
+            live.limiter.acquire(chunk.len()).await;
             write_all_at(&file, &chunk, off).map_err(|e| io_fail("could not write to disk", e))?;
             off += chunk.len() as u64;
             live.downloaded.store(off, Relaxed);

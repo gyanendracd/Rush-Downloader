@@ -841,33 +841,6 @@ select:disabled {
   font-size: 13.5px;
 }
 
-/* The language picker on Home, just above the link box. */
-.lang-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 22px;
-  padding-block: 3px;
-  padding-inline: 10px 3px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-2);
-  font-size: 12.5px;
-}
-
-.lang-switch select {
-  height: 26px;
-  padding-block: 0;
-  padding-inline: 10px 26px;
-  border: 0;
-  border-radius: 999px;
-  background-color: var(--inset);
-  color: var(--text);
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
 /* "Change language" with its English words on a pill, shown once another
  * language is picked. */
 .change-language {
@@ -889,10 +862,6 @@ select:disabled {
   font-weight: 600;
   letter-spacing: 0;
   white-space: nowrap;
-}
-
-.lang-switch + .paste {
-  margin-top: 12px;
 }
 
 .paste {
@@ -6053,7 +6022,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
 }
 
 /* ---------- settings, as tabs ----------
-   The sections are tabs the way a browser has them: a strip of tabs along
+   The sections are tabs the way a browser has them (and so are the
+   Downloads page's filters, `.dl-tabs` and `.dl-panel`): a strip of tabs along
    the top, and the one in front is one piece with the panel under it. The
    front tab and the panel share a fill (`--tab-fill`), nothing is drawn
    between them, and the tab's feet curve out into the panel's top edge. */
@@ -6089,7 +6059,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
 }
 
 /* the strip: tabs stand on the panel's top edge, clear of its corners */
-.settings-tabs {
+:is(.settings-tabs, .dl-tabs) {
   display: flex;
   flex: none;
   flex-direction: row;
@@ -6107,7 +6077,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   animation: none;
 }
 
-.settings-tabs button {
+:is(.settings-tabs, .dl-tabs) button {
   position: relative;
   display: flex;
   flex: 0 1 auto;
@@ -6129,25 +6099,25 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-.settings-tabs button > span {
+:is(.settings-tabs, .dl-tabs) button > span {
   overflow: hidden;
   min-width: 0;
   text-overflow: ellipsis;
 }
 
-.settings-tabs button svg {
+:is(.settings-tabs, .dl-tabs) button svg {
   flex: none;
   color: inherit;
 }
 
 /* a tab behind: a soft shape on hover, set a little off the panel */
-.settings-tabs button:not(.is-active):hover {
+:is(.settings-tabs, .dl-tabs) button:not(.is-active):hover {
   background: var(--tab-hover);
   color: var(--text);
 }
 
 /* the hairline between two tabs behind, as in a browser's strip */
-.settings-tabs button:not(.is-active) + button:not(.is-active)::before {
+:is(.settings-tabs, .dl-tabs) button:not(.is-active) + button:not(.is-active)::before {
   content: "";
   position: absolute;
   inset-inline-start: -0.5px;
@@ -6157,14 +6127,14 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   background: var(--border-strong);
 }
 
-.settings-tabs button:not(.is-active):hover::before,
-.settings-tabs button:not(.is-active):hover + button::before {
+:is(.settings-tabs, .dl-tabs) button:not(.is-active):hover::before,
+:is(.settings-tabs, .dl-tabs) button:not(.is-active):hover + button::before {
   display: none;
 }
 
 /* the tab in front: the panel's own fill, carried up */
-.settings-tabs button.is-active,
-.settings-tabs button.is-active:hover {
+:is(.settings-tabs, .dl-tabs) button.is-active,
+:is(.settings-tabs, .dl-tabs) button.is-active:hover {
   z-index: 1;
   background: var(--tab-fill);
   box-shadow: none;
@@ -6176,8 +6146,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
 }
 
 /* its feet: two small corners that curve the tab out into the panel */
-.settings-tabs button.is-active::before,
-.settings-tabs button.is-active::after {
+:is(.settings-tabs, .dl-tabs) button.is-active::before,
+:is(.settings-tabs, .dl-tabs) button.is-active::after {
   content: "";
   position: absolute;
   bottom: 0;
@@ -6186,18 +6156,19 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   pointer-events: none;
 }
 
-.settings-tabs button.is-active::before {
+:is(.settings-tabs, .dl-tabs) button.is-active::before {
   inset-inline-end: 100%;
   background: radial-gradient(circle at 0 0, transparent calc(var(--tab-foot) - 0.5px), var(--tab-fill) var(--tab-foot));
 }
 
-.settings-tabs button.is-active::after {
+:is(.settings-tabs, .dl-tabs) button.is-active::after {
   inset-inline-start: 100%;
   background: radial-gradient(circle at 100% 0, transparent calc(var(--tab-foot) - 0.5px), var(--tab-fill) var(--tab-foot));
 }
 
 /* the panel the front tab belongs to */
-.settings-panel {
+.settings-panel,
+.dl-panel {
   display: flex;
   flex: 0 1 auto;
   flex-direction: column;
@@ -6246,7 +6217,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
     --tab-hover: #2a2b30;
   }
 
-  .settings-panel {
+  .settings-panel,
+  .dl-panel {
     box-shadow: 0 0 0 1px var(--glass-stroke);
   }
 }
@@ -6603,11 +6575,11 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   scale: -1 1;
 }
 
-/* The front settings tab's feet curve the other way round. */
-[dir="rtl"] .settings-tabs button.is-active::before {
+/* The front tab's feet (Settings, Downloads) curve the other way round. */
+[dir="rtl"] :is(.settings-tabs, .dl-tabs) button.is-active::before {
   background: radial-gradient(circle at 100% 0, transparent calc(var(--tab-foot) - 0.5px), var(--tab-fill) var(--tab-foot));
 }
-[dir="rtl"] .settings-tabs button.is-active::after {
+[dir="rtl"] :is(.settings-tabs, .dl-tabs) button.is-active::after {
   background: radial-gradient(circle at 0 0, transparent calc(var(--tab-foot) - 0.5px), var(--tab-fill) var(--tab-foot));
 }
 /* File names and badge words take their direction from their own first
@@ -6714,23 +6686,6 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   color: var(--accent);
 }
 
-/* the field on the Home language pill: a smaller capsule inside it */
-.lang-switch .select-btn {
-  height: 26px;
-  padding-inline: 10px 7px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--inset);
-  box-shadow: none;
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.lang-switch .select-btn:focus-visible,
-.lang-switch .select-btn[aria-expanded="true"] {
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
-
 /* the small field in the Browser page's video bar */
 .browser-page-video .select-btn {
   flex: none;
@@ -6777,7 +6732,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
   cursor: not-allowed;
 }
 
-.paste .btn.is-shaking {
+.paste .btn.is-shaking,
+.batch-go.is-shaking {
   animation: shake 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
 }
 
@@ -6813,7 +6769,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .paste .btn.is-shaking {
+  .paste .btn.is-shaking,
+  .batch-go.is-shaking {
     animation: none;
   }
 }
@@ -7135,4 +7092,2019 @@ input[type="range"]:focus-visible::-webkit-slider-thumb {
 .home-alerts-stack > .signin-needed,
 .home-alerts-stack > .video-looking {
   margin-top: 0;
+}
+
+/* ---------- scheduler ----------
+ * The Scheduler page (src/Scheduler.tsx): schedules as glass cards, grouped
+ * by where they stand, and the dialog that makes one. Cards are content
+ * surfaces (no blur of their own); only the dialog is a sheet. */
+
+.page-scheduler .page-intro {
+  max-width: 72ch;
+  margin-top: 4px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.page-scheduler .empty-icon {
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.schedule-groups {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 22px;
+  margin: 16px -10px 0;
+  padding: 0 10px 12px;
+  overflow-y: auto;
+}
+
+.schedule-group h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.schedule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.schedule-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+  padding: 14px 14px 14px 16px;
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--r-xl);
+  background: var(--glass-regular);
+  box-shadow: var(--glass-edge-soft), var(--shadow-1);
+  animation: rise-in 320ms var(--ease-out) backwards;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.schedule-card:hover {
+  border-color: var(--rim-hover);
+  background: color-mix(in srgb, var(--glass-thin) 70%, var(--glass-regular));
+}
+
+/* running now: a fine emerald edge */
+.schedule-card.is-active {
+  border-color: color-mix(in srgb, var(--ok) 34%, var(--glass-stroke));
+  box-shadow: var(--glass-edge-soft), 0 0 0 1px color-mix(in srgb, var(--ok) 10%, transparent), var(--shadow-1);
+}
+
+.schedule-card.is-paused,
+.schedule-card.is-done,
+.schedule-card.is-missed {
+  background: color-mix(in srgb, var(--glass-regular) 60%, transparent);
+}
+
+.schedule-card.is-paused .schedule-body,
+.schedule-card.is-done .schedule-body,
+.schedule-card.is-missed .schedule-body {
+  opacity: 0.78;
+}
+
+.schedule-badge {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: var(--glass-edge-soft);
+}
+
+.schedule-card.is-active .schedule-badge {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.schedule-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.schedule-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.schedule-title strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-status {
+  --tone: var(--text-3);
+  flex: none;
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--tone) 14%, transparent);
+  color: var(--tone);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.schedule-status.is-waiting {
+  --tone: var(--accent);
+}
+
+.schedule-status.is-active,
+.schedule-status.is-done {
+  --tone: var(--ok);
+}
+
+.schedule-status.is-missed {
+  --tone: var(--err);
+}
+
+.schedule-when {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.schedule-next {
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-last {
+  color: var(--text-3);
+}
+
+.schedule-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.schedule-files li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 240px;
+  height: 28px;
+  padding-inline: 4px 11px;
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--r-pill);
+  background: var(--glass-thin);
+  font-size: 12px;
+}
+
+.schedule-files li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-files .file-icon,
+.schedule-pick .file-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-xs);
+}
+
+.schedule-files .file-icon svg,
+.schedule-pick .file-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.schedule-files li.schedule-more {
+  padding-inline: 10px;
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.schedule-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.icon-btn.is-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--err) 40%, var(--glass-stroke));
+  background: var(--err-soft);
+  color: var(--err);
+}
+
+/* ---- the dialog ---- */
+
+input[type="date"],
+input[type="time"] {
+  height: 34px;
+  min-width: 0;
+  padding: 0 11px;
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  box-shadow: inset 0 1px 2px rgba(20, 30, 70, 0.1);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+input[type="date"]:focus-visible,
+input[type="time"]:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+input[type="date"]:disabled,
+input[type="time"]:disabled {
+  opacity: 0.45;
+}
+
+/* the picker's calendar and clock marks follow the theme */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  opacity: 0.7;
+}
+
+:root[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator,
+:root[data-theme="dark"] input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+}
+
+.schedule-form .segmented {
+  justify-self: start;
+}
+
+.day-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.day-picker .chip {
+  min-width: 52px;
+  justify-content: center;
+}
+
+.schedule-times {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 200px));
+  gap: 16px;
+}
+
+.check-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.check-line input,
+.schedule-pick input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent-solid);
+}
+
+.schedule-picker {
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--r-lg);
+  background: var(--inset);
+}
+
+.schedule-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 4px 10px;
+  border-radius: var(--r-md);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.schedule-pick:hover {
+  background: var(--hover);
+}
+
+.schedule-pick.is-on {
+  background: var(--accent-soft);
+}
+
+.schedule-pick-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the place it starts in */
+.schedule-order {
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding-inline: 5px;
+  border-radius: var(--r-pill);
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.dialog-foot .field-error {
+  color: var(--err);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+@container (max-width: 560px) {
+  .schedule-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .schedule-badge {
+    display: none;
+  }
+}
+
+/* ---------- time of day ----------
+ * `TimeField` in ui.tsx: the field is a glass control like a drop-down
+ * list's, and it opens three columns in the Float material (hours,
+ * minutes, AM/PM) in place of the system's grey time picker. */
+.time-btn {
+  min-width: 132px;
+  font-variant-numeric: tabular-nums;
+}
+
+.time-btn .select-chevron {
+  color: var(--text-3);
+}
+
+.time-btn:disabled {
+  opacity: 0.45;
+}
+
+.menu.time-pop {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px;
+}
+
+.time-col {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  width: 56px;
+  max-height: 228px;
+  padding-inline: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-snap-type: y proximity;
+  scrollbar-width: none;
+}
+
+.time-col::-webkit-scrollbar {
+  display: none;
+}
+
+/* a hairline between the columns */
+.time-col + .time-col {
+  padding-inline-start: 6px;
+  border-inline-start: 1px solid var(--border);
+}
+
+.time-col button {
+  height: 32px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  scroll-snap-align: center;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.time-col button:hover {
+  background: var(--accent-soft);
+}
+
+.time-col button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* the chosen value: solid blue glass, lit from above */
+.time-col button.is-checked {
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--accent-solid) 84%, #fff), var(--accent-solid));
+  box-shadow: var(--glint), 0 3px 10px -4px color-mix(in srgb, var(--accent-solid) 60%, transparent);
+  color: var(--on-accent);
+  font-weight: 650;
+}
+
+/* ---------- a day ----------
+ * `DateField` in ui.tsx: the same glass field, opening a month in the Float
+ * material in place of the system's grey calendar. The chosen day is the
+ * solid blue lozenge of the time picker; today has a ring. */
+.date-btn {
+  min-width: 200px;
+  font-variant-numeric: tabular-nums;
+}
+
+.date-btn .select-chevron {
+  color: var(--text-3);
+}
+
+.menu.date-pop {
+  width: 276px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.date-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 0 6px;
+}
+
+.date-head strong {
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.date-head .icon-btn:disabled {
+  opacity: 0.3;
+}
+
+.date-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.date-weekday {
+  display: grid;
+  place-items: center;
+  height: 26px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.date-grid button {
+  height: 34px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.date-grid button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.date-grid button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* days of the months either side */
+.date-grid button.is-outside {
+  color: var(--text-3);
+}
+
+/* days that can no longer be picked */
+.date-grid button:disabled {
+  color: var(--text-3);
+  opacity: 0.4;
+}
+
+.date-grid button.is-today:not(.is-checked) {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 60%, transparent);
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.date-grid button.is-checked {
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--accent-solid) 84%, #fff), var(--accent-solid));
+  box-shadow: var(--glint), 0 3px 10px -4px color-mix(in srgb, var(--accent-solid) 60%, transparent);
+  color: var(--on-accent);
+  font-weight: 650;
+}
+
+/* The pickers sit in the Float material of a menu, but their buttons are
+ * cells, not menu lines: none of a menu line's grid or padding. */
+.menu.time-pop button,
+.menu.date-pop button {
+  display: grid;
+  place-items: center;
+  grid-template-columns: none;
+  gap: 0;
+  width: auto;
+  min-width: 0;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.menu.date-pop .date-head .icon-btn {
+  width: 30px;
+  height: 30px;
+}
+
+/* ---------- downloads, as tabs ----------
+ * The status filters (All, Downloading, Completed, ...) are tabs on the
+ * panel that holds the list, as Settings has them (the shared rules are in
+ * "settings, as tabs"). The panel fills the page; the list scrolls in it. */
+.dl-tabs {
+  margin-top: 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  animation: drop-in 320ms var(--ease-out) 50ms backwards;
+}
+
+.dl-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.dl-tabs button {
+  flex: none;
+}
+
+/* the count beside each name: a small quiet pill */
+.dl-tabs .chip-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--hover);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  opacity: 1;
+}
+
+.dl-tabs button.is-active .chip-count {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.dl-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 8px 8px;
+}
+
+/* the first tab stands at the panel's corner; it is rounded only where no tab is */
+.dl-panel .filters,
+.dl-panel .bulk {
+  margin: 4px 4px 6px;
+}
+
+.dl-panel .list {
+  margin: 0;
+  padding: 2px 2px 4px;
+}
+
+.dl-panel .empty {
+  min-height: 0;
+}
+
+/* ---------- arrow fill ----------
+ * `ArrowFillButton` in ui.tsx, used for Download on Home: a blue pill with
+ * a white mark at its end holding an arrow. Under the pointer the mark
+ * grows to fill the pill, the text turns blue, and the arrow is replaced by
+ * one sliding in. Sizes follow the pill; the end it sits at follows the
+ * reading direction. */
+.arrow-fill {
+  --af-mark: 30px;
+  --af-edge: 4px;
+  --af-fill: #ffffff;
+  --af-ink: var(--accent-solid);
+  --af-ease: cubic-bezier(0.785, 0.135, 0.15, 0.86);
+  --af-time: 450ms;
+  /* where the mark sits, as an inset from each side of the pill */
+  --af-y: calc((100% - var(--af-mark)) / 2);
+  --af-at: var(--af-y) var(--af-edge) var(--af-y) calc(100% - var(--af-edge) - var(--af-mark));
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+:root[data-theme="dark"] .arrow-fill {
+  --af-fill: #f1f5ff;
+}
+
+[dir="rtl"] .arrow-fill {
+  --af-at: var(--af-y) calc(100% - var(--af-edge) - var(--af-mark)) var(--af-y) var(--af-edge);
+}
+
+.paste .btn.arrow-fill {
+  padding-inline: 20px calc(var(--af-mark) + var(--af-edge) + 14px);
+}
+
+.arrow-fill-text {
+  position: relative;
+  z-index: 0;
+}
+
+/* the white that grows out of the mark */
+.arrow-fill-fill {
+  position: absolute;
+  z-index: 1;
+  inset: var(--af-at);
+  border-radius: var(--r-pill);
+  background: var(--af-fill);
+  pointer-events: none;
+  transition: inset var(--af-time) var(--af-ease);
+}
+
+/* the same text in blue, shown only where the white is */
+.arrow-fill-clone {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  padding: inherit;
+  color: var(--af-ink);
+  clip-path: inset(var(--af-at) round var(--r-pill));
+  pointer-events: none;
+  transition: clip-path var(--af-time) var(--af-ease);
+}
+
+/* the mark and its two arrows: one waiting to come in, one showing */
+.arrow-fill-mark {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  inset-inline-end: var(--af-edge);
+  display: grid;
+  place-items: center;
+  width: var(--af-mark);
+  height: var(--af-mark);
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--af-fill);
+  color: var(--af-ink);
+  translate: 0 -50%;
+  pointer-events: none;
+}
+
+.arrow-fill-mark svg {
+  position: absolute;
+  transition:
+    transform var(--af-time) var(--af-ease),
+    opacity var(--af-time) var(--af-ease);
+}
+
+.arrow-fill-in {
+  opacity: 0;
+  transform: translateX(-120%) scale(0.4);
+}
+
+[dir="rtl"] .arrow-fill-in {
+  transform: translateX(120%) scale(0.4);
+}
+
+.arrow-fill:is(:hover, :focus-visible):not(:disabled) .arrow-fill-fill {
+  inset: 0;
+}
+
+.arrow-fill:is(:hover, :focus-visible):not(:disabled) .arrow-fill-clone {
+  clip-path: inset(0 round var(--r-pill));
+}
+
+.arrow-fill:is(:hover, :focus-visible):not(:disabled) .arrow-fill-in {
+  opacity: 1;
+  transform: none;
+}
+
+.arrow-fill:is(:hover, :focus-visible):not(:disabled) .arrow-fill-out {
+  opacity: 0;
+  transform: translateX(120%) scale(0.4);
+}
+
+[dir="rtl"] .arrow-fill:is(:hover, :focus-visible):not(:disabled) .arrow-fill-out {
+  transform: translateX(-120%) scale(0.4);
+}
+
+/* flat blue: no gradient, bevel or glow, at rest, under the pointer or pressed */
+.btn-primary.arrow-fill,
+.btn-primary.arrow-fill:hover:not(:disabled),
+.btn-primary.arrow-fill:active:not(:disabled) {
+  border-color: var(--accent-solid);
+  background: var(--accent-solid);
+  box-shadow: none;
+}
+
+.arrow-fill:active:not(:disabled) .arrow-fill-fill {
+  background: color-mix(in srgb, var(--af-fill) 90%, var(--accent-solid));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arrow-fill-fill,
+  .arrow-fill-clone,
+  .arrow-fill-mark svg {
+    transition: none;
+  }
+}
+
+/* ---------- lumen ----------
+ * `LumenButton` (src/LumenButton.tsx), used for Download on Home: a pill of
+ * blue glass drawn by a shader on a canvas behind the text. Everything a
+ * button needs (its text, focus ring, the shake) stays in the DOM; the
+ * canvas is only the glass. Without WebGL2 it is a flat blue pill. */
+.btn.lumen-btn,
+.btn.lumen-btn:hover:not(:disabled),
+.btn.lumen-btn:active:not(:disabled) {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.lumen-btn {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  color: #ffffff;
+  /* the press squeezes it on a spring (set from the script) */
+  scale: var(--lumen-scale, 1);
+  transform-origin: center;
+}
+
+/* the generic press shrink would fight the spring */
+.btn.lumen-btn:active:not(:disabled) {
+  transform: none;
+}
+
+.paste .btn.lumen-btn {
+  padding-inline: 20px 16px;
+}
+
+.lumen-btn-gl {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.lumen-btn--flat {
+  background: #1d3570 !important;
+  transition: background-color var(--dur) var(--ease);
+}
+
+.lumen-btn--flat.is-ready {
+  background: var(--accent-solid) !important;
+}
+
+.lumen-btn--flat .lumen-btn-gl {
+  display: none;
+}
+
+.lumen-btn-content {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  text-shadow: 0 0 2px rgba(0, 20, 80, 0.45), 0 1px 2px rgba(0, 20, 80, 0.4);
+  pointer-events: none;
+}
+
+/* a soft dark edge keeps the arrow clear over the bright light at the rim */
+.lumen-btn-arrow {
+  filter: drop-shadow(0 0 1.5px rgba(0, 20, 80, 0.7)) drop-shadow(0 1px 2px rgba(0, 20, 80, 0.45));
+  transition: translate var(--dur) var(--ease);
+}
+
+.lumen-btn:is(:hover, :focus-visible) .lumen-btn-arrow {
+  translate: 3px 0;
+}
+
+[dir="rtl"] .lumen-btn:is(:hover, :focus-visible) .lumen-btn-arrow {
+  translate: -3px 0;
+}
+
+.lumen-btn:focus-visible {
+  outline: 2px solid var(--hl);
+  outline-offset: 2px;
+}
+
+/* In a narrower window the Downloads tabs close up, and where they still
+ * run past the panel the strip fades at its far end, so it reads as one
+ * that scrolls rather than one cut off. */
+@container (max-width: 860px) {
+  .dl-tabs button {
+    gap: 5px;
+    padding-inline: 10px;
+  }
+
+  .dl-tabs {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
+
+  [dir="rtl"] .dl-tabs {
+    -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent);
+  }
+}
+
+/* the seconds left before the action after all downloads */
+.after-count {
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Home: what happens after all downloads ----------
+ * The same setting as in Settings → Downloads, as a glass pill in the top
+ * corner of Home (the far end in right-to-left text); it shows the setting's
+ * name until something other than "Do nothing" is chosen, then that choice. */
+.page-home {
+  position: relative;
+}
+
+.home-corner {
+  position: absolute;
+  top: 2px;
+  inset-inline-end: 28px;
+  z-index: 3;
+  animation: drop-in 320ms var(--ease-out) 120ms backwards;
+}
+
+.home-corner .pill-btn {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- a download's own speed limit ----------
+ * `SpeedLimitField` in ui.tsx: a check to turn it on, then an amount and
+ * KB/s or MB/s. Used before a download (Add, torrent and file windows), in
+ * its own dialog from the task menu, and shown in the details. */
+.speed-limit .field-row input[type="number"] {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+.speed-limit .field-row .select-btn {
+  flex: none;
+  width: 112px;
+}
+
+.speed-limit .field-row :disabled {
+  opacity: 0.5;
+}
+
+.fact-with-action {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+/* ---------- a new link for a download ----------
+ * `RefreshLinkDialog` in ui.tsx: the new link, optional headers, and what
+ * checking it found: green when it carries on, amber when it can only start
+ * over. */
+textarea {
+  width: 100%;
+  min-height: 72px;
+  padding: 8px 11px;
+  border: 1px solid var(--glass-stroke);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  resize: vertical;
+  outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+  box-shadow: inset 0 1px 2px rgba(20, 30, 70, 0.1);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+textarea:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.refresh-old {
+  overflow: hidden;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.refresh-verdict {
+  --tone: var(--ok);
+  display: grid;
+  gap: 4px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--tone) 34%, var(--glass-stroke));
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--tone) 10%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+  animation: rise-in 240ms var(--ease-out) backwards;
+}
+
+.refresh-verdict.is-warn {
+  --tone: #d97706;
+}
+
+.refresh-verdict strong {
+  font-weight: 600;
+}
+
+/* ---------- batch download ----------
+ * `Batch.tsx`: the Home button under Download, the dialog that finds links
+ * (paste or files, the list found, the batch name), a batch row and its
+ * details. No material of its own: rows sit on the dialog sheet as
+ * hairline-separated lines, like the torrent file list. */
+
+/* Home: under the Download button, quieter than it */
+.batch-entry {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  width: 100%;
+  margin-top: 10px;
+  padding-inline-end: 4px;
+}
+
+.batch-entry-hint {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.batch-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--glass-stroke);
+  background: var(--glass-thin);
+  box-shadow: var(--glass-edge-soft);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.batch-entry-btn svg {
+  color: var(--accent);
+}
+
+/* the steps on the left, Extract links at the top right */
+.batch-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+}
+
+.batch-extract {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+}
+
+/* the three steps, as one quiet line */
+.batch-steps {
+  display: flex;
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.batch-steps li button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.batch-steps li button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.batch-steps li button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.batch-steps li span {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-steps li.is-on {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.batch-steps li.is-on span {
+  border-color: var(--accent-solid);
+  background: var(--accent-solid);
+  color: var(--on-accent);
+}
+
+.batch-steps li.is-done span {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+/* step 1 */
+.batch-text {
+  min-height: 150px;
+  max-height: 42vh;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.batch-live {
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-live.is-found {
+  color: var(--accent);
+}
+
+.batch-drop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-lg);
+  color: var(--text-2);
+  text-align: center;
+  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+
+.batch-drop > svg {
+  color: var(--text-3);
+}
+
+.batch-drop small {
+  flex-basis: 100%;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.batch-drop.is-dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.batch-files {
+  display: grid;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.batch-files li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 4px 0 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.batch-files li:last-child {
+  border-bottom: 0;
+}
+
+.batch-files li > svg {
+  flex: none;
+  color: var(--text-3);
+}
+
+.batch-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-file-meta {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-files li.is-rejected .batch-file-name {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.batch-files li.is-rejected .batch-file-meta {
+  color: var(--err);
+}
+
+.batch-files li.is-reading {
+  color: var(--text-3);
+}
+
+/* step 2: what was found */
+.batch-summary {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.batch-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.batch-summary-head > svg {
+  color: var(--ok);
+}
+
+.batch-summary-head strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.batch-export {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.batch-export .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.batch-export small {
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.batch-stats div {
+  display: grid;
+  gap: 1px;
+}
+
+.batch-stats dt {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.batch-stats dd {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 12px 0 6px;
+}
+
+.batch-toolbar .search {
+  flex: 0 1 240px;
+  margin-inline-start: 0;
+}
+
+.batch-toolbar .search input {
+  height: 30px;
+}
+
+.batch-toolbar .link {
+  font-size: 12.5px;
+}
+
+.batch-toolbar .link:disabled {
+  color: var(--text-3);
+  opacity: 0.6;
+  cursor: default;
+}
+
+.batch-toolbar .link.is-danger:not(:disabled) {
+  color: var(--err);
+}
+
+.batch-urls,
+.batch-items {
+  display: grid;
+  max-height: min(46vh, 420px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.batch-urls li {
+  display: grid;
+  grid-template-columns: auto 34px 48px minmax(0, 1fr) minmax(0, 120px) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 4px 0 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.batch-urls li:hover {
+  background: var(--hover);
+}
+
+.batch-urls li.is-picked {
+  background: var(--accent-soft);
+}
+
+.batch-url-index,
+.batch-item-index {
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.batch-url {
+  overflow: hidden;
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.batch-url-source {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-url-actions {
+  display: inline-flex;
+  opacity: 0.45;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.batch-urls li:hover .batch-url-actions,
+.batch-url-actions:focus-within {
+  opacity: 1;
+}
+
+.batch-url-actions .icon-btn {
+  width: 26px;
+  height: 26px;
+}
+
+.batch-more {
+  margin-top: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* step 3 */
+.batch-final {
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* a batch in the list */
+.batch-tile {
+  background-color: #2b63e6;
+}
+
+.row-now {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tone-warn {
+  color: #b45309;
+  font-weight: 500;
+}
+
+:root[data-theme="dark"] .tone-warn {
+  color: #fbbf24;
+}
+
+/* a batch's details */
+.detail-headline.tone-ok {
+  color: var(--ok);
+}
+
+.detail-headline.tone-err {
+  color: var(--err);
+}
+
+.batch-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 24px;
+}
+
+.batch-facts .fact {
+  grid-template-columns: 38% minmax(0, 1fr);
+}
+
+.batch-now {
+  margin-top: 10px;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-filter {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+}
+
+.batch-filter button {
+  height: 26px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.batch-filter button span {
+  margin-inline-start: 3px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-filter button.is-on {
+  background: var(--glass-lozenge);
+  box-shadow: var(--glass-edge-soft), var(--shadow-1);
+  color: var(--text);
+}
+
+.batch-item {
+  display: grid;
+  grid-template-columns: 26px 64px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 9px 4px 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.batch-item-index {
+  padding-top: 2px;
+}
+
+.batch-item-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.batch-item-top,
+.batch-item-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.batch-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-item-state {
+  flex: none;
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-item-state.status-completed {
+  color: var(--ok);
+}
+
+.batch-item-state.status-failed {
+  color: var(--err);
+}
+
+.batch-item.is-cancelled .batch-item-state,
+.batch-item.is-cancelled .batch-item-name {
+  color: var(--text-3);
+}
+
+.batch-item-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-item-size {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-item .bar {
+  margin-top: 4px;
+}
+
+.batch-item-error {
+  color: var(--err);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.batch-item-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.batch-item-actions .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.batch-parent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.batch-parent-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 760px) {
+  .batch-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .batch-urls li {
+    grid-template-columns: auto 28px 48px minmax(0, 1fr) auto;
+  }
+
+  .batch-url-source,
+  .batch-entry-hint {
+    display: none;
+  }
+
+  .batch-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .batch-url-actions,
+  .batch-drop {
+    transition: none;
+  }
+}
+
+/* the batch name, where it goes and its quality, under the files */
+.batch-where {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(150px, 0.4fr);
+  align-items: center;
+  gap: 8px 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.batch-where .batch-name {
+  height: 36px;
+}
+
+.batch-where .batch-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  white-space: nowrap;
+}
+
+.batch-where-note {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-where-note.field-error {
+  color: var(--err);
+  white-space: normal;
+}
+
+/* a link's picture: a 16:9 frame, or a mark of its kind */
+.batch-thumb {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 27px;
+  border-radius: var(--r-xs);
+  background: var(--track);
+  object-fit: cover;
+}
+
+.batch-item .batch-thumb {
+  width: 64px;
+  height: 36px;
+}
+
+.batch-thumb-empty {
+  color: var(--text-3);
+}
+
+@media (max-width: 760px) {
+  .batch-where {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .batch-where .batch-quality {
+    grid-column: 1 / -1;
+  }
+}
+
+/* the popup's alerts sit just above its buttons, like Home's above its strip */
+.batch-alerts .home-alerts-stack {
+  bottom: 4px;
+  width: 100%;
+}
+
+/* room at the foot for an alert, so it never covers a field */
+.batch-input,
+.batch-results {
+  padding-bottom: 38px;
+}
+
+/* ---------- organize files by type ----------
+ * Settings › Downloads (src/Organize.tsx): one line per category, its
+ * name, its folder and its file types as small chips, under the on-off
+ * line, inside the same pane. Dimmed while sorting is off. */
+.setting-group-hint {
+  max-width: 72ch;
+  margin: -2px 14px 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.org {
+  display: grid;
+  gap: 4px;
+  padding: 6px 10px 12px 14px;
+  box-shadow: inset 0 1px 0 var(--border);
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.org.is-off {
+  opacity: 0.55;
+}
+
+.org-head,
+.org-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.6fr) minmax(140px, 0.85fr) minmax(0, 2.6fr) 30px;
+  align-items: center;
+  gap: 8px;
+}
+
+.org-head {
+  padding: 4px 0 2px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.org-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.org-row {
+  min-height: 40px;
+  padding: 4px 0;
+}
+
+.org-row + .org-row {
+  box-shadow: inset 0 1px 0 var(--border);
+}
+
+.org-row input[type="text"] {
+  height: 30px;
+  font-size: 12.5px;
+}
+
+.org-name {
+  font-weight: 600;
+}
+
+span.org-name {
+  padding-inline-start: 2px;
+  font-size: 12.5px;
+}
+
+.org-folder {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.org-folder input {
+  flex: 1;
+  min-width: 0;
+}
+
+.org-folder .icon-btn,
+.org-row > .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.org-types {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.org-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  padding: 0 3px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--glass-thin);
+  color: var(--text);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.org-type button {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.org-type button:hover {
+  background: var(--hover);
+  color: var(--err);
+}
+
+.org-row input.org-type-add {
+  width: 64px;
+  height: 22px;
+  padding: 0 8px;
+  border-style: dashed;
+  border-radius: var(--r-pill);
+  font-size: 11.5px;
+}
+
+.org-other small {
+  grid-column: 3 / -1;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.org-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.org-foot .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.org-foot small {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+@media (max-width: 760px) {
+  .org-head {
+    display: none;
+  }
+
+  .org-row {
+    grid-template-columns: minmax(0, 1fr) 30px;
+  }
+
+  .org-row > .org-folder,
+  .org-row > .org-types,
+  .org-other small {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .org {
+    transition: none;
+  }
+}
+
+/* ---------- the live background at the foot of the window ----------
+ * `Ambient.tsx`: behind the sidebar and every page, over the lowest 35% of
+ * the window, fading out upward. Ribbons slide sideways by exactly one
+ * repeat of their wave, so the loop has no seam; the pools of light drift.
+ * Transforms only. */
+:root {
+  --amb-1: rgba(11, 96, 251, 0.16);
+  --amb-2: rgba(47, 125, 252, 0.12);
+  --amb-3: rgba(10, 165, 200, 0.12);
+  --amb-line: rgba(11, 96, 251, 0.22);
+  --amb-orb-1: rgba(47, 125, 252, 0.22);
+  --amb-orb-2: rgba(10, 165, 200, 0.18);
+  --amb-orb-3: rgba(120, 110, 255, 0.14);
+}
+
+:root[data-theme="dark"] {
+  --amb-1: rgba(90, 150, 255, 0.15);
+  --amb-2: rgba(70, 130, 240, 0.12);
+  --amb-3: rgba(60, 190, 220, 0.1);
+  --amb-line: rgba(126, 174, 252, 0.24);
+  --amb-orb-1: rgba(60, 120, 255, 0.22);
+  --amb-orb-2: rgba(40, 170, 210, 0.15);
+  --amb-orb-3: rgba(120, 100, 255, 0.14);
+}
+
+.ambient {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 0;
+  height: 35vh;
+  overflow: hidden;
+  pointer-events: none;
+  /* gone at the top edge, full at the foot */
+  -webkit-mask-image: linear-gradient(to top, #000 0%, #000 35%, transparent 100%);
+  mask-image: linear-gradient(to top, #000 0%, #000 35%, transparent 100%);
+  contain: strict;
+}
+
+/* the sidebar and the pages rest over it; dialogs and menus stay above all */
+.app > .sidebar,
+.app > .workspace {
+  position: relative;
+  z-index: 1;
+}
+
+.ambient-wave {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 200%;
+  height: 100%;
+  will-change: transform;
+  animation: ambient-slide linear infinite;
+}
+
+.ambient-wave path {
+  stroke: none;
+}
+
+.ambient-r1 path {
+  fill: var(--amb-1);
+}
+
+.ambient-r2 path {
+  fill: var(--amb-2);
+}
+
+.ambient-r3 path {
+  fill: var(--amb-3);
+}
+
+.ambient-line path {
+  fill: none;
+  stroke: var(--amb-line);
+  stroke-width: 1.2;
+}
+
+/* each layer at its own pace, some the other way, so the shape keeps changing */
+.ambient-r1 {
+  animation-duration: 46s;
+}
+
+.ambient-r2 {
+  animation-duration: 64s;
+  animation-direction: reverse;
+}
+
+.ambient-r3 {
+  animation-duration: 38s;
+}
+
+.ambient-l1 {
+  animation-duration: 54s;
+  animation-direction: reverse;
+}
+
+.ambient-l2 {
+  animation-duration: 72s;
+}
+
+@keyframes ambient-slide {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+/* pools of light under the ribbons */
+.ambient-orb {
+  position: absolute;
+  bottom: -30%;
+  width: 46vw;
+  height: 46vw;
+  max-width: 720px;
+  max-height: 720px;
+  border-radius: 50%;
+  will-change: transform;
+  animation: ambient-drift ease-in-out infinite alternate;
+}
+
+.ambient-o1 {
+  left: -8%;
+  background: radial-gradient(closest-side, var(--amb-orb-1), transparent);
+  animation-duration: 26s;
+}
+
+.ambient-o2 {
+  left: 38%;
+  background: radial-gradient(closest-side, var(--amb-orb-2), transparent);
+  animation-duration: 34s;
+  animation-delay: -12s;
+}
+
+.ambient-o3 {
+  right: -10%;
+  background: radial-gradient(closest-side, var(--amb-orb-3), transparent);
+  animation-duration: 30s;
+  animation-delay: -20s;
+}
+
+@keyframes ambient-drift {
+  from {
+    transform: translate3d(-6vw, 4vh, 0) scale(0.92);
+  }
+  to {
+    transform: translate3d(8vw, -6vh, 0) scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-wave,
+  .ambient-orb {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .ambient {
+    display: none;
+  }
 }

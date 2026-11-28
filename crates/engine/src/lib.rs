@@ -4,13 +4,17 @@
 //! drive downloads through [`Engine`]. It owns the queue, persists progress
 //! so downloads survive restarts, and reports changes through a watch channel.
 
+mod batch;
 mod bundle;
 mod dns;
 mod limiter;
+mod organize;
 mod media;
 mod probe;
 mod profile;
+mod refresh;
 mod scan;
+mod schedule;
 mod sites;
 mod torrent;
 mod torrent_split;
@@ -26,9 +30,13 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
+pub use batch::BatchInfo;
 pub use media::MediaInfo;
+pub use organize::{FileCategory, Organize};
 pub use profile::{Fetcher, PlaylistInfo, ProfileFace, ProfileRef};
+pub use refresh::{LinkCheck, LinkProblem};
 pub use scan::{Found, FoundKind};
+pub use schedule::{Event, EventKind, Repeat, ScheduleInfo, ScheduleSpec, ScheduleStatus};
 pub use sites::{SiteFile, SiteFiles, SiteKind, Support, Why};
 pub use torrent::{TorrentFile, TorrentPreview};
 
@@ -71,6 +79,43 @@ pub struct Settings {
     /// of its own, side by side, instead of the whole torrent on one.
     #[serde(default = "on")]
     pub torrent_files_apart: bool,
+    /// When the app opens: start the downloads of a schedule whose start
+    /// came while it was closed and whose stop time has not come yet.
+    #[serde(default = "on")]
+    pub start_scheduled_on_launch: bool,
+    /// What happens once every download has finished (carried out by the app,
+    /// not the engine).
+    #[serde(default)]
+    pub after_all: AfterAll,
+    /// Seconds to wait, with a way to cancel, before it is done.
+    #[serde(default = "one_minute")]
+    pub after_countdown: u32,
+    /// Done even when a download of the batch failed or was cancelled.
+    #[serde(default)]
+    pub after_failures: bool,
+    /// Sorting finished files into folders by their kind (organize.rs).
+    #[serde(default)]
+    pub organize: Organize,
+}
+
+/// What happens once every download has finished.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfterAll {
+    #[default]
+    Nothing,
+    Notify,
+    /// Close the window, as its close button does (to the tray if that is on).
+    Close,
+    /// Quit the app.
+    Exit,
+    Sleep,
+    Hibernate,
+    Shutdown,
+}
+
+fn one_minute() -> u32 {
+    60
 }
 
 fn on() -> bool {
@@ -90,12 +135,19 @@ impl Settings {
             cookies_browser: None,
             secure_dns: true,
             torrent_files_apart: true,
+            start_scheduled_on_launch: true,
+            after_all: AfterAll::Nothing,
+            after_countdown: 60,
+            after_failures: false,
+            organize: Organize::default(),
         }
     }
 
     fn normalized(mut self) -> Self {
         self.max_concurrent = self.max_concurrent.clamp(1, 10);
         self.connections = self.connections.clamp(1, MAX_CONNECTIONS);
+        self.after_countdown = self.after_countdown.clamp(5, 600);
+        self.organize = self.organize.normalized();
         self.cookies_browser = self
             .cookies_browser
             .map(|b| b.to_ascii_lowercase())
@@ -143,6 +195,10 @@ pub struct NewDownload {
     /// For a torrent: which of its files to download, by index. `None` = all.
     #[serde(default)]
     pub torrent_files: Option<Vec<usize>>,
+    /// This download's own speed limit, bytes per second; 0 or none = only
+    /// the global limit applies.
+    #[serde(default)]
+    pub speed_limit: Option<u64>,
 }
 
 /// Snapshot of one download for display.
@@ -189,6 +245,19 @@ pub struct TaskInfo {
     /// Files picked from a site link (a release, a shared folder), saved
     /// together in `path`, each listed with how far it is.
     pub bundle: bool,
+    /// This download's own speed limit in bytes per second; 0 = none.
+    pub speed_limit: u64,
+    /// For a download inside a batch: the batch's id. It is listed in the
+    /// batch's details, not on its own.
+    pub parent: Option<u64>,
+    /// For a batch (many links saved together in `path`): how its downloads
+    /// stand. Status, sizes and speed are those of its downloads together.
+    pub batch: Option<BatchInfo>,
+    /// A download of a batch that was cancelled on its own; its status is
+    /// `failed`, and it can be retried.
+    pub cancelled: bool,
+    /// When it ended (finished, failed or was cancelled), seconds since 1970.
+    pub finished_at: Option<u64>,
 }
 
 /// One video or file of a profile or playlist download, for display.
@@ -344,6 +413,81 @@ pub(crate) struct Record {
     /// `filename`; their progress is kept in `files`.
     #[serde(default)]
     pub bundle: Vec<sites::SiteFile>,
+    /// This download's own speed limit, bytes per second; 0 = none.
+    #[serde(default)]
+    pub speed_limit: u64,
+    /// For a download inside a batch: the batch's id.
+    #[serde(default)]
+    pub parent: Option<u64>,
+    /// For a batch: the links it was made from. It never runs itself; its
+    /// downloads are the records whose `parent` is its id (batch.rs).
+    #[serde(default)]
+    pub batch: Option<batch::BatchMeta>,
+    /// A download of a batch the user cancelled on its own.
+    #[serde(default)]
+    pub cancelled: bool,
+    /// When it ended, in seconds since 1970.
+    #[serde(default)]
+    pub finished_at: Option<u64>,
+    /// Saved to the download folder with no folder of its own chosen: once
+    /// finished, its file is sorted into the folder of its kind.
+    #[serde(default)]
+    pub sort: bool,
+}
+
+impl Record {
+    /// A queued download with nothing decided yet beyond where it goes.
+    fn new(id: u64, url: String, dir: PathBuf, filename: String, connections: usize) -> Record {
+        Record {
+            id,
+            url,
+            headers: Vec::new(),
+            dir,
+            filename,
+            user_named: false,
+            part_started: false,
+            status: Status::Queued,
+            error: None,
+            total: None,
+            resumable: false,
+            etag: None,
+            connections,
+            created_at: now(),
+            segments: Vec::new(),
+            downloaded: 0,
+            media: false,
+            media_options: MediaOptions::default(),
+            torrent: false,
+            torrent_file: None,
+            only_files: None,
+            media_copy: None,
+            named_stem: None,
+            profile: false,
+            items: 0,
+            thumbnail: None,
+            deleted_at: None,
+            collection: None,
+            files: Vec::new(),
+            bundle: Vec::new(),
+            speed_limit: 0,
+            parent: None,
+            batch: None,
+            cancelled: false,
+            finished_at: None,
+            sort: false,
+        }
+    }
+
+    /// Forgets what was downloaded, after its unfinished data was deleted.
+    fn reset_progress(&mut self) {
+        self.part_started = false;
+        self.segments.clear();
+        self.downloaded = 0;
+        self.items = 0;
+        self.files.iter_mut().for_each(|f| f.done = 0);
+        self.media_copy = None;
+        self.named_stem = None;
+    }
 }
 
 struct Entry {
@@ -356,6 +500,10 @@ struct Entry {
 }
 
 impl Entry {
+    fn new(rec: Record) -> Entry {
+        Entry { rec, live: None, speed: 0.0, last_bytes: 0, last_received: 0 }
+    }
+
     /// Copies progress from the running task into the record.
     fn sync(&mut self) {
         if let Some(live) = &self.live {
@@ -412,6 +560,11 @@ impl Entry {
                 .filter(|l| l.checking.load(Relaxed))
                 .map(|l| l.checked.load(Relaxed)),
             bundle: !r.bundle.is_empty(),
+            speed_limit: r.speed_limit,
+            parent: r.parent,
+            batch: None,
+            cancelled: r.cancelled,
+            finished_at: r.finished_at,
         }
     }
 }
@@ -444,6 +597,9 @@ pub(crate) struct Inner {
     state: Mutex<State>,
     state_file: PathBuf,
     save_lock: Mutex<()>,
+    /// Download schedules (schedule.rs), saved in `schedules.json`.
+    schedules: Mutex<schedule::Book>,
+    schedule_file: PathBuf,
     version: watch::Sender<u64>,
     rt: Handle,
 }
@@ -461,6 +617,11 @@ impl Engine {
         let state_dir = state_dir.as_ref();
         std::fs::create_dir_all(state_dir).map_err(|e| format!("state folder: {e}"))?;
         let state_file = state_dir.join("downloads.json");
+        let schedule_file = state_dir.join("schedules.json");
+        let book: schedule::Book = std::fs::read(&schedule_file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
 
         let saved: Option<Saved> = std::fs::read(&state_file)
             .ok()
@@ -520,11 +681,17 @@ impl Engine {
             }),
             state_file,
             save_lock: Mutex::new(()),
+            schedules: Mutex::new(book),
+            schedule_file,
             version: watch::channel(0).0,
             rt: Handle::current(),
         });
 
         inner.rt.spawn(ticker(Arc::downgrade(&inner)));
+        // Schedules first: a download whose window closed while the app was
+        // closed is paused again before the queue starts it.
+        inner.check_schedules(true);
+        inner.rt.spawn(schedule_loop(Arc::downgrade(&inner)));
         inner.pump();
         Ok(Engine { inner })
     }
@@ -534,15 +701,138 @@ impl Engine {
         self.inner.version.subscribe()
     }
 
+    /// Every download, the ones inside a batch included (each names its
+    /// batch in `parent`).
     pub fn list(&self) -> Vec<TaskInfo> {
         let mut st = self.inner.state.lock().unwrap();
+        st.entries.iter_mut().for_each(Entry::sync);
+        let mut sums = batch::roll_up(&mut st.entries, now());
         st.entries
-            .iter_mut()
+            .iter()
             .map(|e| {
-                e.sync();
-                e.info()
+                let mut info = e.info();
+                if e.rec.batch.is_some() {
+                    let sum = sums.remove(&e.rec.id).unwrap_or_default();
+                    info.speed = sum.speed as u64;
+                    info.active_connections = sum.conns;
+                    info.current = sum.info.current.clone().map(|name| CurrentFile {
+                        id: String::new(),
+                        name,
+                        downloaded: 0,
+                        total: None,
+                        index: None,
+                        count: None,
+                    });
+                    info.batch = Some(sum.info);
+                }
+                info
             })
             .collect()
+    }
+
+    /// Downloads many links together as one batch named `name`, saved in a
+    /// folder of that name made now inside `dir` (the download folder when
+    /// none). Each link goes through the same detection as a link pasted on
+    /// its own (a file, a site video, a playlist...). A link that cannot be
+    /// added is listed in the batch as failed, with why; the rest go ahead.
+    pub fn add_batch(&self, name: &str, urls: Vec<String>, dir: Option<PathBuf>, media: MediaOptions) -> Result<u64, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Give the batch a name".into());
+        }
+        let base = probe::sanitize(name);
+        let urls = batch::clean_links(urls);
+        if urls.is_empty() {
+            return Err("There are no web links to download".into());
+        }
+        // Asked before the list is locked: it may look at the list itself.
+        let profiles: Vec<Option<ProfileRef>> = urls.iter().map(|u| self.inner.resolve(u)).collect();
+        let id = {
+            let mut st = self.inner.state.lock().unwrap();
+            let dir = dir.unwrap_or_else(|| st.settings.download_dir.clone());
+            // A folder of its own: never one already there or another download's.
+            let folder = (0..10_000)
+                .map(|n| if n == 0 { base.clone() } else { format!("{base} ({})", n + 1) })
+                .find(|f| !dir.join(f).exists() && !st.entries.iter().any(|e| e.rec.dir == dir && &e.rec.filename == f))
+                .ok_or("Could not find a free folder name")?;
+            let path = dir.join(&folder);
+            std::fs::create_dir_all(&path).map_err(|e| format!("Could not create the folder {}: {e}", path.display()))?;
+            let pid = st.next_id;
+            st.next_id += 1;
+            let connections = st.settings.connections;
+            let mut parent = Record::new(pid, String::new(), dir, folder, connections);
+            parent.part_started = true;
+            parent.media_options = media;
+            parent.batch = Some(batch::BatchMeta { urls: urls.clone(), media });
+            st.entries.push(Entry::new(parent));
+            for (url, profile) in urls.into_iter().zip(profiles) {
+                let new = NewDownload { url: url.clone(), dir: Some(path.clone()), media, ..Default::default() };
+                let mut rec = match self.new_record(&mut st, new, profile) {
+                    Ok(rec) => rec,
+                    Err(why) => {
+                        // Listed anyway, so the batch says which link and why.
+                        let id = st.next_id;
+                        st.next_id += 1;
+                        let name = probe::sanitize(&probe::url_filename(&url).unwrap_or_else(|| url.clone()));
+                        let mut rec = Record::new(id, url, path.clone(), name, connections);
+                        rec.status = Status::Failed;
+                        rec.error = Some(why);
+                        rec.finished_at = Some(now());
+                        rec
+                    }
+                };
+                rec.parent = Some(pid);
+                st.entries.push(Entry::new(rec));
+            }
+            pid
+        };
+        self.inner.changed();
+        self.inner.pump();
+        Ok(id)
+    }
+
+    /// Puts every failed (or cancelled) download of a batch back in the queue.
+    pub fn retry_failed(&self, id: u64) {
+        let ids: Vec<u64> = {
+            let st = self.inner.state.lock().unwrap();
+            st.entries
+                .iter()
+                .filter(|e| e.rec.parent == Some(id) && e.rec.status == Status::Failed)
+                .map(|e| e.rec.id)
+                .collect()
+        };
+        for child in ids {
+            self.resume(child);
+        }
+    }
+
+    /// Cancels one download of a batch: it stops, what it had downloaded is
+    /// deleted, and it stays in the batch as cancelled, to be retried if
+    /// wanted. Any other download is left alone (removing it cancels it).
+    pub fn cancel(&self, id: u64) {
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            let Some(e) = st.entries.iter_mut().find(|e| e.rec.id == id && e.rec.parent.is_some()) else {
+                return;
+            };
+            if e.rec.status == Status::Completed || e.rec.cancelled {
+                return;
+            }
+            e.rec.cancelled = true;
+            e.rec.status = Status::Failed;
+            e.rec.error = Some("Cancelled".into());
+            e.rec.finished_at = Some(now());
+            match &e.live {
+                // The task deletes its data once it has stopped (finish).
+                Some(live) => live.cancel.cancel(),
+                None => {
+                    delete_files(&e.rec, false);
+                    e.rec.reset_progress();
+                }
+            }
+        }
+        self.inner.changed();
+        self.inner.pump();
     }
 
     /// The videos or files of a profile or playlist download, each with how
@@ -685,43 +975,15 @@ impl Engine {
                 .unwrap_or(base);
             let id = st.next_id;
             st.next_id += 1;
-            let total = files.iter().map(|f| f.size).sum::<Option<u64>>();
-            let rec = Record {
-                id,
-                url: page.trim().to_string(),
-                headers: Vec::new(),
-                dir,
-                filename: folder,
-                user_named: false,
-                part_started: false,
-                status: Status::Queued,
-                error: None,
-                total,
-                resumable: true,
-                etag: None,
-                connections: st.settings.connections,
-                created_at: now(),
-                segments: Vec::new(),
-                downloaded: 0,
-                media: false,
-                media_options: MediaOptions::default(),
-                torrent: false,
-                torrent_file: None,
-                only_files: None,
-                media_copy: None,
-                named_stem: None,
-                profile: false,
-                items: 0,
-                thumbnail: None,
-                deleted_at: None,
-                collection: None,
-                files: files
-                    .iter()
-                    .map(|f| TorrentFileProgress { path: f.path.clone(), len: f.size.unwrap_or(0), done: 0, net: None })
-                    .collect(),
-                bundle: files,
-            };
-            st.entries.push(Entry { rec, live: None, speed: 0.0, last_bytes: 0, last_received: 0 });
+            let mut rec = Record::new(id, page.trim().to_string(), dir, folder, st.settings.connections);
+            rec.total = files.iter().map(|f| f.size).sum::<Option<u64>>();
+            rec.resumable = true;
+            rec.files = files
+                .iter()
+                .map(|f| TorrentFileProgress { path: f.path.clone(), len: f.size.unwrap_or(0), done: 0, net: None })
+                .collect();
+            rec.bundle = files;
+            st.entries.push(Entry::new(rec));
             id
         };
         self.inner.changed();
@@ -741,6 +1003,12 @@ impl Engine {
     pub fn set_settings(&self, settings: Settings) {
         let settings = settings.normalized();
         self.inner.limiter.set_rate(settings.speed_limit);
+        // running torrents take a new global limit at once too
+        for e in self.inner.state.lock().unwrap().entries.iter() {
+            if let Some(live) = &e.live {
+                torrent::retune(live);
+            }
+        }
         self.inner.dns.set(settings.secure_dns);
         self.inner.state.lock().unwrap().settings = settings;
         self.inner.changed();
@@ -748,6 +1016,33 @@ impl Engine {
     }
 
     pub fn add(&self, new: NewDownload) -> Result<u64, String> {
+        let profile = self.profile_for(&new);
+        let id = {
+            let mut st = self.inner.state.lock().unwrap();
+            let rec = self.new_record(&mut st, new, profile)?;
+            let id = rec.id;
+            st.entries.push(Entry::new(rec));
+            id
+        };
+        self.inner.changed();
+        self.inner.pump();
+        Ok(id)
+    }
+
+    /// The profile a new download's link points at, which makes it a
+    /// download of everything on it. Asked before the list is locked.
+    fn profile_for(&self, new: &NewDownload) -> Option<ProfileRef> {
+        let url = torrent::clean(&new.url);
+        let is_torrent = torrent::is_local_torrent(&url) || torrent::is_torrent_link(&url);
+        if is_torrent || new.via_site {
+            None
+        } else {
+            self.inner.resolve(&url)
+        }
+    }
+
+    /// The record of a new download, with the next id; not yet in the list.
+    fn new_record(&self, st: &mut State, new: NewDownload, profile: Option<ProfileRef>) -> Result<Record, String> {
         let url = torrent::clean(&new.url);
         let local_torrent = torrent::is_local_torrent(&url);
         let is_torrent = local_torrent || torrent::is_torrent_link(&url);
@@ -770,11 +1065,7 @@ impl Engine {
             }
         };
         // A link to a whole profile downloads everything on it.
-        let profile = if is_torrent || new.via_site {
-            None
-        } else {
-            self.inner.resolve(&url)
-        };
+        let profile = if is_torrent || new.via_site { None } else { profile };
         let default_name = match &profile {
             Some(p) => profile::folder_name(p),
             None => default_name,
@@ -789,137 +1080,362 @@ impl Engine {
             .filter(|n| !n.is_empty())
             .map(probe::sanitize);
 
-        let id = {
-            let mut st = self.inner.state.lock().unwrap();
-            let id = st.next_id;
-            st.next_id += 1;
-            // Keep our own copy of a .torrent file opened from disk.
-            let torrent_file = if local_torrent {
-                let folder = self
-                    .inner
-                    .state_file
-                    .parent()
-                    .map(|p| p.join("torrents"))
-                    .unwrap_or_default();
-                let copy = folder.join(format!("{id}.torrent"));
-                std::fs::create_dir_all(&folder)
-                    .and_then(|_| std::fs::copy(&url, &copy))
-                    .map_err(|e| format!("Could not read the torrent file: {e}"))?;
-                Some(copy)
-            } else {
-                None
-            };
-            let rec = Record {
-                id,
-                headers: new.headers,
-                dir: new.dir.unwrap_or_else(|| st.settings.download_dir.clone()),
-                filename: user_name.clone().unwrap_or(default_name),
-                url,
-                user_named: user_name.is_some(),
-                part_started: false,
-                status: Status::Queued,
-                error: None,
-                total: None,
-                resumable: false,
-                etag: None,
-                connections: new
-                    .connections
-                    .unwrap_or(st.settings.connections)
-                    .clamp(1, MAX_CONNECTIONS),
-                created_at: now(),
-                segments: Vec::new(),
-                downloaded: 0,
-                media: new.via_site && !is_torrent,
-                media_options: new.media,
-                torrent: is_torrent,
-                torrent_file,
-                only_files,
-                media_copy: None,
-                named_stem: None,
-                profile: profile.is_some(),
-                items: 0,
-                thumbnail: None,
-                deleted_at: None,
-                collection: profile.clone().filter(|p| p.by.is_some()),
-                files: Vec::new(),
-                bundle: Vec::new(),
-            };
-            st.entries.push(Entry {
-                rec,
-                live: None,
-                speed: 0.0,
-                last_bytes: 0,
-                last_received: 0,
-            });
-            id
+        let id = st.next_id;
+        st.next_id += 1;
+        // Keep our own copy of a .torrent file opened from disk.
+        let torrent_file = if local_torrent {
+            let folder = self
+                .inner
+                .state_file
+                .parent()
+                .map(|p| p.join("torrents"))
+                .unwrap_or_default();
+            let copy = folder.join(format!("{id}.torrent"));
+            std::fs::create_dir_all(&folder)
+                .and_then(|_| std::fs::copy(&url, &copy))
+                .map_err(|e| format!("Could not read the torrent file: {e}"))?;
+            Some(copy)
+        } else {
+            None
         };
+        // Only a single file put in the download folder is sorted by kind.
+        let sort = new.dir.is_none() && !is_torrent && profile.is_none();
+        let dir = new.dir.unwrap_or_else(|| st.settings.download_dir.clone());
+        let connections = new.connections.unwrap_or(st.settings.connections).clamp(1, MAX_CONNECTIONS);
+        let mut rec = Record::new(id, url, dir, user_name.clone().unwrap_or(default_name), connections);
+        rec.headers = new.headers;
+        rec.user_named = user_name.is_some();
+        rec.media = new.via_site && !is_torrent;
+        rec.media_options = new.media;
+        rec.torrent = is_torrent;
+        rec.torrent_file = torrent_file;
+        rec.only_files = only_files;
+        rec.profile = profile.is_some();
+        rec.collection = profile.filter(|p| p.by.is_some());
+        rec.speed_limit = new.speed_limit.unwrap_or(0);
+        rec.sort = sort;
+        Ok(rec)
+    }
+
+    /// The downloads an action on `id` acts on: a batch's own downloads, or
+    /// the download itself.
+    fn targets(&self, id: u64) -> Vec<u64> {
+        let st = self.inner.state.lock().unwrap();
+        expand(&st, &[id])
+    }
+
+    /// Pauses a download; for a batch, every one of its downloads that is
+    /// running or waiting.
+    pub fn pause(&self, id: u64) {
+        let ids = self.targets(id);
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            for e in st.entries.iter_mut().filter(|e| ids.contains(&e.rec.id)) {
+                if !matches!(e.rec.status, Status::Queued | Status::Connecting | Status::Downloading) {
+                    continue;
+                }
+                e.rec.status = Status::Paused;
+                if let Some(live) = &e.live {
+                    live.cancel.cancel();
+                }
+            }
+        }
         self.inner.changed();
         self.inner.pump();
+    }
+
+    /// Resumes a paused download or retries a failed one. For a batch: its
+    /// paused downloads, or when none is paused, its failed ones.
+    pub fn resume(&self, id: u64) {
+        let ids = self.targets(id);
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            let batch = st.entries.iter().any(|e| e.rec.id == id && e.rec.batch.is_some());
+            let any_paused = st.entries.iter().any(|e| ids.contains(&e.rec.id) && e.rec.status == Status::Paused);
+            for e in st.entries.iter_mut().filter(|e| ids.contains(&e.rec.id)) {
+                let wanted = if batch && any_paused {
+                    e.rec.status == Status::Paused
+                } else {
+                    matches!(e.rec.status, Status::Paused | Status::Failed)
+                };
+                if !wanted {
+                    continue;
+                }
+                e.rec.status = Status::Queued;
+                e.rec.error = None;
+                e.rec.cancelled = false;
+                e.rec.finished_at = None;
+            }
+        }
+        self.inner.changed();
+        self.inner.pump();
+    }
+
+    /// Sets a download's own speed limit, bytes per second (0: none; the
+    /// global limit always applies too). A running HTTP download, file
+    /// bundle or torrent's web seeds keep to it at once. A site video or a
+    /// profile is fetched by a program given its rate as it starts, so a
+    /// running one is restarted with the new rate; it carries on where it
+    /// was. A torrent's peers take it the next time the torrent starts.
+    pub fn set_speed_limit(&self, id: u64, rate: u64) {
+        let mut ids = self.targets(id);
+        if !ids.contains(&id) {
+            // the batch keeps the limit too, to show it
+            ids.push(id);
+        }
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            for e in st.entries.iter_mut().filter(|e| ids.contains(&e.rec.id)) {
+            if e.rec.speed_limit == rate {
+                continue;
+            }
+            e.rec.speed_limit = rate;
+            if let Some(live) = &e.live {
+                live.limiter.set_rate(rate);
+                // a torrent's engines take it now (torrent.rs)
+                torrent::retune(live);
+                let by_program = e.rec.media || e.rec.profile;
+                if by_program && matches!(e.rec.status, Status::Connecting | Status::Downloading) {
+                    // back in the queue as it stops, so it starts again at once
+                    e.rec.status = Status::Queued;
+                    live.cancel.cancel();
+                }
+            }
+            }
+        }
+        self.inner.changed();
+        self.inner.pump();
+    }
+
+    /// A download that can take a new link now: a direct file, not running.
+    fn linkable(&self, id: u64) -> Result<Record, String> {
+        let st = self.inner.state.lock().unwrap();
+        let e = st.entries.iter().find(|e| e.rec.id == id).ok_or("That download is no longer in the list")?;
+        if !refresh::takes_new_link(&e.rec) {
+            return Err("Only a direct file download can take a new link".into());
+        }
+        if matches!(e.rec.status, Status::Queued | Status::Connecting | Status::Downloading) || e.live.is_some() {
+            return Err("Pause the download first".into());
+        }
+        if e.rec.status == Status::Completed {
+            return Err("That download has finished".into());
+        }
+        Ok(e.rec.clone())
+    }
+
+    /// What a new link for a download would do: carry on from what is on
+    /// disk, or start over, and why (refresh.rs). Nothing is changed.
+    /// `headers`: request headers for the new link; none keeps the old ones.
+    pub async fn check_new_link(&self, id: u64, url: &str, headers: Option<Vec<(String, String)>>) -> Result<LinkCheck, String> {
+        let rec = self.linkable(id)?;
+        let headers = headers.unwrap_or_else(|| rec.headers.clone());
+        refresh::check(&self.inner, &rec, url, &headers).await
+    }
+
+    /// Gives a download a new link. It carries on from what is on disk only
+    /// when the new link is checked (again, now) to give the same file;
+    /// otherwise this fails, unless `restart`, which starts it over.
+    pub async fn use_new_link(
+        &self,
+        id: u64,
+        url: &str,
+        headers: Option<Vec<(String, String)>>,
+        restart: bool,
+    ) -> Result<LinkCheck, String> {
+        let rec = self.linkable(id)?;
+        let sent = headers.clone().unwrap_or_else(|| rec.headers.clone());
+        let check = refresh::check(&self.inner, &rec, url, &sent).await?;
+        if !check.resume && !restart {
+            return Err("The new link does not give the same file".into());
+        }
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            let e = st.entries.iter_mut().find(|e| e.rec.id == id).ok_or("That download is no longer in the list")?;
+            if e.live.is_some() || matches!(e.rec.status, Status::Queued | Status::Connecting | Status::Downloading) {
+                return Err("Pause the download first".into());
+            }
+            refresh::apply(&mut e.rec, url, headers, &check, restart);
+        }
+        self.inner.changed();
+        self.inner.pump();
+        Ok(check)
+    }
+
+    /// Moves a finished download (its file, or its folder) into `dir`. A
+    /// file of the same name there is never written over: a number is added.
+    /// Returns where it is now.
+    pub async fn move_to(&self, id: u64, dir: PathBuf) -> Result<PathBuf, String> {
+        let (src, batch) = {
+            let st = self.inner.state.lock().unwrap();
+            let e = st.entries.iter().find(|e| e.rec.id == id).ok_or("That download is no longer in the list")?;
+            if e.rec.status != Status::Completed || e.live.is_some() {
+                return Err("Only a finished download can be moved".into());
+            }
+            (e.rec.dir.join(&e.rec.filename), e.rec.batch.is_some())
+        };
+        if !src.exists() {
+            return Err("Its file is no longer where it was saved".into());
+        }
+        let from = src.clone();
+        let to = dir.clone();
+        let moved = tokio::task::spawn_blocking(move || organize::move_into(&from, &to))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Could not move it: {e}"))?;
+        self.inner.relocated(id, &src, &moved, batch);
+        Ok(moved)
+    }
+
+    /// Every schedule, with where it stands and when it next starts.
+    pub fn schedules(&self) -> Vec<ScheduleInfo> {
+        let (known, running): (std::collections::HashSet<u64>, std::collections::HashSet<u64>) = {
+            let st = self.inner.state.lock().unwrap();
+            (
+                st.entries.iter().map(|e| e.rec.id).collect(),
+                st.entries
+                    .iter()
+                    .filter(|e| matches!(e.rec.status, Status::Queued | Status::Connecting | Status::Downloading))
+                    .map(|e| e.rec.id)
+                    .collect(),
+            )
+        };
+        let now = schedule::local_now();
+        let book = self.inner.schedules.lock().unwrap();
+        book.items
+            .iter()
+            .map(|s| {
+                let mut info = s.info(now, s.spec.downloads.iter().any(|id| running.contains(id)));
+                // downloads removed from the list since are left out
+                info.spec.downloads.retain(|id| known.contains(id));
+                info
+            })
+            .collect()
+    }
+
+    /// Makes a schedule (`id` None) or changes one. Its downloads are held
+    /// paused until it starts them, unless it is already inside its window.
+    pub fn save_schedule(&self, id: Option<u64>, mut spec: ScheduleSpec) -> Result<u64, String> {
+        spec.name = spec.name.trim().to_string();
+        {
+            let st = self.inner.state.lock().unwrap();
+            let mut seen = std::collections::HashSet::new();
+            spec.downloads
+                .retain(|id| seen.insert(*id) && st.entries.iter().any(|e| e.rec.id == *id));
+        }
+        schedule::check(&spec).map_err(String::from)?;
+        let now = schedule::local_now();
+        let id = {
+            let mut book = self.inner.schedules.lock().unwrap();
+            match id {
+                Some(id) => {
+                    let s = book.items.iter_mut().find(|s| s.id == id).ok_or("no such schedule")?;
+                    s.spec = spec;
+                    s.forget_past(now);
+                    id
+                }
+                None => {
+                    book.next_id = book.next_id.max(1);
+                    let id = book.next_id;
+                    book.next_id += 1;
+                    book.items.push(schedule::Schedule::new(id, spec, now, now_secs()));
+                    id
+                }
+            }
+        };
+        self.inner.hold(id);
+        self.inner.save_schedules();
+        self.inner.check_schedules(false);
+        self.inner.notify();
         Ok(id)
     }
 
-    pub fn pause(&self, id: u64) {
+    /// Pauses a schedule (it starts nothing until resumed) or resumes it.
+    /// A start that went by while it was paused is not caught up on.
+    pub fn set_schedule_enabled(&self, id: u64, enabled: bool) {
         {
-            let mut st = self.inner.state.lock().unwrap();
-            let Some(e) = st.entries.iter_mut().find(|e| e.rec.id == id) else {
+            let mut book = self.inner.schedules.lock().unwrap();
+            let Some(s) = book.items.iter_mut().find(|s| s.id == id) else {
                 return;
             };
-            if !matches!(
-                e.rec.status,
-                Status::Queued | Status::Connecting | Status::Downloading
-            ) {
+            if s.enabled == enabled {
                 return;
             }
-            e.rec.status = Status::Paused;
-            if let Some(live) = &e.live {
-                live.cancel.cancel();
+            s.enabled = enabled;
+            if enabled {
+                s.forget_past(schedule::local_now());
             }
         }
-        self.inner.changed();
-        self.inner.pump();
+        if enabled {
+            self.inner.hold(id);
+        }
+        self.inner.save_schedules();
+        self.inner.check_schedules(false);
+        self.inner.notify();
     }
 
-    /// Resumes a paused download or retries a failed one.
-    pub fn resume(&self, id: u64) {
-        {
-            let mut st = self.inner.state.lock().unwrap();
-            let Some(e) = st.entries.iter_mut().find(|e| e.rec.id == id) else {
-                return;
-            };
-            if !matches!(e.rec.status, Status::Paused | Status::Failed) {
-                return;
-            }
-            e.rec.status = Status::Queued;
-            e.rec.error = None;
-        }
-        self.inner.changed();
-        self.inner.pump();
+    /// Deletes a schedule. Its downloads stay as they are.
+    pub fn delete_schedule(&self, id: u64) {
+        self.inner.schedules.lock().unwrap().items.retain(|s| s.id != id);
+        self.inner.save_schedules();
+        self.inner.notify();
     }
 
     /// Removes a download from the list. Unfinished data is always deleted;
     /// a completed file is deleted only when `delete_file` is set.
+    /// A batch goes with all its downloads, and its folder once empty.
     pub fn remove(&self, id: u64, delete_file: bool) {
+        let mut ids = self.targets(id);
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+        let mut folder = None;
         {
             let mut st = self.inner.state.lock().unwrap();
-            let Some(i) = st.entries.iter().position(|e| e.rec.id == id) else {
-                return;
-            };
-            self.inner.lists.lock().unwrap().remove(&id);
-            if let Some(live) = st.entries[i].live.clone() {
-                // The running task cleans up after itself when it stops.
-                live.removed.store(true, Relaxed);
-                live.cancel.cancel();
-                st.entries[i].rec.status = Status::Paused;
-            } else {
-                let e = st.entries.remove(i);
-                delete_files(&e.rec, delete_file);
+            for id in &ids {
+                let Some(i) = st.entries.iter().position(|e| e.rec.id == *id) else {
+                    continue;
+                };
+                self.inner.lists.lock().unwrap().remove(id);
+                if let Some(live) = st.entries[i].live.clone() {
+                    // The running task cleans up after itself when it stops.
+                    live.removed.store(true, Relaxed);
+                    live.cancel.cancel();
+                    st.entries[i].rec.status = Status::Paused;
+                } else {
+                    let e = st.entries.remove(i);
+                    if e.rec.batch.is_some() {
+                        folder = Some(e.rec.dir.join(&e.rec.filename));
+                    } else {
+                        delete_files(&e.rec, delete_file);
+                    }
+                }
             }
         }
+        // An empty batch folder goes too; one with files in it stays.
+        if let Some(folder) = folder {
+            let _ = std::fs::remove_dir(folder);
+        }
         // Gone from the list, gone from the record of what it fetched.
-        let _ = std::fs::remove_file(self.inner.remembered_file(id));
+        for id in ids {
+            let _ = std::fs::remove_file(self.inner.remembered_file(id));
+        }
         self.inner.changed();
         self.inner.pump();
     }
+}
+
+/// The downloads actions on `ids` act on: each batch stands for its own
+/// downloads, anything else for itself.
+fn expand(st: &State, ids: &[u64]) -> Vec<u64> {
+    let mut out = Vec::new();
+    for id in ids {
+        if st.entries.iter().any(|e| e.rec.id == *id && e.rec.batch.is_some()) {
+            out.extend(st.entries.iter().filter(|e| e.rec.parent == Some(*id)).map(|e| e.rec.id));
+        } else {
+            out.push(*id);
+        }
+    }
+    out
 }
 
 fn delete_files(rec: &Record, delete_completed: bool) {
@@ -1018,6 +1534,10 @@ fn with_remembered(now_there: Vec<ItemInfo>, remembered: Vec<ItemInfo>) -> Vec<I
     }
     out.extend(there.into_iter().flatten());
     out
+}
+
+fn now_secs() -> i64 {
+    now() as i64
 }
 
 fn now() -> u64 {
@@ -1160,6 +1680,100 @@ impl Inner {
     fn changed(&self) {
         self.save();
         self.notify();
+    }
+
+    fn save_schedules(&self) {
+        let Ok(bytes) = serde_json::to_vec(&*self.schedules.lock().unwrap()) else {
+            return;
+        };
+        let tmp = self.schedule_file.with_extension("json.tmp");
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, &self.schedule_file);
+        }
+    }
+
+    /// Runs every schedule's check at the time now, saves what changed and
+    /// starts or pauses the downloads they name. `launch`: the first check
+    /// after the app opened.
+    fn check_schedules(self: &Arc<Self>, launch: bool) {
+        let on_launch = self.state.lock().unwrap().settings.start_scheduled_on_launch;
+        let now = schedule::local_now();
+        let at = now_secs();
+        let mut acts = Vec::new();
+        let mut changed = false;
+        {
+            let mut book = self.schedules.lock().unwrap();
+            for s in book.items.iter_mut() {
+                let (a, c) = s.step(now, at, launch, on_launch);
+                acts.extend(a);
+                changed |= c;
+            }
+        }
+        // Written down before anything is started, so nothing starts twice.
+        if changed {
+            self.save_schedules();
+        }
+        for act in &acts {
+            match act {
+                schedule::Act::Start(ids) => self.set_running(ids, true),
+                schedule::Act::Stop(ids) => self.set_running(ids, false),
+            }
+        }
+        if changed && acts.is_empty() {
+            self.notify();
+        }
+    }
+
+    /// Lets the downloads run (paused or failed ones go back in the queue)
+    /// or pauses them.
+    fn set_running(self: &Arc<Self>, ids: &[u64], run: bool) {
+        let mut any = false;
+        {
+            let mut st = self.state.lock().unwrap();
+            let ids = expand(&st, ids);
+            for id in &ids {
+                let Some(e) = st.entries.iter_mut().find(|e| e.rec.id == *id) else {
+                    continue;
+                };
+                if run {
+                    if matches!(e.rec.status, Status::Paused | Status::Failed) {
+                        e.rec.status = Status::Queued;
+                        e.rec.error = None;
+                        e.rec.cancelled = false;
+                        e.rec.finished_at = None;
+                        any = true;
+                    }
+                } else if matches!(e.rec.status, Status::Queued | Status::Connecting | Status::Downloading) {
+                    e.rec.status = Status::Paused;
+                    if let Some(live) = &e.live {
+                        live.cancel.cancel();
+                    }
+                    any = true;
+                }
+            }
+        }
+        if any {
+            self.changed();
+            self.pump();
+        } else {
+            self.notify();
+        }
+    }
+
+    /// Holds a schedule's downloads paused until it starts them, unless it
+    /// is paused itself or inside its window now.
+    fn hold(self: &Arc<Self>, id: u64) {
+        let ids = {
+            let book = self.schedules.lock().unwrap();
+            let Some(s) = book.items.iter().find(|s| s.id == id) else {
+                return;
+            };
+            if !s.enabled || s.done || s.in_window(schedule::local_now()) {
+                return;
+            }
+            s.spec.downloads.clone()
+        };
+        self.set_running(&ids, false);
     }
 
     /// The profile a link points at: read from the link, or found earlier by
@@ -1310,6 +1924,8 @@ impl Inner {
         let _guard = self.save_lock.lock().unwrap();
         let saved = {
             let mut st = self.state.lock().unwrap();
+            st.entries.iter_mut().for_each(Entry::sync);
+            batch::roll_up(&mut st.entries, now());
             Saved {
                 next_id: st.next_id,
                 settings: st.settings.clone(),
@@ -1345,12 +1961,15 @@ impl Inner {
                 }
                 // A paused task may still be winding down (`live` set); it is
                 // picked up again by the pump its own exit triggers.
-                if e.rec.status != Status::Queued || e.live.is_some() {
+                // A batch never runs itself; its downloads do.
+                if e.rec.status != Status::Queued || e.live.is_some() || e.rec.batch.is_some() {
                     continue;
                 }
                 e.rec.status = Status::Connecting;
                 e.rec.error = None;
-                let live = Arc::new(Live::new());
+                let mut live = Live::new();
+                live.limiter = Arc::new(Limiter::under(self.limiter.clone(), e.rec.speed_limit));
+                let live = Arc::new(live);
                 e.live = Some(live.clone());
                 e.speed = 0.0;
                 e.last_bytes = e.rec.downloaded;
@@ -1361,6 +1980,9 @@ impl Inner {
                 let id = e.rec.id;
                 self.rt.spawn(async move {
                     let res = task::run(&inner, id, &live).await;
+                    if res.is_ok() && !live.removed.load(Relaxed) {
+                        inner.sort_finished(id).await;
+                    }
                     inner.finish(id, &live, res);
                 });
             }
@@ -1384,10 +2006,21 @@ impl Inner {
                 if live.removed.load(Relaxed) {
                     let e = st.entries.remove(i);
                     delete_files(&e.rec, false);
+                    // The last download of a removed batch takes its empty folder along.
+                    if let Some(parent) = e.rec.parent {
+                        if !st.entries.iter().any(|x| x.rec.id == parent || x.rec.parent == Some(parent)) {
+                            let _ = std::fs::remove_dir(&e.rec.dir);
+                        }
+                    }
+                } else if e.rec.cancelled {
+                    // Cancelled on its own inside a batch: what it had goes.
+                    delete_files(&e.rec, false);
+                    e.rec.reset_progress();
                 } else {
                     match res {
                         Ok(()) => {
                             e.rec.status = Status::Completed;
+                            e.rec.finished_at = Some(now());
                             if let Some(t) = e.rec.total {
                                 e.rec.downloaded = t;
                             }
@@ -1404,6 +2037,7 @@ impl Inner {
                             if matches!(e.rec.status, Status::Connecting | Status::Downloading) {
                                 e.rec.status = Status::Failed;
                                 e.rec.error = Some(with_network_hint(msg, self.dns.enabled()));
+                                e.rec.finished_at = Some(now());
                             }
                         }
                     }
@@ -1416,9 +2050,93 @@ impl Inner {
         self.changed();
         self.pump();
     }
+
+    /// Once a download has fetched everything, and before it is shown as
+    /// finished: its file goes to the folder of its kind, or its schedule's
+    /// (sort_target). If that fails it stays where it is, still finished.
+    async fn sort_finished(self: &Arc<Self>, id: u64) {
+        let queue_folder = self.queue_folder(id);
+        let target = {
+            let st = self.state.lock().unwrap();
+            let organize = &st.settings.organize;
+            let base = &st.settings.download_dir;
+            st.entries.iter().find(|e| e.rec.id == id).and_then(|e| sort_target(&e.rec, queue_folder.as_deref(), organize, base))
+        };
+        let Some((src, dir)) = target else { return };
+        let from = src.clone();
+        match tokio::task::spawn_blocking(move || organize::move_into(&from, &dir)).await {
+            Ok(Ok(to)) => self.relocated(id, &src, &to, false),
+            Ok(Err(e)) => media::debug(|| format!("could not sort {}: {e}", src.display())),
+            Err(e) => media::debug(|| format!("could not sort {}: {e}", src.display())),
+        }
+    }
+
+    /// The folder a schedule holding this download sends its files to.
+    fn queue_folder(&self, id: u64) -> Option<String> {
+        let book = self.schedules.lock().unwrap();
+        book.items
+            .iter()
+            .filter(|s| s.spec.downloads.contains(&id))
+            .find_map(|s| s.spec.folder.clone().filter(|f| !f.trim().is_empty()))
+    }
+
+    /// Writes down where a download's file or folder was moved to; for a
+    /// batch, its downloads' places too.
+    fn relocated(&self, id: u64, from: &Path, to: &Path, batch: bool) {
+        {
+            let mut st = self.state.lock().unwrap();
+            if let Some(e) = st.entries.iter_mut().find(|e| e.rec.id == id) {
+                if let (Some(dir), Some(name)) = (to.parent(), to.file_name()) {
+                    e.rec.dir = dir.to_path_buf();
+                    e.rec.filename = name.to_string_lossy().into_owned();
+                    e.rec.deleted_at = None;
+                }
+            }
+            if batch {
+                for e in st.entries.iter_mut().filter(|e| e.rec.parent == Some(id)) {
+                    if let Ok(rest) = e.rec.dir.strip_prefix(from) {
+                        e.rec.dir = to.join(rest);
+                    }
+                }
+            }
+        }
+        self.changed();
+    }
+}
+
+/// Where a download that just finished is moved to, if anywhere: the folder
+/// of its schedule, else the folder of its kind of file when sorting is on
+/// and it was put in the download folder with no folder of its own.
+/// Profiles, playlists, torrents, file sets and batches keep their folders.
+fn sort_target(rec: &Record, queue_folder: Option<&str>, organize: &Organize, base: &Path) -> Option<(PathBuf, PathBuf)> {
+    let single_file = !rec.torrent && !rec.profile && rec.bundle.is_empty() && rec.batch.is_none() && rec.parent.is_none();
+    if !single_file {
+        return None;
+    }
+    let src = rec.dir.join(&rec.filename);
+    let dir = match queue_folder {
+        Some(folder) => organize::resolve(base, folder),
+        None if rec.sort && organize.enabled && rec.dir == base => organize::resolve(base, organize.folder_for(&rec.filename)),
+        None => return None,
+    };
+    (dir != rec.dir).then_some((src, dir))
 }
 
 /// Twice a second: refresh speeds and notify; every two seconds: persist.
+/// Checks the schedules every few seconds. The time is read from the clock
+/// at each check, so a computer that slept, or a clock or time zone that
+/// changed, is noticed at the next one.
+async fn schedule_loop(inner: Weak<Inner>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        let Some(inner) = inner.upgrade() else { return };
+        inner.check_schedules(false);
+    }
+}
+
 async fn ticker(inner: Weak<Inner>) {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
     let mut n = 0u32;
@@ -1589,5 +2307,41 @@ mod hint_tests {
         assert!(on.contains("even with Secure DNS on"), "{on}");
         assert_eq!(with_network_hint("HTTP 404 Not Found".into(), false), "HTTP 404 Not Found");
         assert_eq!(with_network_hint(off.clone(), false), off, "the hint is added once");
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+
+    #[test]
+    fn a_schedule_folder_wins_and_collections_keep_their_own_folders() {
+        let base = PathBuf::from("D:/Downloads");
+        let organize = Organize::default();
+        let mut rec = Record::new(1, "https://a.test/x.mp4".into(), base.clone(), "x.mp4".into(), 8);
+        rec.sort = true;
+        let target = |rec: &Record, queue: Option<&str>| sort_target(rec, queue, &organize, &base).map(|(_, dir)| dir);
+        assert_eq!(target(&rec, None), Some(base.join("Videos")));
+        assert_eq!(target(&rec, Some("Night")), Some(base.join("Night")), "the schedule's folder wins");
+        // a folder chosen for it: left alone, unless its schedule has a folder
+        let mut chosen = rec.clone();
+        chosen.sort = false;
+        chosen.dir = PathBuf::from("E:/Films");
+        assert_eq!(target(&chosen, None), None);
+        assert_eq!(target(&chosen, Some("Night")), Some(base.join("Night")));
+        // profiles, torrents, batches and their downloads keep their folders
+        for change in [
+            (|r: &mut Record| r.profile = true) as fn(&mut Record),
+            |r| r.torrent = true,
+            |r| r.parent = Some(9),
+            |r| r.batch = Some(batch::BatchMeta::default()),
+        ] {
+            let mut r = rec.clone();
+            change(&mut r);
+            assert_eq!(target(&r, Some("Night")), None);
+        }
+        let mut off = Organize::default();
+        off.enabled = false;
+        assert_eq!(sort_target(&rec, None, &off, &base), None);
     }
 }

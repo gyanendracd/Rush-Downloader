@@ -33,8 +33,9 @@ import {
   type Download,
   type DownloadItem,
   type FileNet,
+  takesNewLink,
 } from "./api";
-import { amountOf, FileIcon, Modal, Progress, Sparkline, useApp } from "./ui";
+import { amountOf, FileIcon, limitText, Modal, Progress, Sparkline, useApp } from "./ui";
 import { pct as pctText, t } from "./i18n";
 
 type Tab = "progress" | "details" | "options";
@@ -420,6 +421,12 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
                 {d.status === "failed" ? t.detail.buttons.retry : t.detail.buttons.resume}
               </button>
             )}
+            {/* a link that expired: give it a new one, keeping what is downloaded */}
+            {d.status === "failed" && takesNewLink(d) && (
+              <button type="button" className="btn btn-wide" onClick={() => actions.refreshLink(d)}>
+                <LinkGlyph size={16} strokeWidth={2} aria-hidden="true" /> {t.ui.refresh.title}
+              </button>
+            )}
             <button type="button" className="btn btn-wide btn-danger" onClick={() => actions.remove([d.id])}>
               <Trash2 size={16} strokeWidth={2} aria-hidden="true" /> {t.detail.buttons.cancel}
             </button>
@@ -480,6 +487,16 @@ export function DetailDialog({ d, onClose }: { d: Download; onClose: () => void 
             <Fact label={t.detail.progress.downloaded}>{formatBytes(d.downloaded)}</Fact>
             <Fact label={t.detail.progress.timeRemaining}>
               {d.status === "completed" ? t.detail.progress.done : withoutLeft(eta) || "—"}
+            </Fact>
+            <Fact label={t.ui.limit.title}>
+              <span className="fact-with-action">
+                {limitText(d.speed_limit)}
+                {d.status !== "completed" && (
+                  <button type="button" className="link" onClick={() => actions.limit(d)}>
+                    {t.ui.limit.change}
+                  </button>
+                )}
+              </span>
             </Fact>
           </dl>
           {/* A torrent's files fill side by side: each one's bar, under the whole. */}

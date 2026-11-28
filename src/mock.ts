@@ -3,7 +3,7 @@
 // from main.tsx only when the app is not running inside Tauri in dev mode and
 // is never part of a production build.
 
-import type { Download, Found, NewDownload, ProfileFace, Settings, SiteFile, SiteFiles, SiteKind, ToolStatus, TorrentPreview } from "./api";
+import type { AfterAllNotice, BatchInfo, Download, MediaOptions, LinkCheck, Found, NewDownload, ProfileFace, Schedule, ScheduleSpec, Settings, SiteFile, SiteFiles, SiteKind, ToolStatus, TorrentPreview } from "./api";
 
 const MB = 1024 * 1024;
 const now = Math.floor(Date.now() / 1000);
@@ -40,6 +40,7 @@ function make(partial: Partial<Download> & Pick<Download, "id" | "url" | "filena
     deleted_at: null,
     created_at: now,
     segments: [],
+    speed_limit: 0,
     ...partial,
   };
 }
@@ -209,11 +210,237 @@ let settings: Settings = {
   cookies_browser: null,
   secure_dns: true,
   torrent_files_apart: true,
+  start_scheduled_on_launch: true,
+  after_all: "nothing",
+  after_countdown: 60,
+  after_failures: false,
+  organize: {
+    enabled: true,
+    categories: [
+      { name: "Videos", folder: "Videos", extensions: ["mp4", "mkv", "avi", "mov", "webm"] },
+      { name: "Music", folder: "Music", extensions: ["mp3", "wav", "flac", "m4a", "aac"] },
+      { name: "Documents", folder: "Documents", extensions: ["pdf", "docx", "doc", "xlsx", "pptx", "txt"] },
+      { name: "Images", folder: "Images", extensions: ["jpg", "jpeg", "png", "gif", "webp", "svg"] },
+      { name: "Archives", folder: "Archives", extensions: ["zip", "rar", "7z", "tar", "gz"] },
+      { name: "Software", folder: "Software", extensions: ["exe", "msi", "dmg", "deb", "rpm", "apk"] },
+    ],
+    other: "Other",
+  },
 };
 
-let nextId = 16;
+/* ---------- after all downloads ----------
+ * The real countdown runs in the backend (after.rs). Here it can be tried
+ * from the browser's console: __rushAfterAll("shutdown", 10). */
+const afterListeners = new Map<symbol, (n: AfterAllNotice) => void>();
+let afterTimer: number | null = null;
+const afterEmit = (n: AfterAllNotice) => afterListeners.forEach((cb) => cb(n));
+(window as unknown as Record<string, unknown>).__rushAfterAll = (action: AfterAllNotice["action"], seconds = 10) => {
+  if (afterTimer) window.clearInterval(afterTimer);
+  if (action === "notify") return afterEmit({ action, left: null, reason: "done" });
+  let left = seconds;
+  afterEmit({ action, left, reason: null });
+  afterTimer = window.setInterval(() => {
+    left -= 1;
+    if (left > 0) return afterEmit({ action, left, reason: null });
+    window.clearInterval(afterTimer!);
+    afterTimer = null;
+    afterEmit({ action, left: null, reason: "done" });
+  }, 1000);
+};
+
+/* ---------- schedules ----------
+ * The real ones are kept and run by the engine (schedule.rs). Here they
+ * only say when they next start, worked out the same way, so the Scheduler
+ * page has something to show. */
+
+/** Minutes after midnight, `offset` minutes from now on the clock. */
+function clockIn(offset: number): number {
+  const d = new Date();
+  return (((d.getHours() * 60 + d.getMinutes() + offset) % 1440) + 1440) % 1440;
+}
+
+function dayText(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** The local start on day `d` (a date at midnight) at `minutes`. */
+function at(d: Date, minutes: number): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), Math.floor(minutes / 60), minutes % 60);
+}
+
+function nextStart(spec: ScheduleSpec, from: Date): Date | null {
+  if (spec.repeat.kind === "once") {
+    const [y, m, day] = spec.repeat.date.split("-").map(Number);
+    const t = at(new Date(y, m - 1, day), spec.start);
+    return t > from ? t : null;
+  }
+  for (let ahead = 0; ahead < 8; ahead++) {
+    const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() + ahead);
+    const t = at(d, spec.start);
+    // bit 0 is Monday; getDay() counts from Sunday
+    if (t > from && spec.repeat.days & (1 << ((d.getDay() + 6) % 7))) return t;
+  }
+  return null;
+}
+
+function stopAfter(spec: ScheduleSpec, start: Date): Date | null {
+  if (spec.stop == null) return null;
+  const same = at(start, spec.stop);
+  return spec.stop > spec.start ? same : new Date(same.getTime() + 86400_000);
+}
+
+const secs = (d: Date | null) => (d ? Math.floor(d.getTime() / 1000) : null);
+
+function describe(id: number, spec: ScheduleSpec, extra: Partial<Schedule> = {}): Schedule {
+  const next = nextStart(spec, new Date());
+  return {
+    ...spec,
+    id,
+    enabled: true,
+    created_at: now - 86400,
+    status: "waiting",
+    next_start: secs(next),
+    next_stop: next ? secs(stopAfter(spec, next)) : null,
+    last: null,
+    ...extra,
+  };
+}
+
+let schedules: Schedule[] = [
+  describe(1, {
+    name: "Night downloads",
+    repeat: { kind: "weekly", days: 0b0011111 },
+    start: 23 * 60,
+    stop: 7 * 60,
+    downloads: [9, 5],
+  }),
+  describe(
+    2,
+    { name: "Big files while I'm at lunch", repeat: { kind: "weekly", days: 0b1111111 }, start: clockIn(-20), stop: clockIn(40), downloads: [8] },
+    { status: "active", next_stop: now + 40 * 60, last: { kind: "started", at: now - 1200 } },
+  ),
+  describe(3, {
+    name: "Movie collection",
+    repeat: { kind: "once", date: dayText(new Date(Date.now() + 86400_000)) },
+    start: 6 * 60 + 30,
+    stop: null,
+    downloads: [16],
+  }),
+  describe(
+    4,
+    { name: "Weekend backup", repeat: { kind: "weekly", days: 0b1100000 }, start: 10 * 60, stop: 18 * 60, downloads: [12] },
+    { enabled: false, status: "paused" },
+  ),
+  describe(
+    5,
+    { name: "Report download", repeat: { kind: "once", date: dayText(new Date(Date.now() - 86400_000)) }, start: 8 * 60, stop: null, downloads: [2] },
+    { status: "done", next_start: null, next_stop: null, last: { kind: "started", at: now - 80000 } },
+  ),
+];
+let nextScheduleId = 6;
+const scheduleListeners = new Map<symbol, (list: Schedule[]) => void>();
+const emitSchedules = () => scheduleListeners.forEach((cb) => cb(schedules.map((x) => ({ ...x }))));
+
+/* A sample batch: one row, its downloads listed in its details. The
+ * engine works its status out from theirs (batch.rs); `rollUp` does the
+ * same here. */
+const BATCH_DIR = "D:\\Downloads\\YouTube Collection November";
+const sampleBatchItems: [string, Download["status"], number, string | null][] = [
+  ["Opening keynote [wFNzXwueV1w].mp4", "completed", 412, null],
+  ["Design systems at scale [g9K-sdtqeR4].mp4", "completed", 268, null],
+  ["Building for the desktop [tLFUd_aQrGM].mp4", "downloading", 520, null],
+  ["Panel discussion [abc123].mp4", "queued", 0, null],
+  ["Closing remarks [def456].mp4", "queued", 0, null],
+  ["Private rehearsal [ghi789]", "failed", 0, "Private video. Sign in if you've been granted access to this video"],
+];
+downloads.push(
+  make({ id: 30, url: "", filename: "YouTube Collection November", status: "downloading", dir: "D:\\Downloads", path: BATCH_DIR, created_at: now - 240 }),
+  ...sampleBatchItems.map(([name, status, size, error], i) =>
+    make({
+      id: 31 + i,
+      url: `https://youtu.be/sample${i}?si=batch`,
+      filename: name,
+      status,
+      error,
+      media: true,
+      parent: 30,
+      dir: BATCH_DIR,
+      path: `${BATCH_DIR}\\${name}`,
+      total: size ? size * MB : null,
+      downloaded: status === "completed" ? size * MB : status === "downloading" ? size * MB * 0.35 : 0,
+      speed: status === "downloading" ? 7 * MB : 0,
+      finished_at: status === "completed" || status === "failed" ? now - 60 : null,
+    }),
+  ),
+);
+
+/** Works each batch's status, sizes and speed out from its downloads. */
+function rollUp(list: Download[]): Download[] {
+  return list.map((d) => {
+    if (!d.batch && !list.some((c) => c.parent === d.id)) return d;
+    const items = list.filter((c) => c.parent === d.id);
+    const b: BatchInfo = { count: items.length, completed: 0, downloading: 0, queued: 0, paused: 0, failed: 0, cancelled: 0, progress: 0, current: null };
+    let downloaded = 0;
+    let total: number | null = 0;
+    let parts = 0;
+    let speed = 0;
+    for (const c of items) {
+      if (c.cancelled) b.cancelled++;
+      else if (c.status === "completed") b.completed++;
+      else if (c.status === "downloading" || c.status === "connecting") {
+        b.downloading++;
+        b.current ??= c.filename;
+      } else if (c.status === "queued") b.queued++;
+      else if (c.status === "paused") b.paused++;
+      else b.failed++;
+      if (c.cancelled || c.status === "failed") continue;
+      downloaded += c.status === "completed" ? (c.total ?? c.downloaded) : c.downloaded;
+      total = c.total != null && total != null ? total + c.total : null;
+      parts += c.status === "completed" ? 1 : c.total ? Math.min(1, c.downloaded / c.total) : 0;
+      speed += c.speed;
+    }
+    const counted = b.count - b.failed - b.cancelled;
+    b.progress = counted ? parts / counted : 0;
+    const bad = b.failed + b.cancelled;
+    const status: Download["status"] = b.downloading
+      ? "downloading"
+      : b.queued
+        ? "queued"
+        : b.paused
+          ? "paused"
+          : bad === 0 || b.completed > 0
+            ? "completed"
+            : "failed";
+    const error = status === "completed" && bad ? `${bad} of ${b.count} links did not download` : status === "failed" ? "None of the links could be downloaded" : null;
+    return { ...d, batch: b, status, error, downloaded, total, speed, items: b.completed };
+  });
+}
+
+/** Starts waiting downloads of each batch, two at a time. */
+function startQueued() {
+  for (const parent of downloads.filter((d) => d.batch)) {
+    const items = downloads.filter((c) => c.parent === parent.id);
+    let running = items.filter((c) => c.status === "downloading").length;
+    for (const c of items) {
+      if (running >= 2) break;
+      if (c.status !== "queued") continue;
+      running++;
+      const total = c.total ?? (120 + ((c.id * 37) % 300)) * MB;
+      downloads = downloads.map((x) => (x.id === c.id ? { ...x, status: "downloading", total, speed: 6 * MB } : x));
+    }
+  }
+}
+
+downloads = rollUp(downloads);
+
+let nextId = 40;
 const listeners = new Map<symbol, (list: Download[]) => void>();
-const emit = () => listeners.forEach((cb) => cb(downloads.map((d) => ({ ...d }))));
+const emit = () => {
+  startQueued();
+  downloads = rollUp(downloads);
+  listeners.forEach((cb) => cb(downloads.map((d) => ({ ...d }))));
+};
 const patch = (id: number, change: Partial<Download>) => {
   downloads = downloads.map((d) => (d.id === id ? { ...d, ...change } : d));
   emit();
@@ -223,6 +450,8 @@ const patch = (id: number, change: Partial<Download>) => {
 setInterval(() => {
   let changed = false;
   downloads = downloads.map((d) => {
+    // a batch moves with its downloads (rollUp)
+    if (d.batch) return d;
     if (d.status === "downloading" && d.current?.total) {
       // A playlist: the current file fills, then the next one starts.
       changed = true;
@@ -275,7 +504,7 @@ const NOBODY = {
 let appPrefs = { start_with_system: false, close_to_tray: false, notifications: true, hardware_acceleration: true };
 
 export const mockApi = {
-  list: async () => downloads,
+  list: async () => rollUp(downloads),
   getAppPrefs: async () => ({ ...appPrefs }),
   setAppPrefs: async (prefs: typeof appPrefs) => {
     appPrefs = { ...prefs };
@@ -591,7 +820,30 @@ export const mockApi = {
       ],
     };
   },
-  addSiteFiles: async (url: string, title: string, files: SiteFile[], _dir?: string) => {
+  setSpeedLimit: async (id: number, rate: number) => patch(id, { speed_limit: rate }),
+  // The real check fetches pieces of the file (refresh.rs). Here a link to a
+  // file of the same name counts as the same file.
+  checkNewLink: async (id: number, url: string): Promise<LinkCheck> => {
+    await new Promise((r) => setTimeout(r, 700));
+    if (!/^https?:\/\/\S+$/i.test(url.trim())) throw "Enter a full link, starting with http:// or https://";
+    const d = downloads.find((x) => x.id === id)!;
+    const name = (u: string) => u.split(/[?#]/)[0].split("/").pop();
+    const same = name(url) === name(d.url);
+    return {
+      resume: same || d.downloaded === 0,
+      problem: same || d.downloaded === 0 ? null : "content_differs",
+      downloaded: d.downloaded,
+      old_total: d.total,
+      new_total: d.total,
+    };
+  },
+  useNewLink: async (id: number, url: string, _h: unknown, restart: boolean): Promise<LinkCheck> => {
+    const check = await mockApi.checkNewLink(id, url);
+    if (!check.resume && !restart) throw "The new link does not give the same file";
+    patch(id, { url, error: null, status: "queued", ...(check.resume && !restart ? {} : { downloaded: 0, segments: [] }) });
+    return check;
+  },
+  addSiteFiles: async (url: string, title: string, files: SiteFile[], _dir?: string, _speedLimit?: number) => {
     const id = nextId++;
     downloads = [
       ...downloads,
@@ -608,21 +860,124 @@ export const mockApi = {
     return id;
   },
   onFileDrop: (_cb: (paths: string[]) => void) => Promise.resolve(() => {}),
-  pause: async (id: number) => patch(id, { status: "paused", speed: 0, active_connections: 0 }),
+  onFileHover: (_cb: (over: boolean) => void) => Promise.resolve(() => {}),
+  moveDownload: async (id: number, dir: string) => {
+    const d = downloads.find((x) => x.id === id)!;
+    patch(id, { dir, path: `${dir}\\${d.filename}` });
+    return `${dir}\\${d.filename}`;
+  },
+  addBatch: async (name: string, urls: string[], media: MediaOptions, dir?: string) => {
+    if (!name.trim()) throw "Give the batch a name";
+    const id = nextId++;
+    const folder = `${dir ?? settings.download_dir}\\${name.trim()}`;
+    downloads = [
+      ...downloads,
+      make({ id, url: "", filename: name.trim(), status: "queued", dir: dir ?? settings.download_dir, path: folder }),
+      ...urls.map((url) =>
+        make({
+          id: nextId++,
+          url,
+          filename: decodeURIComponent(url.split(/[?#]/)[0].split("/").filter(Boolean).pop() || url),
+          status: "queued",
+          media: !/\.[a-z0-9]{2,4}$/i.test(url.split(/[?#]/)[0]),
+          parent: id,
+          dir: folder,
+        }),
+      ),
+    ];
+    void media;
+    emit();
+    return id;
+  },
+  retryFailed: async (id: number) => {
+    downloads = downloads.map((d) => (d.parent === id && d.status === "failed" ? { ...d, status: "queued", error: null, cancelled: false } : d));
+    emit();
+  },
+  cancelItem: async (id: number) =>
+    patch(id, { status: "failed", cancelled: true, error: "Cancelled", downloaded: 0, speed: 0, active_connections: 0 }),
+  pickTextFiles: async () => [] as string[],
+  readTextFile: async (path: string) => ({ name: path, text: "", bytes: 0 }),
+  saveTextFile: async (defaultName: string) => defaultName as string | null,
+  pause: async (id: number) => {
+    const ids = downloads.some((d) => d.parent === id) ? downloads.filter((d) => d.parent === id).map((d) => d.id) : [id];
+    downloads = downloads.map((d) =>
+      ids.includes(d.id) && ["queued", "connecting", "downloading"].includes(d.status) ? { ...d, status: "paused", speed: 0, active_connections: 0 } : d,
+    );
+    emit();
+  },
   resume: async (id: number) => {
+    const items = downloads.filter((d) => d.parent === id);
+    if (items.length) {
+      const paused = items.some((d) => d.status === "paused");
+      downloads = downloads.map((d) =>
+        d.parent === id && (d.status === "paused" || (!paused && d.status === "failed")) ? { ...d, status: "queued", error: null, cancelled: false } : d,
+      );
+      emit();
+      return;
+    }
     const d = downloads.find((x) => x.id === id);
     if (d?.total) patch(id, { status: "downloading", speed: 6 * MB, active_connections: 8, error: null });
     else patch(id, { status: "failed", error: d?.error ?? "HTTP 404 Not Found" });
   },
   remove: async (id: number, _deleteFile: boolean) => {
-    downloads = downloads.filter((d) => d.id !== id);
+    downloads = downloads.filter((d) => d.id !== id && d.parent !== id);
     emit();
   },
   open: async (_id: number) => {},
   reveal: async (_id: number) => {},
+  showFolder: async (_id: number) => {},
   openDownloadDir: async () => {},
   tools: async (): Promise<ToolStatus> => ({ yt_dlp: true, ffmpeg: true, gallery_dl: true }),
   getSettings: async () => settings,
+  schedules: async () => schedules.map((x) => ({ ...x })),
+  saveSchedule: async (id: number | null, spec: ScheduleSpec) => {
+    if (spec.downloads.length === 0) throw "no downloads picked";
+    const sid = id ?? nextScheduleId++;
+    const old = schedules.find((x) => x.id === sid);
+    const made = describe(sid, spec, { enabled: old?.enabled ?? true, status: old?.enabled === false ? "paused" : "waiting" });
+    schedules = old ? schedules.map((x) => (x.id === sid ? made : x)) : [...schedules, made];
+    // its downloads wait for it
+    for (const d of spec.downloads) {
+      const x = downloads.find((y) => y.id === d);
+      if (x && ["queued", "connecting", "downloading"].includes(x.status)) patch(d, { status: "paused", speed: 0, active_connections: 0 });
+    }
+    emitSchedules();
+    return sid;
+  },
+  setScheduleEnabled: async (id: number, enabled: boolean) => {
+    schedules = schedules.map((x) => (x.id === id ? { ...describe(id, x, { last: x.last }), enabled, status: enabled ? "waiting" : "paused" } : x));
+    emitSchedules();
+  },
+  afterAllCancel: async () => {
+    if (afterTimer) window.clearInterval(afterTimer);
+    afterTimer = null;
+    afterEmit({ action: settings.after_all, left: null, reason: "cancelled" });
+  },
+  afterAllNow: async () => {
+    if (afterTimer) window.clearInterval(afterTimer);
+    afterTimer = null;
+    afterEmit({ action: settings.after_all, left: null, reason: "done" });
+  },
+  onAfterAll: (cb: (n: AfterAllNotice) => void) => {
+    const key = Symbol();
+    afterListeners.set(key, cb);
+    return Promise.resolve(() => {
+      afterListeners.delete(key);
+    });
+  },
+  onAfterAllFailed: (_cb: (why: string) => void) => Promise.resolve(() => {}),
+  deleteSchedule: async (id: number) => {
+    schedules = schedules.filter((x) => x.id !== id);
+    emitSchedules();
+  },
+  onSchedules: (cb: (list: Schedule[]) => void) => {
+    // one key per subscription: the same callback may be subscribed twice
+    const key = Symbol();
+    scheduleListeners.set(key, cb);
+    return Promise.resolve(() => {
+      scheduleListeners.delete(key);
+    });
+  },
   setSettings: async (next: Settings) => {
     settings = next;
   },

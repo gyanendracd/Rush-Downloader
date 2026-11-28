@@ -1336,7 +1336,8 @@ pub(crate) async fn run(
 
     // RUSHDOWNLOAD_PROFILE_LIMIT stops after that many files, for tests.
     let limit = std::env::var("RUSHDOWNLOAD_PROFILE_LIMIT").ok().filter(|v| v.parse::<u32>().is_ok());
-    let rate = inner.limiter.rate();
+    // the lower of its own limit and the global one, as it starts
+    let rate = live.limiter.effective_rate();
     let mut cmd = command(&tool);
     if by_ytdlp {
         let mut temp = std::ffi::OsString::from("temp:");

@@ -2,7 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { dateText, isRtl, num, t } from "./i18n";
 
@@ -72,6 +72,42 @@ export interface Download {
   bundle?: boolean;
   /** [start, position, end] per segment */
   segments: [number, number, number][];
+  /** This download's own speed limit, bytes per second; 0 = none. */
+  speed_limit: number;
+  /** For a download inside a batch: the batch's id. It is shown in the
+   *  batch's details, never as a row of its own. */
+  parent?: number | null;
+  /** For a batch (many links saved together in the folder `path`): how its
+   *  downloads stand. Its status, sizes and speed are theirs together. */
+  batch?: BatchInfo | null;
+  /** A download of a batch cancelled on its own; its status is "failed". */
+  cancelled?: boolean;
+  /** When it ended, in seconds since 1970. */
+  finished_at?: number | null;
+}
+
+/** How a batch's downloads stand (crates/engine/src/batch.rs). */
+export interface BatchInfo {
+  count: number;
+  completed: number;
+  /** Connecting or downloading now. */
+  downloading: number;
+  queued: number;
+  paused: number;
+  /** Failed; cancelled ones are counted apart. */
+  failed: number;
+  cancelled: number;
+  /** 0 to 1: each download counts the same; failed and cancelled ones are left out. */
+  progress: number;
+  /** A download running now, by its file name. */
+  current: string | null;
+}
+
+/** A text file read for a batch download. */
+export interface TextFile {
+  name: string;
+  text: string;
+  bytes: number;
 }
 
 /** One file of a profile or playlist, while it is being fetched. */
@@ -138,6 +174,8 @@ export interface NewDownload {
   connections?: number;
   headers?: [string, string][];
   via_site?: boolean;
+  /** This download's own speed limit, bytes per second; leave out for none. */
+  speed_limit?: number;
   /** For a torrent: indexes of the files to download; leave out for all. */
   torrent_files?: number[];
 }
@@ -218,6 +256,101 @@ export interface Settings {
   secure_dns: boolean;
   /** Download each file of a torrent of several files on its own, side by side. */
   torrent_files_apart: boolean;
+  /** When the app opens, start a schedule whose start came while it was
+   *  closed and whose stop time has not come yet. */
+  start_scheduled_on_launch: boolean;
+  /** What happens once every download has finished (src-tauri/src/after.rs). */
+  after_all: AfterAll;
+  /** Seconds of countdown, with Cancel, before it is done (5 to 600). */
+  after_countdown: number;
+  /** Done even when a download failed or was cancelled. */
+  after_failures: boolean;
+  /** Sorting finished files into folders by kind (crates/engine/src/organize.rs). */
+  organize: Organize;
+}
+
+/** One kind of file and the folder it goes to. */
+export interface FileCategory {
+  name: string;
+  /** A folder inside the download folder ("Videos"), or a full path. */
+  folder: string;
+  /** Endings, lower case, without the dot. */
+  extensions: string[];
+}
+
+/** How finished downloads are sorted into folders by kind. */
+export interface Organize {
+  enabled: boolean;
+  /** The first that lists a file's ending wins. */
+  categories: FileCategory[];
+  /** Where every other file goes; empty keeps it in the download folder. */
+  other: string;
+}
+
+export type AfterAll = "nothing" | "notify" | "close" | "exit" | "sleep" | "hibernate" | "shutdown";
+
+/** What a new link for a download would do (crates/engine/src/refresh.rs). */
+export interface LinkCheck {
+  /** It carries on from what is on disk. */
+  resume: boolean;
+  problem: "no_ranges" | "size_differs" | "version_differs" | "content_differs" | null;
+  /** Bytes on disk, kept when it resumes, lost when it starts over. */
+  downloaded: number;
+  old_total: number | null;
+  new_total: number | null;
+}
+
+/** A direct file download, the kind that can take a new link. */
+export function takesNewLink(d: Download): boolean {
+  return !d.torrent && !d.media && !d.profile && !d.bundle && !d.batch && (d.status === "failed" || d.status === "paused");
+}
+
+/** What the backend says while it is about to act after all downloads finished. */
+export interface AfterAllNotice {
+  action: AfterAll;
+  /** Seconds left; null once the countdown is over or stopped. */
+  left: number | null;
+  reason: "done" | "cancelled" | "busy" | null;
+}
+
+/* ---------- schedules (crates/engine/src/schedule.rs) ---------- */
+
+/** When a schedule starts: once on a day ("2026-11-28"), or every week on
+ *  the days set in `days` (bit 0 Monday ... bit 6 Sunday). */
+export type Repeat = { kind: "once"; date: string } | { kind: "weekly"; days: number };
+
+/** What the user sets for a schedule. Times are minutes after midnight, on
+ *  this computer's clock; a stop at or before the start is on the next day. */
+export interface ScheduleSpec {
+  name: string;
+  repeat: Repeat;
+  start: number;
+  stop: number | null;
+  /** The downloads it starts, in order. */
+  downloads: number[];
+  /** Where its downloads' files go once finished, in place of their kind's folder. */
+  folder?: string | null;
+}
+
+export type ScheduleStatus = "waiting" | "active" | "paused" | "done" | "missed";
+
+export interface ScheduleEvent {
+  kind: "started" | "stopped" | "missed";
+  /** Seconds since 1970. */
+  at: number;
+}
+
+export interface Schedule extends ScheduleSpec {
+  id: number;
+  /** False while the user has paused it. */
+  enabled: boolean;
+  created_at: number;
+  status: ScheduleStatus;
+  /** The next start, in seconds since 1970. */
+  next_start: number | null;
+  /** When the running window ends, or the next one would. */
+  next_stop: number | null;
+  last: ScheduleEvent | null;
 }
 
 /** How the app sits on the desktop (src-tauri/src/shell.rs). */
@@ -403,8 +536,16 @@ export const api = {
   /** The files a site link holds (a release, a shared folder, a data set). */
   siteFiles: (url: string) => invoke<SiteFiles>("site_files", { url }),
   /** Downloads files picked from a site link, together in a folder named `title`. */
-  addSiteFiles: (url: string, title: string, files: SiteFile[], dir?: string) =>
-    invoke<number>("add_site_files", { url, title, files, dir: dir ?? null }),
+  addSiteFiles: (url: string, title: string, files: SiteFile[], dir?: string, speedLimit?: number) =>
+    invoke<number>("add_site_files", { url, title, files, dir: dir ?? null, speedLimit: speedLimit || null }),
+  /** What a new link for a download would do; nothing is changed. */
+  checkNewLink: (id: number, url: string, headers?: [string, string][]) =>
+    invoke<LinkCheck>("check_new_link", { id, url, headers: headers ?? null }),
+  /** Gives a download a new link: it carries on only for the same file, or starts over with `restart`. */
+  useNewLink: (id: number, url: string, headers: [string, string][] | undefined, restart: boolean) =>
+    invoke<LinkCheck>("use_new_link", { id, url, headers: headers ?? null, restart }),
+  /** A download's own speed limit, bytes per second; 0 = none. Takes effect while it runs. */
+  setSpeedLimit: (id: number, rate: number) => invoke<void>("set_download_speed_limit", { id, rate }),
   mediaInfo: (url: string) => invoke<MediaInfo>("media_info", { url }),
   /** The profile a link points at, or null for any other link. */
   profileOf: (url: string) => invoke<ProfileRef | null>("profile_of", { url }),
@@ -417,20 +558,74 @@ export const api = {
   profileFace: (url: string) => invoke<ProfileFace>("profile_face", { url }),
   /** The same with its numbers (posts, followers, joined), asked as a visitor who is not signed in. */
   profileStats: (url: string) => invoke<ProfileFace>("profile_stats", { url }),
+  /** Calls back with true while files are dragged over the window, false once they leave or drop. */
+  onFileHover: (cb: (over: boolean) => void) =>
+    getCurrentWebview().onDragDropEvent((e) => cb(e.payload.type === "enter" || e.payload.type === "over")),
   /** Calls back with the paths of files dropped onto the window. */
   onFileDrop: (cb: (paths: string[]) => void) =>
     getCurrentWebview().onDragDropEvent((e) => {
       if (e.payload.type === "drop") cb(e.payload.paths);
     }),
+  /** Moves a finished download into another folder; resolves with where it is now. */
+  moveDownload: (id: number, dir: string) => invoke<string>("move_download", { id, dir }),
+  /** Downloads many links as one batch, saved in a folder named `name` inside `dir`. */
+  addBatch: (name: string, urls: string[], media: MediaOptions, dir?: string, speedLimit?: number) =>
+    invoke<number>("add_batch", { name, urls, media, dir: dir ?? null, speedLimit: speedLimit || null }),
+  /** Puts a batch's failed and cancelled downloads back in the queue. */
+  retryFailed: (id: number) => invoke<void>("retry_failed_downloads", { id }),
+  /** Cancels one download of a batch; it stays listed and can be retried. */
+  cancelItem: (id: number) => invoke<void>("cancel_download", { id }),
+  /** Picks text files holding links; empty when cancelled. */
+  pickTextFiles: async (): Promise<string[]> => {
+    const picked = await openDialog({
+      multiple: true,
+      filters: [
+        {
+          name: t.batch.fileFilter,
+          extensions: ["txt", "json", "jsonl", "csv", "tsv", "xml", "html", "htm", "md", "log", "m3u", "m3u8", "xspf", "yaml", "yml", "ini", "rtf", "list", "url"],
+        },
+        { name: t.batch.allFiles, extensions: ["*"] },
+      ],
+    });
+    return Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
+  },
+  /** Reads a file as text; fails for a file that is not text. */
+  readTextFile: (path: string) => invoke<TextFile>("read_text_file", { path }),
+  /** Asks where to save, then saves the text there; resolves with the path, or null when cancelled. */
+  saveTextFile: async (defaultName: string, contents: string, kind: "txt" | "csv"): Promise<string | null> => {
+    const path = await saveDialog({
+      defaultPath: defaultName,
+      filters: [kind === "csv" ? { name: "CSV", extensions: ["csv"] } : { name: "Text", extensions: ["txt"] }],
+    });
+    if (!path) return null;
+    await invoke<void>("write_text_file", { path, contents });
+    return path;
+  },
   pause: (id: number) => invoke<void>("pause_download", { id }),
   resume: (id: number) => invoke<void>("resume_download", { id }),
   remove: (id: number, deleteFile: boolean) =>
     invoke<void>("remove_download", { id, deleteFile }),
   open: (id: number) => invoke<void>("open_file", { id }),
   reveal: (id: number) => invoke<void>("reveal_file", { id }),
+  /** Shows where a download is: its file once finished, or else its folder. */
+  showFolder: (id: number) => invoke<void>("show_download_folder", { id }),
   openDownloadDir: () => invoke<void>("open_download_dir"),
   tools: () => invoke<ToolStatus>("tool_status"),
   getSettings: () => invoke<Settings>("get_settings"),
+  schedules: () => invoke<Schedule[]>("list_schedules"),
+  /** Makes a schedule (`id` null) or changes one; resolves with its id. */
+  saveSchedule: (id: number | null, spec: ScheduleSpec) => invoke<number>("save_schedule", { id, spec }),
+  /** Pauses a schedule, or lets it run again. */
+  setScheduleEnabled: (id: number, enabled: boolean) => invoke<void>("set_schedule_enabled", { id, enabled }),
+  deleteSchedule: (id: number) => invoke<void>("delete_schedule", { id }),
+  /** Stops the countdown before the action after all downloads. */
+  afterAllCancel: () => invoke<void>("after_all_cancel"),
+  /** Does that action now, without waiting for the countdown. */
+  afterAllNow: () => invoke<void>("after_all_now"),
+  onAfterAll: (cb: (notice: AfterAllNotice) => void) => listen<AfterAllNotice>("after-all", (e) => cb(e.payload)),
+  onAfterAllFailed: (cb: (why: string) => void) => listen<string>("after-all-failed", (e) => cb(e.payload)),
+  onSchedules: (cb: (schedules: Schedule[]) => void) =>
+    listen<Schedule[]>("schedules", (e) => cb(e.payload)),
   getAppPrefs: () => invoke<AppPrefs>("get_app_prefs"),
   setAppPrefs: (prefs: AppPrefs) => invoke<void>("set_app_prefs", { prefs }),
   /** The tray menu's two lines, in the interface's language. */
@@ -590,6 +785,8 @@ export function displayName(d: Download): string {
 
 export function percentOf(d: Download): number | null {
   if (d.status === "completed") return 100;
+  // A batch: by its bytes while every file's size is known, else file by file.
+  if (d.batch && !d.total) return Math.min(100, Math.floor(d.batch.progress * 100));
   if (!d.total) return null;
   return Math.min(100, Math.floor((d.downloaded / d.total) * 100));
 }
@@ -698,7 +895,7 @@ for (const [cat, exts] of Object.entries(EXTENSIONS)) {
 }
 
 export function categoryOf(d: Download): Category {
-  if (d.torrent || d.profile || d.bundle) return "other";
+  if (d.torrent || d.profile || d.bundle || d.batch) return "other";
   const dot = d.filename.lastIndexOf(".");
   const ext = dot >= 0 ? d.filename.slice(dot + 1).toLowerCase() : "";
   return BY_EXT.get(ext) ?? (d.media ? "video" : "other");

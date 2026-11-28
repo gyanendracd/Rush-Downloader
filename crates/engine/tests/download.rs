@@ -105,8 +105,12 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// An engine that leaves finished files where they were downloaded: these
+/// tests look at the download folder itself. Sorting has its own test.
 fn engine(dir: &PathBuf) -> Engine {
-    Engine::new(dir.join("state"), Settings::new(dir.join("out"))).unwrap()
+    let mut settings = Settings::new(dir.join("out"));
+    settings.organize.enabled = false;
+    Engine::new(dir.join("state"), settings).unwrap()
 }
 
 async fn wait_for(engine: &Engine, id: u64, pred: impl Fn(&TaskInfo) -> bool) -> TaskInfo {
@@ -1325,4 +1329,398 @@ async fn a_collection_on_any_site_is_found_and_downloaded() {
         assert!(done.path.is_dir());
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Minutes after midnight, `offset` minutes from the time now, on the clock.
+fn clock_in(offset: i64) -> u16 {
+    use chrono::Timelike;
+    let now = chrono::Local::now();
+    let minutes = i64::from(now.hour() * 60 + now.minute()) + offset;
+    minutes.rem_euclid(24 * 60) as u16
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_schedule_holds_its_download_and_survives_a_restart() {
+    use rushdownload_engine::{Repeat, ScheduleSpec, ScheduleStatus};
+    let data = payload(8 * 1024 * 1024);
+    let server = serve(data.clone(), true, Duration::from_millis(15)).await;
+    let dir = temp_dir("schedule");
+    let engine = engine(&dir);
+
+    let id = engine.add(new(&server.url)).unwrap();
+    wait_for(&engine, id, |t| t.status == Status::Downloading).await;
+
+    // Every day, starting two hours from now: the download waits until then.
+    let later = ScheduleSpec {
+        folder: None,
+        name: "Tonight".into(),
+        repeat: Repeat::Weekly { days: 0x7f },
+        start: clock_in(120),
+        stop: None,
+        downloads: vec![id, 999],
+    };
+    let sid = engine.save_schedule(None, later).unwrap();
+    wait_for(&engine, id, |t| t.status == Status::Paused).await;
+    let info = engine.schedules().into_iter().find(|s| s.id == sid).unwrap();
+    assert_eq!(info.status, ScheduleStatus::Waiting);
+    // a download that does not exist is left out
+    assert_eq!(info.spec.downloads, vec![id]);
+    let next = info.next_start.unwrap();
+    let now = chrono::Local::now().timestamp();
+    assert!(next > now + 100 * 60 && next <= now + 121 * 60, "next start {next}, now {now}");
+
+    // A restart keeps the schedule, and does not start the held download.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(engine);
+    let engine = self::engine(&dir);
+    let kept = engine.schedules();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].spec.name, "Tonight");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let t = engine.list().into_iter().find(|t| t.id == id).unwrap();
+    assert_eq!(t.status, Status::Paused);
+
+    // Changed to a window that is open now: it starts at once.
+    let open = ScheduleSpec {
+        folder: None,
+        name: "Now".into(),
+        repeat: Repeat::Weekly { days: 0x7f },
+        start: clock_in(-1),
+        stop: Some(clock_in(30)),
+        downloads: vec![id],
+    };
+    engine.save_schedule(Some(sid), open).unwrap();
+    let done = wait_for(&engine, id, |t| t.status == Status::Completed).await;
+    assert_eq!(std::fs::read(&done.path).unwrap(), *data);
+    assert_eq!(engine.schedules()[0].status, ScheduleStatus::Active);
+
+    // Paused, it is shown so; deleted, it is gone.
+    engine.set_schedule_enabled(sid, false);
+    assert_eq!(engine.schedules()[0].status, ScheduleStatus::Paused);
+    engine.delete_schedule(sid);
+    assert!(engine.schedules().is_empty());
+    drop(engine);
+    assert!(self::engine(&dir).schedules().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_download_keeps_to_its_own_limit_and_takes_a_new_one_while_running() {
+    let data = payload(6 * 1024 * 1024);
+    let server = serve(data.clone(), true, Duration::ZERO).await;
+    let dir = temp_dir("own-limit");
+    let engine = engine(&dir);
+
+    // 512 KB/s of its own, with no global limit
+    let id = engine
+        .add(NewDownload { speed_limit: Some(512 * 1024), ..new(&server.url) })
+        .unwrap();
+    let started = wait_for(&engine, id, |t| t.status == Status::Downloading).await;
+    assert_eq!(started.speed_limit, 512 * 1024);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let t = engine.list().into_iter().find(|t| t.id == id).unwrap();
+    // two seconds at 512 KB/s, and half a second of starting credit per connection pool
+    assert!(t.downloaded < 1700 * 1024, "{} bytes in 2 s", t.downloaded);
+    assert!(t.downloaded > 300 * 1024, "{} bytes in 2 s", t.downloaded);
+
+    // lifted while it runs: the rest comes at once
+    engine.set_speed_limit(id, 0);
+    let done = wait_for(&engine, id, |t| t.status == Status::Completed).await;
+    assert_eq!(done.speed_limit, 0);
+    assert_eq!(std::fs::read(&done.path).unwrap(), *data);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_global_limit_still_caps_a_download_with_a_higher_own_limit() {
+    let data = payload(6 * 1024 * 1024);
+    let server = serve(data, true, Duration::ZERO).await;
+    let dir = temp_dir("global-cap");
+    let engine = engine(&dir);
+    let mut settings = engine.settings();
+    settings.speed_limit = 512 * 1024;
+    engine.set_settings(settings);
+
+    let id = engine
+        .add(NewDownload { speed_limit: Some(50 * 1024 * 1024), ..new(&server.url) })
+        .unwrap();
+    wait_for(&engine, id, |t| t.status == Status::Downloading).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let t = engine.list().into_iter().find(|t| t.id == id).unwrap();
+    assert!(t.downloaded < 1700 * 1024, "{} bytes in 2 s under a 512 KB/s global limit", t.downloaded);
+    engine.pause(id);
+}
+
+/// Needs internet and a .torrent file: set RUSH_TEST_TORRENT to its path, then
+/// `cargo test --release -p rushdownload-engine --test download -- --ignored --nocapture torrent_takes_a_new_limit`
+/// A limit set while the torrent runs holds its peers and web seeds together.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn torrent_takes_a_new_limit_while_running() {
+    let source = std::env::var("RUSH_TEST_TORRENT").expect("set RUSH_TEST_TORRENT");
+    let dir = temp_dir("torrent-limit");
+    let engine = engine(&dir);
+    let id = engine.add(new(&source)).unwrap();
+
+    let speed = |engine: &Engine| engine.list().into_iter().find(|t| t.id == id).map_or(0, |t| t.speed);
+    let average = |engine: Engine, secs: u64| async move {
+        let mut sum = 0u64;
+        let n = secs * 2;
+        for _ in 0..n {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            sum += speed(&engine);
+        }
+        sum / n
+    };
+
+    // running, unlimited
+    for _ in 0..1200 {
+        if speed(&engine) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let free = average(engine.clone(), 8).await;
+    println!("unlimited: {:.2} MB/s", free as f64 / 1048576.0);
+
+    engine.set_speed_limit(id, 1024 * 1024);
+    // requests already sent to peers still arrive; the limit holds after those
+    for n in 0..6 {
+        let a = average(engine.clone(), 5).await;
+        println!("{}-{} s after the limit: {:.2} MB/s", n * 5, n * 5 + 5, a as f64 / 1048576.0);
+    }
+    let held = average(engine.clone(), 8).await;
+    println!("limited to 1 MB/s: {:.2} MB/s", held as f64 / 1048576.0);
+    engine.remove(id, true);
+    assert!(held < 1024 * 1024 * 13 / 10, "{held} bytes/s under a 1 MB/s limit");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_link_keeps_the_partial_file_only_for_the_same_file() {
+    use rushdownload_engine::LinkProblem;
+    let data = payload(8 * 1024 * 1024);
+    let first = serve(data.clone(), true, Duration::from_millis(15)).await;
+    let dir = temp_dir("new-link");
+    let engine = engine(&dir);
+
+    // part downloaded from the first link, then paused (the link "expired")
+    let id = engine.add(new(&first.url)).unwrap();
+    wait_for(&engine, id, |t| t.downloaded > 1024 * 1024).await;
+    engine.pause(id);
+    let paused = wait_for(&engine, id, |t| t.status == Status::Paused && t.active_connections == 0).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // the same file elsewhere: it carries on
+    let same = serve(data.clone(), true, Duration::ZERO).await;
+    let check = engine.check_new_link(id, &same.url, None).await.unwrap();
+    assert!(check.resume, "{check:?}");
+    assert!(check.downloaded >= paused.downloaded / 2, "{check:?}");
+
+    // another file of the same size: its bytes differ from what is on disk
+    let other: Arc<Vec<u8>> = Arc::new(data.iter().map(|b| b ^ 0x5a).collect());
+    let different = serve(other.clone(), true, Duration::ZERO).await;
+    let check = engine.check_new_link(id, &different.url, None).await.unwrap();
+    assert_eq!((check.resume, check.problem), (false, Some(LinkProblem::ContentDiffers)));
+    // and it is not taken without starting over
+    assert!(engine.use_new_link(id, &different.url, None, false).await.is_err());
+
+    // another size
+    let shorter = serve(payload(5 * 1024 * 1024), true, Duration::ZERO).await;
+    let check = engine.check_new_link(id, &shorter.url, None).await.unwrap();
+    assert_eq!(check.problem, Some(LinkProblem::SizeDiffers));
+
+    // no byte ranges
+    let whole = serve(data.clone(), false, Duration::ZERO).await;
+    let check = engine.check_new_link(id, &whole.url, None).await.unwrap();
+    assert_eq!(check.problem, Some(LinkProblem::NoRanges));
+
+    // not a link at all
+    assert!(engine.check_new_link(id, "ftp://example.com/x", None).await.is_err());
+
+    // the same file: taken, and finished from where it was, correctly
+    let before = same.ranged.load(Relaxed);
+    engine.use_new_link(id, &same.url, None, false).await.unwrap();
+    let done = wait_for(&engine, id, |t| t.status == Status::Completed).await;
+    assert_eq!(done.url, same.url);
+    assert_eq!(std::fs::read(&done.path).unwrap(), *data);
+    assert!(same.ranged.load(Relaxed) > before);
+    assert!(done.path.ends_with("test file.bin"), "the name stays: {:?}", done.path);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_link_to_another_file_starts_over() {
+    let data = payload(6 * 1024 * 1024);
+    let first = serve(data.clone(), true, Duration::from_millis(15)).await;
+    let dir = temp_dir("new-link-restart");
+    let engine = engine(&dir);
+    let id = engine.add(new(&first.url)).unwrap();
+    wait_for(&engine, id, |t| t.downloaded > 1024 * 1024).await;
+    engine.pause(id);
+    wait_for(&engine, id, |t| t.status == Status::Paused && t.active_connections == 0).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let other: Arc<Vec<u8>> = Arc::new(data.iter().map(|b| b ^ 0x33).collect());
+    let different = serve(other.clone(), true, Duration::ZERO).await;
+    let check = engine.use_new_link(id, &different.url, None, true).await.unwrap();
+    assert!(!check.resume);
+    let done = wait_for(&engine, id, |t| t.status == Status::Completed).await;
+    // all of it from the new link: nothing of the old file is left in it
+    assert_eq!(std::fs::read(&done.path).unwrap(), *other);
+}
+
+/// Waits until `pred` holds for the whole list (a batch and its downloads).
+async fn wait_list(engine: &Engine, pred: impl Fn(&[TaskInfo]) -> bool) -> Vec<TaskInfo> {
+    for _ in 0..900 {
+        let list = engine.list();
+        if pred(&list) {
+            return list;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out: {:#?}", engine.list());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_downloads_every_link_into_its_own_folder_as_one_download() {
+    let data = payload(3 * 1024 * 1024);
+    let server = serve(data.clone(), true, Duration::from_millis(4)).await;
+    let base = server.url.trim_end_matches("test%20file.bin").to_string();
+    let dir = temp_dir("batch");
+    let engine = engine(&dir);
+
+    // a name with characters no folder may have; a link twice; one that cannot be reached
+    let links = vec![
+        format!("{base}one.bin"),
+        format!("{base}two.bin?token=1"),
+        format!("{base}one.bin"),
+        "http://127.0.0.1:1/gone.zip".to_string(),
+    ];
+    let id = engine.add_batch("My: Batch?", links, None, MediaOptions::default()).unwrap();
+    let folder = dir.join("out").join("My_ Batch_");
+    assert!(folder.is_dir(), "the folder is made before anything downloads");
+
+    let list = engine.list();
+    let parent = list.iter().find(|t| t.id == id).unwrap();
+    assert_eq!(parent.batch.as_ref().unwrap().count, 3, "the repeated link is downloaded once");
+    assert_eq!(parent.path, folder);
+    let children: Vec<&TaskInfo> = list.iter().filter(|t| t.parent == Some(id)).collect();
+    assert_eq!(children.len(), 3);
+    assert!(children.iter().all(|c| c.dir == folder));
+
+    // the batch ends once every download has: the unreachable one fails alone
+    let list = wait_list(&engine, |l| {
+        l.iter().find(|t| t.id == id).is_some_and(|p| matches!(p.status, Status::Completed | Status::Failed))
+    })
+    .await;
+    let parent = list.iter().find(|t| t.id == id).unwrap();
+    let info = parent.batch.clone().unwrap();
+    assert_eq!((info.completed, info.failed), (2, 1), "{parent:?}");
+    assert_eq!(parent.status, Status::Completed, "completed with errors");
+    assert_eq!(parent.error.as_deref(), Some("1 of 3 links did not download"));
+    assert_eq!(parent.downloaded, 2 * data.len() as u64);
+    assert_eq!(parent.total, Some(2 * data.len() as u64));
+    assert!(parent.finished_at.is_some());
+    assert_eq!(std::fs::read(folder.join("one.bin")).unwrap(), *data);
+    assert_eq!(std::fs::read(folder.join("two.bin")).unwrap(), *data);
+
+    // a restart finds the batch and its downloads as they were, and makes no second one
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(engine);
+    let engine = self::engine(&dir);
+    let list = engine.list();
+    assert_eq!(list.iter().filter(|t| t.batch.is_some()).count(), 1);
+    assert_eq!(list.iter().filter(|t| t.parent == Some(id)).count(), 3);
+    assert_eq!(list.iter().find(|t| t.id == id).unwrap().batch.as_ref().unwrap().completed, 2);
+
+    // removing the batch takes its downloads along and leaves the files that finished
+    engine.remove(id, false);
+    assert!(engine.list().is_empty());
+    assert!(folder.join("one.bin").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_pauses_resumes_and_cancels_as_one() {
+    let data = payload(6 * 1024 * 1024);
+    let server = serve(data.clone(), true, Duration::from_millis(20)).await;
+    let base = server.url.trim_end_matches("test%20file.bin").to_string();
+    let dir = temp_dir("batch-pause");
+    let engine = engine(&dir);
+    let links = (1..=4).map(|n| format!("{base}file{n}.bin")).collect();
+    let id = engine.add_batch("Pausing", links, None, MediaOptions::default()).unwrap();
+
+    wait_list(&engine, |l| l.iter().any(|t| t.parent == Some(id) && t.downloaded > 512 * 1024)).await;
+    engine.pause(id);
+    let list = wait_list(&engine, |l| {
+        l.iter().filter(|t| t.parent == Some(id)).all(|t| t.status == Status::Paused && t.active_connections == 0)
+    })
+    .await;
+    assert_eq!(list.iter().find(|t| t.id == id).unwrap().status, Status::Paused);
+    // one download cancelled on its own: the rest go on
+    let first = list.iter().find(|t| t.parent == Some(id)).unwrap().id;
+    engine.cancel(first);
+    engine.resume(id);
+    let list = wait_list(&engine, |l| l.iter().find(|t| t.id == id).is_some_and(|p| p.status == Status::Completed)).await;
+    let info = list.iter().find(|t| t.id == id).unwrap().batch.clone().unwrap();
+    assert_eq!((info.completed, info.cancelled), (3, 1));
+    let cancelled = list.iter().find(|t| t.id == first).unwrap();
+    assert!(cancelled.cancelled && cancelled.status == Status::Failed && cancelled.downloaded == 0);
+
+    // and it can be fetched after all
+    engine.retry_failed(id);
+    let list = wait_list(&engine, |l| {
+        l.iter().find(|t| t.id == id).is_some_and(|p| p.batch.as_ref().unwrap().completed == 4)
+    })
+    .await;
+    let parent = list.iter().find(|t| t.id == id).unwrap();
+    assert_eq!((parent.status, parent.error.as_deref()), (Status::Completed, None));
+    for n in 1..=4 {
+        assert_eq!(std::fs::read(dir.join("out/Pausing").join(format!("file{n}.bin"))).unwrap(), *data);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn finished_files_are_sorted_by_kind_unless_given_a_folder() {
+    let data = payload(512 * 1024);
+    let server = serve(data.clone(), true, Duration::ZERO).await;
+    let base = server.url.trim_end_matches("test%20file.bin").to_string();
+    let dir = temp_dir("organize");
+    // sorting is on for a new install
+    let engine = Engine::new(dir.join("state"), Settings::new(dir.join("out"))).unwrap();
+    assert!(engine.settings().organize.enabled);
+    let out = dir.join("out");
+
+    // a document goes to Documents; a file already there is not written over
+    std::fs::create_dir_all(out.join("Documents")).unwrap();
+    std::fs::write(out.join("Documents/report.pdf"), b"old").unwrap();
+    let id = engine.add(new(&format!("{base}report.pdf"))).unwrap();
+    let done = wait_for(&engine, id, |t| t.status == Status::Completed).await;
+    assert_eq!(done.path, out.join("Documents/report (1).pdf"));
+    assert_eq!(std::fs::read(&done.path).unwrap(), *data);
+    assert_eq!(std::fs::read(out.join("Documents/report.pdf")).unwrap(), b"old");
+    // an unknown kind goes to Other
+    let id = engine.add(new(&format!("{base}blob.bin"))).unwrap();
+    assert_eq!(wait_for(&engine, id, |t| t.status == Status::Completed).await.path, out.join("Other/blob.bin"));
+
+    // a folder chosen for the download wins
+    let mine = dir.join("mine");
+    let id = engine.add(NewDownload { dir: Some(mine.clone()), ..new(&format!("{base}clip.mp4")) }).unwrap();
+    assert_eq!(wait_for(&engine, id, |t| t.status == Status::Completed).await.path, mine.join("clip.mp4"));
+
+    // custom category, and moving a finished file
+    let mut settings = engine.settings();
+    settings.organize.categories.insert(
+        0,
+        rushdownload_engine::FileCategory { name: "Books".into(), folder: "Books".into(), extensions: vec!["EPUB".into()] },
+    );
+    engine.set_settings(settings);
+    let id = engine.add(new(&format!("{base}novel.epub"))).unwrap();
+    assert_eq!(wait_for(&engine, id, |t| t.status == Status::Completed).await.path, out.join("Books/novel.epub"));
+    let moved = engine.move_to(id, mine.clone()).await.unwrap();
+    assert_eq!(moved, mine.join("novel.epub"));
+    assert_eq!(engine.list().into_iter().find(|t| t.id == id).unwrap().path, moved);
+
+    // sorting off: it stays in the download folder
+    let mut settings = engine.settings();
+    settings.organize.enabled = false;
+    engine.set_settings(settings);
+    let id = engine.add(new(&format!("{base}song.mp3"))).unwrap();
+    assert_eq!(wait_for(&engine, id, |t| t.status == Status::Completed).await.path, out.join("song.mp3"));
 }

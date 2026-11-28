@@ -68,4 +68,49 @@ export const ui = {
   },
   dismiss: "Dismiss",
   close: "Close",
+  /** One download's own speed limit. Speeds ("2 MB/s") are written by the app. */
+  limit: {
+    menu: "Speed limit…",
+    title: "Speed limit",
+    enable: "Limit this download's speed",
+    amount: "Maximum speed",
+    unit: "Unit",
+    hint: "The global limit in Settings applies too; the lower of the two wins.",
+    none: "No limit",
+    change: "Change",
+    save: "Save",
+    /** `speed`: the limit, written out ("2 MB/s"). */
+    set: (speed: string) => `Limited to ${speed}`,
+    cleared: "Speed limit removed",
+    torrentNote: "A torrent slows to the new limit over about 15 seconds, as blocks already asked of its peers arrive.",
+    programNote: "It restarts to take the new limit, and carries on from where it was.",
+  },
+  /** A new link for a download whose link stopped working. Sizes ("1.2 GB") are written by the app. */
+  refresh: {
+    menu: "Refresh link…",
+    title: "Refresh link",
+    link: "New link",
+    /** `url`: the link it has now. */
+    old: (url: string) => `Now: ${url}`,
+    headers: "Request headers",
+    headersHint: "Optional. One per line, as Name: value, for a link that needs a sign-in token. Left empty, the ones it had are kept.",
+    check: "Check link",
+    checking: "Checking…",
+    /** `kept`: how much is downloaded already. */
+    same: (kept: string) => `It is the same file. The download carries on from ${kept}.`,
+    fresh: "Nothing is downloaded yet: it starts with this link.",
+    use: "Use this link",
+    problems: {
+      no_ranges: "This server sends the file only whole, so the download cannot carry on from where it was.",
+      size_differs: "The file at this link is a different size.",
+      version_differs: "The file at this link is a different version: its ETag or date differs.",
+      content_differs: "Parts of the file at this link do not match what is already downloaded.",
+    },
+    /** `lost`: how much is downloaded already. */
+    restartNote: (lost: string) => `Starting over deletes the ${lost} downloaded so far.`,
+    restart: "Start over with this link",
+    done: "Link updated",
+    /** `line`: the line that is not a header. */
+    badHeader: (line: string) => `Not a header (Name: value): ${line}`,
+  },
 };

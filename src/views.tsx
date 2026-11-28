@@ -1423,13 +1423,24 @@ export function HomeView(props: {
       }
       return;
     }
-    const media: MediaOptions | undefined = video || picksQuality
-      ? choice === "audio"
-        ? { max_height: null, audio_only: true }
-        : { max_height: choice === "best" ? null : Number(choice), audio_only: false }
-      : undefined;
+    const media: MediaOptions | undefined = video || picksQuality ? mediaFor(choice) : undefined;
     // One box for everything: the app works out what kind of link it is.
     if (await actions.submitLink(url, media)) setUrl("");
+  }
+
+  /** What a choice on a video's card asks for: "best", "audio" or a height. */
+  function mediaFor(picked: string): MediaOptions {
+    return picked === "audio"
+      ? { max_height: null, audio_only: true }
+      : { max_height: picked === "best" ? null : Number(picked), audio_only: false };
+  }
+
+  /** An Instagram post has two choices, and each is its own download button:
+   * "Best" saves the original, "Audio only" its sound. */
+  async function downloadPost(picked: string) {
+    if (!valid) return;
+    setChoice(picked);
+    if (await actions.submitLink(url, mediaFor(picked))) setUrl("");
   }
 
   async function importFile() {
@@ -1714,7 +1725,7 @@ export function HomeView(props: {
         )}
         {/* An Instagram post or reel: whose it is on the left, the post on the right. */}
         {video && video.site === "Instagram" && video.uploader_url && (
-          <InstaPostCard video={video} choice={choice} onChoice={setChoice} />
+          <InstaPostCard video={video} choice={choice} onDownload={downloadPost} />
         )}
         {video && !(video.site === "Instagram" && video.uploader_url) && (
           <section className="video-card" aria-label={t.views.home.videoRegion}>

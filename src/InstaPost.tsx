@@ -50,7 +50,8 @@ function usernameIn(link: string | null | undefined): string | null {
 export function InstaPostCard(props: {
   video: MediaInfo;
   choice: string;
-  onChoice: (value: string) => void;
+  /** Starts the download of what was clicked: "best", "audio" or a height. */
+  onDownload: (value: string) => Promise<void>;
 }) {
   const { actions } = useApp();
   const { video } = props;
@@ -63,6 +64,8 @@ export function InstaPostCard(props: {
   const [pictureFailed, setPictureFailed] = useState<string | null>(null);
   const [thumbFailed, setThumbFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** A click on a choice is starting its download: a second click must not start another. */
+  const [starting, setStarting] = useState(false);
 
   // Each part arrives on its own: whose it is first, their numbers a moment later.
   useEffect(() => {
@@ -278,15 +281,22 @@ export function InstaPostCard(props: {
               .filter(Boolean)
               .join(" · ")}
           </p>
-          <div className="video-choices" role="radiogroup" aria-label={t.views.home.resolution}>
+          {/* Each choice is a download button: clicking it saves the post that way. */}
+          <div className="video-choices" role="group" aria-label={t.views.home.resolution}>
             {choices.map((option) => (
               <button
                 key={option.value}
                 type="button"
-                role="radio"
-                aria-checked={props.choice === option.value}
+                disabled={starting}
                 className={`video-choice${props.choice === option.value ? " is-on" : ""}`}
-                onClick={() => props.onChoice(option.value)}
+                onClick={async () => {
+                  setStarting(true);
+                  try {
+                    await props.onDownload(option.value);
+                  } finally {
+                    setStarting(false);
+                  }
+                }}
               >
                 {option.label}
               </button>

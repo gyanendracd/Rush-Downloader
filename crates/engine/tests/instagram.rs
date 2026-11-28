@@ -118,3 +118,66 @@ async fn refusals_are_told_in_the_words_promised() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Public posts read the way Instagram's own page reads them for a visitor
+/// (instagram_web.rs), with no sign-in and without yt-dlp: a reel, a photo,
+/// and several things in one post.
+///
+/// RUSHDOWNLOAD_INSTAGRAM_NO_YTDLP=1 RUSHDOWNLOAD_TEST_INSTAGRAM_POSTS="<link> <link> ..."
+/// cargo test -p rushdownload-engine --test instagram as_a_visitors_page -- --ignored --nocapture
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn posts_are_read_and_saved_as_a_visitors_page_reads_them() {
+    let links = std::env::var("RUSHDOWNLOAD_TEST_INSTAGRAM_POSTS").expect("RUSHDOWNLOAD_TEST_INSTAGRAM_POSTS");
+    let dir = std::env::temp_dir().join(format!("rushdownload-instagram-page-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut settings = Settings::new(dir.join("out"));
+    settings.organize.enabled = false;
+    settings.auto_update_tools = false;
+    let engine = Engine::with_secrets(dir.join("state"), settings, Arc::new(MemoryStore::default())).unwrap();
+
+    for link in links.split_whitespace() {
+        let info = engine.media_info(link).await.expect("looked up");
+        println!("info: {} | {:?}s | {:?}x{:?} | by {:?} | likes {:?} | thumbnail {}", info.title, info.duration, info.width, info.height, info.uploader, info.likes, info.thumbnail.is_some());
+        assert_eq!(info.site.as_deref(), Some("Instagram"));
+        let video = info.title.starts_with("Video by");
+        for audio_only in [false, true] {
+            if audio_only && !video {
+                continue;
+            }
+            let id = engine
+                .add(NewDownload { url: link.to_string(), via_site: true, media: MediaOptions { max_height: None, audio_only }, ..Default::default() })
+                .unwrap();
+            let mut done = None;
+            for _ in 0..600 {
+                let t = engine.list().into_iter().find(|t| t.id == id).unwrap();
+                if matches!(t.status, Status::Completed | Status::Failed) {
+                    done = Some(t);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            let t = done.expect("finished in time");
+            assert_eq!(t.status, Status::Completed, "{:?}", t.error);
+            println!("  saved: {} ({} bytes)", t.path.display(), t.total.unwrap_or(0));
+            if t.path.is_dir() {
+                let inside: Vec<_> = std::fs::read_dir(&t.path).unwrap().flatten().map(|e| (e.file_name().to_string_lossy().to_string(), e.metadata().map(|m| m.len()).unwrap_or(0))).collect();
+                println!("  holds: {inside:?}");
+                assert!(inside.len() > 1 && inside.iter().all(|(_, size)| *size > 1000), "{inside:?}");
+            } else {
+                assert!(t.path.is_file() && t.total.unwrap_or(0) > 1000);
+                if let Ok(out) = std::process::Command::new("ffprobe")
+                    .args(["-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height", "-of", "csv=p=0"])
+                    .arg(&t.path)
+                    .output()
+                {
+                    println!("  streams: {}", String::from_utf8_lossy(&out.stdout).trim().replace(['\r', '\n'], " "));
+                }
+            }
+            // nothing of the download's own is left behind
+            let left: Vec<_> = std::fs::read_dir(dir.join("out")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.starts_with(".rush-")).collect();
+            assert!(left.is_empty(), "{left:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

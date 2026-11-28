@@ -8,6 +8,11 @@
 //! several connections, straight to disk, and joins them with FFmpeg, so
 //! the original resolution and shape are kept.
 //!
+//! When yt-dlp cannot read a post (it has nothing to give for a post of
+//! photos, and its reader breaks whenever Instagram changes), the post is
+//! asked for the way Instagram's own page asks for it when nobody is signed
+//! in (instagram_web.rs). That has a post's photos too.
+//!
 //! Nothing here gets around Instagram's access controls. A private account,
 //! or a post Instagram shows only to signed-in viewers, is reported as
 //! such, and the user is never asked to sign in or sent to Instagram. The
@@ -391,7 +396,11 @@ pub(crate) async fn info(inner: &Arc<Inner>, url: &str) -> Result<MediaInfo, Str
     if !is_post(url) {
         return Err(INVALID.into());
     }
-    match crate::media::ytdlp_info(inner, url).await {
+    let first = match ytdlp_left_out() {
+        true => Err(YTDLP_LEFT_OUT.to_string()),
+        false => crate::media::ytdlp_info(inner, url).await,
+    };
+    match first {
         Ok(mut found) => {
             found.site = Some("Instagram".into());
             found.heights.clear();
@@ -411,12 +420,47 @@ pub(crate) async fn info(inner: &Arc<Inner>, url: &str) -> Result<MediaInfo, Str
         }
         Err(e) => {
             tracing::info!("Instagram post read without sign-in failed: {e}");
-            let meaning = classify(&e);
+            let mut meaning = classify(&e);
+            // The second way in: the post as Instagram's own page reads it
+            // for a visitor (instagram_web.rs). It has a post's photos too.
+            if meaning != PRIVATE {
+                let asked = match inner.client() {
+                    Ok(client) => crate::instagram_web::post(&client, url).await,
+                    Err(e) => Err(crate::instagram_web::Refused::Unreachable(e)),
+                };
+                match asked {
+                    Ok(post) => return Ok(post.details()),
+                    Err(refused) => {
+                        tracing::info!("Instagram post read as a visitor's page reads it failed: {refused:?}");
+                        meaning = settled(meaning, &refused);
+                    }
+                }
+            }
             if matches!(meaning, NEEDS_SIGN_IN | AGE_RESTRICTED) && has_session(inner) {
                 return info_signed_in(inner, url).await;
             }
             Err(meaning.into())
         }
+    }
+}
+
+/// RUSHDOWNLOAD_INSTAGRAM_NO_YTDLP leaves yt-dlp out, for tests: every post
+/// is then read the second way (instagram_web.rs).
+fn ytdlp_left_out() -> bool {
+    std::env::var_os("RUSHDOWNLOAD_INSTAGRAM_NO_YTDLP").is_some()
+}
+const YTDLP_LEFT_OUT: &str = "yt-dlp was left out";
+
+/// What is told when neither way of reading a post as a visitor gave it:
+/// `first` is what yt-dlp's refusal meant, `second` what came of asking as
+/// Instagram's own page does.
+fn settled(first: &'static str, second: &crate::instagram_web::Refused) -> &'static str {
+    use crate::instagram_web::Refused;
+    match second {
+        // yt-dlp was told why in Instagram's own words
+        _ if matches!(first, NEEDS_SIGN_IN | AGE_RESTRICTED | PRIVATE) => first,
+        Refused::Told(told) => told,
+        Refused::Unreachable(_) => first,
     }
 }
 
@@ -426,10 +470,30 @@ pub(crate) async fn run(inner: &Arc<Inner>, id: u64, live: &Arc<Live>, rec: &Rec
     if !is_post(&rec.url) {
         return Err(Fail::Fatal(INVALID.into()));
     }
-    match crate::media::run_ytdlp(inner, id, live, rec).await {
+    let first = match ytdlp_left_out() {
+        true => Err(Fail::Fatal(YTDLP_LEFT_OUT.into())),
+        false => crate::media::run_ytdlp(inner, id, live, rec).await,
+    };
+    match first {
         Err(Fail::Fatal(e)) | Err(Fail::Retry(e)) => {
             tracing::info!(id, "Instagram download without sign-in failed: {e}");
-            let meaning = classify(&e);
+            let mut meaning = classify(&e);
+            // The second way in: the post as Instagram's own page reads it
+            // for a visitor (instagram_web.rs). It has a post's photos too.
+            if meaning != PRIVATE {
+                let client = live.client();
+                let asked = tokio::select! {
+                    _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
+                    p = crate::instagram_web::post(&client, &rec.url) => p,
+                };
+                match asked {
+                    Ok(post) => return crate::instagram_web::save(inner, id, live, rec, &post).await,
+                    Err(refused) => {
+                        tracing::info!(id, "Instagram post read as a visitor's page reads it failed: {refused:?}");
+                        meaning = settled(meaning, &refused);
+                    }
+                }
+            }
             if matches!(meaning, NEEDS_SIGN_IN | AGE_RESTRICTED) && has_session(inner) {
                 return run_signed_in(inner, id, live, rec).await;
             }
@@ -541,7 +605,7 @@ fn finished_files(work: &Path) -> Vec<PathBuf> {
 }
 
 /// Moves `from` into `dir` under `name`, adding a number when that is taken.
-fn place(from: &Path, dir: &Path, name: &str) -> Result<String, Fail> {
+pub(crate) fn place(from: &Path, dir: &Path, name: &str) -> Result<String, Fail> {
     for n in 0..10_000 {
         let candidate = crate::probe::candidate(name, n);
         let dest = dir.join(&candidate);
@@ -784,6 +848,23 @@ mod tests {
         assert!(AGE_RESTRICTED.contains("Sign in page"));
         // ... and the one said only to a user who had already signed in
         assert!(SIGN_IN_REFUSED.contains("Sign in page"));
+    }
+
+    #[test]
+    fn two_refusals_are_settled_into_one_message() {
+        use crate::instagram_web::Refused;
+        let told = |m| Refused::Told(m);
+        let unreachable = Refused::Unreachable("no network".into());
+        // yt-dlp found no video, the page's own answer says what there is to say
+        assert_eq!(settled(NO_VIDEO, &told(UNAVAILABLE)), UNAVAILABLE);
+        assert_eq!(settled(UNAVAILABLE, &told(NEEDS_SIGN_IN)), NEEDS_SIGN_IN);
+        assert_eq!(settled(UNAVAILABLE, &told(AGE_RESTRICTED)), AGE_RESTRICTED);
+        // Instagram's own words to yt-dlp are kept over an empty answer
+        assert_eq!(settled(AGE_RESTRICTED, &told(UNAVAILABLE)), AGE_RESTRICTED);
+        assert_eq!(settled(NEEDS_SIGN_IN, &told(UNAVAILABLE)), NEEDS_SIGN_IN);
+        // the second way could not be asked: what the first one meant stands
+        assert_eq!(settled(NO_VIDEO, &unreachable), NO_VIDEO);
+        assert_eq!(settled(UNAVAILABLE, &unreachable), UNAVAILABLE);
     }
 
     #[test]

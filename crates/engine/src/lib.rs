@@ -11,6 +11,7 @@ mod deps;
 mod dns;
 mod gateway;
 mod instagram;
+mod instagram_web;
 mod limiter;
 mod organize;
 mod media;

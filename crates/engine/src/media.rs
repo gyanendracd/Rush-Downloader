@@ -463,7 +463,7 @@ async fn info_once(inner: &Arc<Inner>, url: &str) -> Result<MediaInfo, String> {
 
 /// The name a named site download starts from: the given name without a
 /// media ending, with the quality asked for ("Clip 720p").
-fn named_base(rec: &Record) -> String {
+pub(crate) fn named_base(rec: &Record) -> String {
     let media_ext = ["mp4", "mkv", "webm", "mov", "m4v", "mp3", "m4a", "flv", "avi", "ogg", "opus", "wav"];
     let name = Path::new(&rec.filename);
     let stem = match name.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) {
@@ -563,21 +563,22 @@ fn base_command(ytdlp: &Path, inner: &Arc<Inner>, rec: &Record, suffix: &str, wo
 }
 
 /// One stream of a video as the site serves it: a plain link to a file.
-struct Stream {
-    url: String,
-    headers: Vec<(String, String)>,
-    ext: String,
+pub(crate) struct Stream {
+    pub(crate) url: String,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) ext: String,
     /// Largest range to ask for in one request (0: no limit).
-    request_cap: u64,
+    pub(crate) request_cap: u64,
     /// Exact size in bytes, when the site states it.
-    size: Option<u64>,
+    pub(crate) size: Option<u64>,
 }
 
-/// What yt-dlp found for a link: the streams to fetch and the file's name.
-struct Plan {
-    streams: Vec<Stream>,
+/// What was found for a link (by yt-dlp, or for a public Instagram post by
+/// instagram_web.rs): the streams to fetch and the file's name.
+pub(crate) struct Plan {
+    pub(crate) streams: Vec<Stream>,
     /// File name without its extension.
-    stem: String,
+    pub(crate) stem: String,
 }
 
 /// The streams of a video, if every one of them is a plain file link that
@@ -844,7 +845,7 @@ fn stream_done(work: &Path, i: usize, ext: &str) -> PathBuf {
 /// Fetches a video's streams with the app's own multi-connection downloader
 /// (every connection takes a different part of the file at the same time)
 /// and joins them. Much faster than one connection, where the site allows it.
-async fn fetch_direct(
+pub(crate) async fn fetch_direct(
     inner: &Arc<Inner>,
     id: u64,
     live: &Arc<Live>,

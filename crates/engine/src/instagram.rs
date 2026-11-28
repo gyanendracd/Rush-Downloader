@@ -39,6 +39,11 @@ pub(crate) const NEEDS_SIGN_IN: &str =
 pub(crate) const AGE_RESTRICTED: &str =
     "This post is age-restricted by Instagram, which shows it only to signed-in Instagram users. Sign in to Instagram on the Sign in page, then come back to download it.";
 pub(crate) const NO_VIDEO: &str = "This Instagram post has no video to download.";
+/// Only ever said to a user who had already signed in to Instagram in the
+/// app: Instagram shows this post to signed-in users alone, and has stopped
+/// accepting that sign-in.
+pub(crate) const SIGN_IN_REFUSED: &str =
+    "Instagram shows this post only to signed-in users, and it is not accepting the sign-in kept in the app right now. Wait a few minutes and retry; if it keeps happening, sign in to Instagram again on the Sign in page.";
 
 /// What kind of Instagram link it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +110,12 @@ pub(crate) fn is_post(url: &str) -> bool {
 pub(crate) fn classify(error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase();
     let says = |signs: &[&str]| signs.iter().any(|s| lower.contains(s));
-    if says(&["private account", "account is private", "is private", "this account is private"]) {
+    if says(&["redirect to home page", "redirect to login page", "redirect to challenge page"]) {
+        // gallery-dl, with the user's own sign-in, was sent to Instagram's
+        // front page, its sign-in page or a check instead of the post: the
+        // sign-in is there, but Instagram has stopped accepting it.
+        SIGN_IN_REFUSED
+    } else if says(&["private account", "account is private", "is private", "this account is private"]) {
         PRIVATE
     } else if says(&["no video", "there is no video", "no video formats", "no media found"]) {
         NO_VIDEO
@@ -147,10 +157,231 @@ pub(crate) fn classify(error: &str) -> &'static str {
 
 /// Whether the user has already signed in to Instagram inside the app (on
 /// the Sign in page, for their own use). The app never asks them to.
-fn has_session(inner: &Inner) -> bool {
+pub(crate) fn has_session(inner: &Inner) -> bool {
     std::fs::read_to_string(inner.cookies_file())
         .map(|cookies| cookies.lines().any(|l| l.contains("instagram.com") && l.contains("\tsessionid\t")))
         .unwrap_or(false)
+}
+
+/// Said once Instagram has ended the sign-in kept in the app and the app has
+/// let go of it (see `sign_in_ended`).
+pub(crate) const SIGN_IN_ENDED: &str =
+    "Instagram has ended the sign-in kept in the app, so the app has let go of it. Sign in to Instagram again on the Sign in page, then retry.";
+
+/// The cookies that are the sign-in itself. The others (which device this
+/// is, its language) say nothing about who is signed in and are kept.
+const SESSION_COOKIES: [&str; 3] = ["sessionid", "ds_user_id", "rur"];
+
+/// One line of the cookie file, when it is a cookie of Instagram's: its
+/// name and value.
+fn instagram_cookie(line: &str) -> Option<(&str, &str)> {
+    let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
+    if line.starts_with('#') {
+        return None;
+    }
+    let fields: Vec<&str> = line.split('\t').collect();
+    let host = fields.first()?.trim_start_matches('.').to_ascii_lowercase();
+    let ours = fields.len() == 7 && (host == "instagram.com" || host.ends_with(".instagram.com"));
+    ours.then(|| (fields[5], fields[6]))
+}
+
+/// A cookie file without Instagram's sign-in; `None` when it holds none.
+fn without_session(cookies: &str) -> Option<String> {
+    let is_session = |line: &str| instagram_cookie(line).is_some_and(|(name, _)| SESSION_COOKIES.contains(&name));
+    if !cookies.lines().any(is_session) {
+        return None;
+    }
+    let mut kept: String = cookies.lines().filter(|line| !is_session(line)).collect::<Vec<_>>().join("\n");
+    kept.push('\n');
+    Some(kept)
+}
+
+/// Where Instagram ends up taking a visitor who asks for their own settings
+/// page: there, for one it knows; away from it (its front page, its sign-in
+/// page) for one whose sign-in it no longer accepts.
+fn shows_settings(landed_on: &reqwest::Url) -> bool {
+    landed_on.path().starts_with("/accounts/edit")
+}
+
+/// Whether Instagram still accepts the sign-in kept in the app. `None`:
+/// Instagram could not be asked, so nothing is known.
+async fn sign_in_accepted(inner: &Arc<Inner>) -> Option<bool> {
+    let cookies = std::fs::read_to_string(inner.cookies_file()).ok()?;
+    let sent: Vec<String> = cookies.lines().filter_map(instagram_cookie).map(|(name, value)| format!("{name}={value}")).collect();
+    let answer = inner
+        .client()
+        .ok()?
+        .get("https://www.instagram.com/accounts/edit/")
+        .header(reqwest::header::USER_AGENT, crate::profile::BROWSER_AGENT)
+        .header(reqwest::header::ACCEPT, "text/html")
+        .header(reqwest::header::COOKIE, sent.join("; "))
+        .send()
+        .await;
+    match answer {
+        Ok(answer) => Some(shows_settings(answer.url())),
+        // With a sign-in it has ended, Instagram sends the visitor to its
+        // front page, and from there to its front page again, without end.
+        Err(e) if e.is_redirect() => Some(false),
+        Err(_) => None,
+    }
+}
+
+/// Instagram ends sign-ins on its own (it does to one it has seen many
+/// requests from), and the app would go on believing in the cookies it
+/// kept: every download would send them and be turned away the same way,
+/// with the Sign in page still showing Instagram as signed in. So when
+/// gallery-dl, given that sign-in, is sent to Instagram's front or sign-in
+/// page instead of what it asked for, Instagram is asked once whether the
+/// sign-in still stands; if it does not, the app lets go of it. Returns
+/// whether it did.
+pub(crate) async fn sign_in_ended(inner: &Arc<Inner>, said: &str) -> bool {
+    let lower = said.to_ascii_lowercase();
+    let turned_away = lower.contains("redirect to home page") || lower.contains("redirect to login page");
+    if !turned_away || !has_session(inner) || sign_in_accepted(inner).await != Some(false) {
+        return false;
+    }
+    let file = inner.cookies_file();
+    let Some(kept) = std::fs::read_to_string(&file).ok().as_deref().and_then(without_session) else {
+        return false;
+    };
+    match std::fs::write(&file, kept) {
+        Ok(()) => {
+            tracing::info!("Instagram has ended the sign-in kept in the app; it was let go of");
+            true
+        }
+        Err(e) => {
+            tracing::warn!("could not let go of the ended Instagram sign-in: {e}");
+            false
+        }
+    }
+}
+
+/* ---------- a public profile, as any visitor sees it ---------- */
+
+/// What Instagram tells a visitor who is not signed in about a profile that
+/// lists nothing for them.
+pub(crate) const NOTHING_SHOWN: &str =
+    "Instagram shows none of this profile's posts to a visitor who is not signed in. That is how a private account looks, and an account with no posts. For a private account you follow, sign in to Instagram on the Sign in page, then retry";
+
+/// One post in the list a profile's own page carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PagePost {
+    pub code: String,
+    /// A reel or video; otherwise a photo, or several things in one post.
+    pub video: bool,
+    /// How many photos or videos the post holds.
+    pub pieces: u64,
+}
+
+/// The posts a public profile's page shows a visitor who is not signed in:
+/// its newest twelve. Past them Instagram asks for a sign-in, and so does
+/// the app.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PublicPage {
+    pub posts: Vec<PagePost>,
+    /// The profile has more posts than the page shows.
+    pub more: bool,
+}
+
+/// Where Instagram's page keeps the profile's list of posts.
+const POSTS_ON_PAGE: &str = "polaris_ordered_timeline_connection";
+
+fn find_key<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => map.get(key).or_else(|| map.values().find_map(|v| find_key(v, key))),
+        serde_json::Value::Array(list) => list.iter().find_map(|v| find_key(v, key)),
+        _ => None,
+    }
+}
+
+/// Reads the list of posts out of a profile's page: Instagram writes it
+/// into the page itself, as data for the grid a visitor sees.
+pub(crate) fn read_public_page(html: &str) -> PublicPage {
+    for (at, _) in html.match_indices(POSTS_ON_PAGE) {
+        // the block of data the words are in: `<script ...>{...}</script>`
+        let Some(open) = html[..at].rfind("<script") else { continue };
+        let Some(start) = html[open..at].find('>').map(|gt| open + gt + 1) else { continue };
+        let Some(end) = html[at..].find("</script>").map(|lt| at + lt) else { continue };
+        let Ok(data) = serde_json::from_str::<serde_json::Value>(&html[start..end]) else { continue };
+        let Some(list) = find_key(&data, POSTS_ON_PAGE) else { continue };
+        let mut posts: Vec<PagePost> = Vec::new();
+        for node in list.get("edges").and_then(|e| e.as_array()).into_iter().flatten().filter_map(|e| e.get("node")) {
+            let Some(code) = node.get("code").and_then(|c| c.as_str()) else { continue };
+            let valid = (5..=40).contains(&code.len()) && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            if !valid || posts.iter().any(|p| p.code == code) {
+                continue;
+            }
+            posts.push(PagePost {
+                code: code.to_string(),
+                // Instagram's own numbers: 1 a photo, 2 a video, 8 several in one post
+                video: node.get("media_type").and_then(|m| m.as_u64()) == Some(2),
+                pieces: node.get("carousel_media_count").and_then(|c| c.as_u64()).filter(|c| *c > 0).unwrap_or(1),
+            });
+        }
+        if !posts.is_empty() {
+            let more = list.get("page_info").and_then(|p| p.get("has_next_page")).and_then(|m| m.as_bool()).unwrap_or(false);
+            return PublicPage { posts, more };
+        }
+    }
+    PublicPage::default()
+}
+
+/// Asks for a profile's page the way a browser does with nobody signed in,
+/// and reads the posts it lists. No cookie is sent.
+pub(crate) async fn public_page(client: &reqwest::Client, username: &str) -> Result<PublicPage, String> {
+    let link = profile_link(username).ok_or(INVALID)?;
+    let answer = client
+        .get(&link)
+        .header(reqwest::header::USER_AGENT, crate::profile::BROWSER_AGENT)
+        .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.8")
+        .header("Sec-Fetch-Dest", "document")
+        .header("Sec-Fetch-Mode", "navigate")
+        .header("Sec-Fetch-Site", "none")
+        .send()
+        .await
+        .map_err(|e| format!("Instagram could not be reached: {e}"))?;
+    match answer.status().as_u16() {
+        404 => return Err("This profile was not found".into()),
+        429 => return Err("Instagram is limiting requests right now. Wait a while and retry".into()),
+        code if !answer.status().is_success() => return Err(format!("Instagram answered {code} for this profile")),
+        _ => {}
+    }
+    let html = answer.text().await.map_err(|e| format!("Instagram's page could not be read: {e}"))?;
+    let page = read_public_page(&html);
+    if page.posts.is_empty() {
+        return Err(NOTHING_SHOWN.into());
+    }
+    Ok(page)
+}
+
+/// What one post holds, as yt-dlp's reader for public posts lists it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PostFiles {
+    /// The videos, by their place in the post (1 for the first).
+    pub videos: Vec<usize>,
+    /// The photos: their place in the post and where each is kept.
+    pub photos: Vec<(usize, String)>,
+    /// Several things in one post.
+    pub several: bool,
+}
+
+pub(crate) fn read_post(info: &serde_json::Value) -> PostFiles {
+    let several = info.get("_type").and_then(|t| t.as_str()) == Some("playlist");
+    let entries: Vec<&serde_json::Value> = match info.get("entries").and_then(|e| e.as_array()) {
+        Some(entries) if several => entries.iter().collect(),
+        _ => vec![info],
+    };
+    let mut found = PostFiles { several, ..Default::default() };
+    for (i, entry) in entries.into_iter().enumerate() {
+        let plays = entry.get("formats").and_then(|f| f.as_array()).is_some_and(|f| !f.is_empty());
+        if plays {
+            found.videos.push(i + 1);
+        } else if let Some(picture) = entry.get("thumbnail").and_then(|t| t.as_str()).filter(|t| t.starts_with("https://")) {
+            found.photos.push((i + 1, picture.to_string()));
+        }
+    }
+    found
 }
 
 /// A post's thumbnail, title, length and size, before downloading. Only two
@@ -261,6 +492,9 @@ async fn info_signed_in(inner: &Arc<Inner>, url: &str) -> Result<MediaInfo, Stri
     let files = files_in(&listing);
     let Some((_, details)) = files.iter().find(|(u, d)| is_video(u, d)).or(files.first()).cloned() else {
         let said = listed_error(&listing).unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).to_string());
+        if sign_in_ended(inner, &said).await {
+            return Err(SIGN_IN_ENDED.into());
+        }
         return Err(classify(&said).into());
     };
     let text = |key: &str| details.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
@@ -388,6 +622,9 @@ async fn run_signed_in(inner: &Arc<Inner>, id: u64, live: &Arc<Live>, rec: &Reco
     if files.is_empty() {
         tracing::warn!(id, "gallery-dl could not get the Instagram post: {}", said.trim());
         cleanup();
+        if sign_in_ended(inner, &said).await {
+            return Err(Fail::Fatal(SIGN_IN_ENDED.into()));
+        }
         return Err(Fail::Fatal(if status.success() { UNAVAILABLE } else { classify(&said) }.into()));
     }
 
@@ -531,6 +768,10 @@ mod tests {
                 UNAVAILABLE,
             ),
             ("ERROR: [Instagram] X: Unable to extract data", UNAVAILABLE),
+            // gallery-dl with a sign-in Instagram has stopped accepting
+            ("[instagram][error] HTTP redirect to home page (https://www.instagram.com/)", SIGN_IN_REFUSED),
+            ("[instagram][error] HTTP redirect to login page (https://www.instagram.com/accounts/login/)", SIGN_IN_REFUSED),
+            ("[instagram][error] HTTP redirect to challenge page (https://www.instagram.com/challenge/)", SIGN_IN_REFUSED),
         ] {
             assert_eq!(classify(said), told, "{said}");
         }
@@ -541,6 +782,81 @@ mod tests {
             assert!(!message.to_ascii_lowercase().contains("sign in on") && !message.contains("Sign in page"), "{message}");
         }
         assert!(AGE_RESTRICTED.contains("Sign in page"));
+        // ... and the one said only to a user who had already signed in
+        assert!(SIGN_IN_REFUSED.contains("Sign in page"));
+    }
+
+    #[test]
+    fn a_public_profiles_page_lists_its_newest_posts() {
+        // the shape Instagram writes into a profile's page for a visitor who is not signed in
+        let page = r#"<html><head><script type="application/json" data-sjs>{"require":[["x",null,null,[{"__bbox":{"result":{"data":
+            {"xig_user_by_username":{"polaris_ordered_timeline_connection":{"edges":[
+              {"node":{"__typename":"XIGPolarisVideoMedia","code":"DgRvfmrpsPN","media_type":2,"product_type":"clips"},"cursor":"a"},
+              {"node":{"__typename":"XIGPolarisCarouselMedia","code":"DgRoIDWI7tl","media_type":8,"carousel_media_count":4},"cursor":"b"},
+              {"node":{"__typename":"XIGPolarisImageMedia","code":"DgMLuV8IZDS","media_type":1},"cursor":"c"},
+              {"node":{"code":"DgMLuV8IZDS","media_type":1}},
+              {"node":{"code":"bad code","media_type":1}}
+            ],"page_info":{"end_cursor":"c","has_next_page":true}}}}}}}]]]}</script>
+            <script type="application/json">{"other":"polaris_ordered_timeline_connection"}</script></head></html>"#;
+        let found = read_public_page(page);
+        let post = |code: &str, video, pieces| PagePost { code: code.to_string(), video, pieces };
+        assert_eq!(found.posts, vec![post("DgRvfmrpsPN", true, 1), post("DgRoIDWI7tl", false, 4), post("DgMLuV8IZDS", false, 1)]);
+        assert!(found.more);
+        // a private account's page, a sign-in page, or nothing like a page at all
+        for nothing in ["", "<html><body>Log in</body></html>", "<script>polaris_ordered_timeline_connection</script>"] {
+            assert_eq!(read_public_page(nothing), PublicPage::default(), "{nothing}");
+        }
+    }
+
+    #[test]
+    fn a_posts_photos_and_videos_are_told_apart() {
+        // one reel
+        let reel = serde_json::json!({ "id": "A", "formats": [{ "url": "https://cdn.test/v.mp4" }], "thumbnail": "https://cdn.test/v.jpg" });
+        assert_eq!(read_post(&reel), PostFiles { videos: vec![1], photos: vec![], several: false });
+        // one photo: nothing to play, only its picture
+        let photo = serde_json::json!({ "id": "B", "formats": [], "thumbnail": "https://cdn.test/b.jpg" });
+        assert_eq!(read_post(&photo), PostFiles { videos: vec![], photos: vec![(1, "https://cdn.test/b.jpg".into())], several: false });
+        // several in one post, a video among the photos
+        let mixed = serde_json::json!({ "_type": "playlist", "entries": [
+            { "id": "1", "thumbnail": "https://cdn.test/1.jpg" },
+            { "id": "2", "formats": [{ "url": "https://cdn.test/2.mp4" }], "thumbnail": "https://cdn.test/2.jpg" },
+            { "id": "3", "thumbnail": "javascript:alert(1)" },
+            { "id": "4", "formats": [], "thumbnail": "https://cdn.test/4.jpg" },
+        ] });
+        let found = read_post(&mixed);
+        assert_eq!(found.videos, vec![2]);
+        assert_eq!(found.photos, vec![(1, "https://cdn.test/1.jpg".to_string()), (4, "https://cdn.test/4.jpg".to_string())]);
+        assert!(found.several);
+    }
+
+    #[test]
+    fn an_ended_sign_in_is_let_go_of_and_nothing_else() {
+        let line = |host: &str, name: &str| format!("{host}\tTRUE\t/\tTRUE\t1900000000\t{name}\tv-{name}");
+        let file = [
+            "# Netscape HTTP Cookie File".to_string(),
+            line("#HttpOnly_.instagram.com", "mid"),
+            line(".instagram.com", "sessionid"),
+            line("#HttpOnly_.instagram.com", "sessionid"),
+            line(".instagram.com", "ds_user_id"),
+            line(".instagram.com", "rur"),
+            line(".instagram.com", "csrftoken"),
+            // another site's sign-in, under the same name, is not Instagram's
+            line(".tiktok.com", "sessionid"),
+            line(".notinstagram.com", "sessionid"),
+        ]
+        .join("\n");
+        let kept = without_session(&file).expect("there was a sign-in");
+        let names: Vec<(&str, &str)> = kept.lines().filter_map(instagram_cookie).collect();
+        assert_eq!(names, vec![("mid", "v-mid"), ("csrftoken", "v-csrftoken")]);
+        assert!(kept.contains(".tiktok.com\t") && kept.contains(".notinstagram.com\t") && kept.starts_with("# Netscape"));
+        // nothing to let go of: the file is left alone
+        assert_eq!(without_session(&kept), None);
+
+        // Instagram shows a visitor it knows their settings, and sends anyone else away
+        let at = |link: &str| shows_settings(&reqwest::Url::parse(link).unwrap());
+        assert!(at("https://www.instagram.com/accounts/edit/"));
+        assert!(!at("https://www.instagram.com/"));
+        assert!(!at("https://www.instagram.com/accounts/login/?next=%2Faccounts%2Fedit%2F"));
     }
 
     #[test]

@@ -827,7 +827,7 @@ async fn profile_link_downloads_into_images_and_videos() {
     let id = engine.add(new("https://bsky.app/profile/bsky.app")).unwrap();
     let first = engine.list().into_iter().find(|t| t.id == id).unwrap();
     assert!(first.profile);
-    assert_eq!(first.filename, "bsky.app (Bluesky)");
+    assert_eq!(first.filename, "bsky.app");
 
     let mut done = None;
     for _ in 0..1200 {
@@ -846,7 +846,7 @@ async fn profile_link_downloads_into_images_and_videos() {
     println!("Images: {images:?}");
     println!("Videos: {videos:?}");
     println!("folder: {:?}", files_in(&done.path));
-    assert!(done.path.is_dir() && done.path.ends_with("bsky.app (Bluesky)"));
+    assert!(done.path.is_dir() && done.path.ends_with("bsky.app"));
     assert_eq!(done.items as usize, images.len() + videos.len());
     assert!(!images.is_empty() || !videos.is_empty());
     assert!(images.iter().all(|n| !n.ends_with(".mp4")) && videos.iter().all(|n| !n.ends_with(".jpg")));

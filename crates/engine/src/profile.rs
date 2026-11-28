@@ -258,7 +258,13 @@ const COUNT_FOR: Duration = Duration::from_secs(30);
 
 /// Counts the photos and videos a profile lists. Nothing is downloaded.
 async fn profile_counts(inner: &Arc<Inner>, url: &str, profile: &ProfileRef) -> Result<PlaylistInfo, String> {
-    let tool = find_tool("gallery-dl").ok_or("gallery-dl is not installed; install it under Settings, Advanced, Engines")?;
+    // A public Instagram profile with nobody signed in: what its own page
+    // shows any visitor.
+    let instagram = profile.site == "Instagram";
+    if instagram && !crate::instagram::has_session(inner) {
+        return instagram_public_counts(inner, profile).await;
+    }
+    let tool =find_tool("gallery-dl").ok_or("gallery-dl is not installed; install it under Settings, Advanced, Engines")?;
     let mut cmd = command(&tool);
     cmd.env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
@@ -318,6 +324,12 @@ async fn profile_counts(inner: &Arc<Inner>, url: &str, profile: &ProfileRef) -> 
     }
     if videos + photos == 0 {
         let said = last_error.lock().unwrap().take();
+        // A sign-in Instagram has ended is let go of (instagram.rs); the
+        // profile is then read as any visitor sees it.
+        if let Some(error) = said.as_deref().filter(|e| instagram && instagram_wants_sign_in(e)) {
+            crate::instagram::sign_in_ended(inner, error).await;
+            return instagram_public_counts(inner, profile).await;
+        }
         return Err(match said {
             Some(error) => friendly(&error),
             None if cut_off => "the site took too long to answer".into(),
@@ -382,7 +394,7 @@ const FACE_FOR: Duration = Duration::from_secs(10);
 /// An ordinary browser, for the sites that turn a link-preview reader away
 /// (SoundCloud answers it with "too many requests") but show a visitor the
 /// same preview.
-const BROWSER_AGENT: &str =
+pub(crate) const BROWSER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
 /// Reads the profile's page for its link preview: first as a link-preview
@@ -1467,6 +1479,277 @@ pub(crate) fn discard_unfinished(dir: &Path, folder: &str) {
     let _ = std::fs::remove_dir(&folder);
 }
 
+/* ---------- a public Instagram profile, with nobody signed in ---------- */
+
+/// Instagram turned the downloader away for want of a sign-in it accepts:
+/// the one kept in the app has ended, or was never good. A public profile
+/// can still be fetched as any visitor sees it.
+fn instagram_wants_sign_in(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    ["redirect to home page", "redirect to login page", "401", "unauthorized", "login required", "login_required"]
+        .iter()
+        .any(|sign| lower.contains(sign))
+}
+
+/// What a public Instagram profile's page lists for a visitor who is not
+/// signed in, as the count the Home card shows.
+async fn instagram_public_counts(inner: &Arc<Inner>, profile: &ProfileRef) -> Result<PlaylistInfo, String> {
+    let client = inner.client()?;
+    let page = crate::instagram::public_page(&client, &profile.name).await?;
+    let videos = page.posts.iter().filter(|p| p.video).count() as u64;
+    let photos: u64 = page.posts.iter().filter(|p| !p.video).map(|p| p.pieces).sum();
+    Ok(PlaylistInfo {
+        title: profile.name.clone(),
+        count: videos,
+        photos,
+        more: page.more,
+        duration: None,
+        thumbnail: None,
+        channel: None,
+        samples: Vec::new(),
+    })
+}
+
+/// The last thing yt-dlp called an error, in the words it used.
+fn last_error_line(stderr: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stderr).lines().rev().find(|l| l.starts_with("ERROR:")).map(|l| l.trim_start_matches("ERROR:").trim().to_string())
+}
+
+/// The ending a picture's address has ("jpg" for ".../photo.jpg?x=1").
+fn picture_ext(address: &str) -> &'static str {
+    let path = address.split(['?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    ["jpg", "jpeg", "png", "webp", "heic"].into_iter().find(|ext| path.ends_with(&format!(".{ext}"))).unwrap_or("jpg")
+}
+
+/// One post of a public Instagram profile: its photos into Images, its
+/// videos into Videos. yt-dlp reads the post the way it reads any public
+/// post (instagram.rs), with no sign-in.
+async fn fetch_public_post(
+    inner: &Arc<Inner>,
+    live: &Arc<Live>,
+    rec: &Record,
+    ytdlp: &Path,
+    folder: &Path,
+    username: &str,
+    post: &crate::instagram::PagePost,
+) -> Result<(), Fail> {
+    let incoming = folder.join(INCOMING);
+    let link = format!("https://www.instagram.com/{}/{}/", if post.video { "reel" } else { "p" }, post.code);
+    // what the post holds
+    let mut ask = command(ytdlp);
+    ask.args(["--encoding", "utf-8", "--no-colors", "--no-warnings", "--ignore-no-formats-error", "-J"]);
+    inner.add_proxy(&mut ask, &rec.proxy);
+    ask.arg("--").arg(&link).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = ask.spawn().map_err(|e| Fail::Fatal(format!("could not start yt-dlp: {e}")))?;
+    // Dropping the unfinished call stops yt-dlp (kill_on_drop).
+    let out = tokio::select! {
+        _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
+        o = child.wait_with_output() => o.map_err(|e| Fail::Fatal(format!("yt-dlp failed: {e}")))?,
+    };
+    let info = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok().filter(|i| i.is_object());
+    let Some(info) = info else {
+        return Err(Fail::Fatal(last_error_line(&out.stderr).unwrap_or_else(|| "the post could not be read".into())));
+    };
+    let found = crate::instagram::read_post(&info);
+    let audio_only = rec.media_options.audio_only;
+
+    // The photos, as Instagram serves them.
+    for (place, address) in found.photos.iter().filter(|_| !audio_only) {
+        let name = sanitize(&format!("{username} {} {place}.{}", post.code, picture_ext(address)));
+        let dest = folder.join(IMAGES).join(&name);
+        if dest.exists() {
+            continue;
+        }
+        let ask = live
+            .client()
+            .get(address)
+            .header(reqwest::header::USER_AGENT, BROWSER_AGENT)
+            .header(reqwest::header::REFERER, "https://www.instagram.com/");
+        let bytes = tokio::select! {
+            _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
+            b = async { ask.send().await?.error_for_status()?.bytes().await } => b,
+        };
+        let bytes = bytes.map_err(|e| Fail::Retry(format!("a photo could not be fetched: {e}")))?;
+        let part = incoming.join(format!("{name}.part"));
+        std::fs::write(&part, &bytes)
+            .and_then(|_| std::fs::rename(&part, &dest))
+            .map_err(|e| Fail::Fatal(format!("could not save a photo: {e}")))?;
+        *live.current.lock().unwrap() =
+            Some(CurrentFile { id: String::new(), name, downloaded: bytes.len() as u64, total: Some(bytes.len() as u64), index: None, count: None });
+    }
+    if found.videos.is_empty() {
+        return Ok(());
+    }
+
+    // The videos: yt-dlp fetches them from what it has just read, so the
+    // post is not asked for a second time.
+    let read = incoming.join(".rush-post.json");
+    std::fs::write(&read, &out.stdout).map_err(|e| Fail::Fatal(format!("could not save the post's details: {e}")))?;
+    let mut temp = std::ffi::OsString::from("temp:");
+    temp.push(&incoming);
+    let mut cmd = command(ytdlp);
+    cmd.args([
+        "--encoding",
+        "utf-8",
+        "--no-colors",
+        "--windows-filenames",
+        "--ignore-errors",
+        "--ignore-no-formats-error",
+        "--quiet",
+        "--no-warnings",
+        "--continue",
+        "--retries",
+        "10",
+        "--fragment-retries",
+        "10",
+        "-o",
+        "%(title).120B [%(id)s].%(ext)s",
+        "-N",
+    ])
+    .arg(rec.connections.clamp(1, 16).to_string())
+    .arg("-P")
+    .arg(folder.join(VIDEOS))
+    .arg("-P")
+    .arg(temp);
+    if audio_only {
+        cmd.args(["-f", "ba/b", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0"]);
+    } else {
+        let format = match rec.media_options.max_height {
+            Some(h) => format!("bv*[height<={h}]+ba/b[height<={h}]/wv*+ba/w"),
+            None => "bv*+ba/b".to_string(),
+        };
+        // MP4, as a single reel is saved (media.rs): Instagram's picture
+        // and sound both sit in one as they are.
+        cmd.args(["-f", &format, "--merge-output-format", "mp4"]);
+    }
+    if let Some(ffmpeg) = find_tool("ffmpeg") {
+        cmd.arg("--ffmpeg-location").arg(ffmpeg);
+    }
+    let rate = live.limiter.effective_rate();
+    if rate > 0 {
+        cmd.arg("--limit-rate").arg(rate.to_string());
+    }
+    if found.several {
+        cmd.arg("--playlist-items").arg(found.videos.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(","));
+    }
+    inner.add_proxy(&mut cmd, &rec.proxy);
+    cmd.arg("--load-info-json").arg(&read).stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| Fail::Fatal(format!("could not start yt-dlp: {e}")))?;
+    let said = child.stderr.take().map(|stderr| {
+        tokio::spawn(async move {
+            let (mut lines, mut last) = (OutputLines::new(stderr), None);
+            while let Some(line) = lines.next_line().await {
+                if line.starts_with("ERROR:") {
+                    last = Some(line.trim_start_matches("ERROR:").trim().to_string());
+                }
+            }
+            last
+        })
+    });
+    let mut beat = tokio::time::interval(Duration::from_millis(500));
+    beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let status = loop {
+        tokio::select! {
+            _ = live.cancel.cancelled() => {
+                kill_tree(&mut child).await;
+                return Err(Fail::Cancelled);
+            }
+            _ = beat.tick() => {
+                let (bytes, count) = tally(folder);
+                live.downloaded.store(bytes, Relaxed);
+                live.items.store(count, Relaxed);
+            }
+            s = child.wait() => break s.map_err(|e| Fail::Fatal(format!("yt-dlp failed: {e}")))?,
+        }
+    };
+    let _ = std::fs::remove_file(&read);
+    let error = match said {
+        Some(said) => said.await.ok().flatten(),
+        None => None,
+    };
+    match (status.success(), error) {
+        (true, _) => Ok(()),
+        (false, Some(error)) => Err(Fail::Retry(error)),
+        (false, None) => Err(Fail::Retry(format!("yt-dlp stopped unexpectedly ({status})"))),
+    }
+}
+
+/// A public Instagram profile with nobody signed in: the posts its own page
+/// shows any visitor (its newest twelve), each fetched the way a single
+/// public post is. Everything the profile ever posted needs a sign-in,
+/// because Instagram shows the rest to signed-in visitors only.
+async fn run_instagram_public(
+    inner: &Arc<Inner>,
+    id: u64,
+    live: &Arc<Live>,
+    rec: &Record,
+    profile: &ProfileRef,
+    name: &str,
+) -> Result<(), Fail> {
+    let ytdlp = find_tool("yt-dlp").ok_or_else(|| {
+        Fail::Fatal("Downloading a public Instagram profile needs yt-dlp, which is not installed; install it under Settings, Advanced, Engines".into())
+    })?;
+    let folder = rec.dir.join(name);
+    for dir in [folder.join(IMAGES), folder.join(VIDEOS), folder.join(INCOMING)] {
+        std::fs::create_dir_all(&dir).map_err(|e| Fail::Fatal(format!("could not create folder: {e}")))?;
+    }
+    let give_up = |why: String| {
+        discard_unfinished(&rec.dir, name);
+        inner.update(id, |r| r.part_started = false);
+        Fail::Fatal(why)
+    };
+    let _conn = ConnGuard::new(&live.conns);
+    let client = live.client();
+    let page = tokio::select! {
+        _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
+        p = crate::instagram::public_page(&client, &profile.name) => p,
+    };
+    let page = page.map_err(&give_up)?;
+    // RUSHDOWNLOAD_PROFILE_LIMIT stops after that many posts, for tests.
+    let limit = std::env::var("RUSHDOWNLOAD_PROFILE_LIMIT").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(usize::MAX);
+    debug(|| format!("Instagram shows a visitor {} posts of {}; more behind a sign-in: {}", page.posts.len(), profile.name, page.more));
+
+    let mut last_error = None;
+    let mut started = false;
+    for (n, post) in page.posts.iter().take(limit).enumerate() {
+        // One post at a time, with a pause between, as a visitor would open them.
+        if n > 0 {
+            tokio::select! {
+                _ = live.cancel.cancelled() => return Err(Fail::Cancelled),
+                _ = tokio::time::sleep(Duration::from_millis(800)) => {}
+            }
+        }
+        match fetch_public_post(inner, live, rec, &ytdlp, &folder, &profile.name, post).await {
+            Ok(()) => {}
+            Err(Fail::Cancelled) => return Err(Fail::Cancelled),
+            Err(Fail::Fatal(why)) | Err(Fail::Retry(why)) => {
+                debug(|| format!("post {} was not fetched: {why}", post.code));
+                last_error = Some(why);
+            }
+        }
+        let (bytes, count) = tally(&folder);
+        live.downloaded.store(bytes, Relaxed);
+        live.items.store(count, Relaxed);
+        if !started && bytes > 0 {
+            started = true;
+            inner.update(id, |r| r.status = Status::Downloading);
+        }
+    }
+    *live.current.lock().unwrap() = None;
+    remove_working_files(&folder);
+    let (bytes, count) = tally(&folder);
+    live.downloaded.store(bytes, Relaxed);
+    live.items.store(count, Relaxed);
+    if count == 0 {
+        let why = last_error.map(|e| crate::instagram::classify(&e).to_string()).unwrap_or_else(|| crate::instagram::NOTHING_SHOWN.into());
+        return Err(give_up(why));
+    }
+    // Whatever was fetched is kept, even if a post or two could not be.
+    live.total_hint.store(bytes, Relaxed);
+    inner.update(id, |r| r.total = Some(bytes));
+    Ok(())
+}
+
 fn friendly(error: &str) -> String {
     let text = error.rsplit("] ").next().unwrap_or(error).trim_start_matches("ERROR:").trim();
     let lower = error.to_ascii_lowercase();
@@ -1480,6 +1763,23 @@ fn friendly(error: &str) -> String {
         return "The connection to this site was cut off before it was set up. That is how it looks \
                 when a network blocks a site. Secure DNS cannot get past that; a different network \
                 or a VPN can"
+            .into();
+    }
+    // gallery-dl asked for the profile and the site sent it somewhere else
+    // instead. To its front page: the sign-in kept in the app is there, but
+    // the site has stopped accepting it (Instagram does this to a sign-in it
+    // has seen too many requests from, and says "wait a few minutes").
+    if lower.contains("redirect to home page") || lower.contains("please wait a few minutes") {
+        return "The site sent the downloader back to its front page instead of showing this profile. \
+                It does that when it has stopped accepting the sign-in kept in the app, often after many \
+                requests in a short time. Wait a few minutes and retry; if it keeps happening, sign in \
+                to the site again on the Sign in page"
+            .into();
+    }
+    // To a check that the visitor is a person, which only they can finish.
+    if lower.contains("redirect to challenge page") || lower.contains("challenge_required") || lower.contains("checkpoint_required") {
+        return "The site wants to check that it is really you before it shows this profile. Open the \
+                site on the Sign in page, finish the check it shows there, then retry"
             .into();
     }
     if ["login", "log in", "sign in", "unauthorized", "401", "authrequired", "cookies", "private", "403"]
@@ -1570,6 +1870,14 @@ pub(crate) async fn run(
         r.filename = name.clone();
         r.segments.clear();
     });
+
+    // Instagram lists a profile's every post to signed-in visitors only.
+    // With nobody signed in, a public profile is fetched as any visitor
+    // sees it: the posts its own page shows.
+    let instagram = !by_ytdlp && profile.site == "Instagram";
+    if instagram && !crate::instagram::has_session(inner) {
+        return run_instagram_public(inner, id, live, rec, &profile, &name).await;
+    }
 
     // RUSHDOWNLOAD_PROFILE_LIMIT stops after that many files, for tests.
     let limit = std::env::var("RUSHDOWNLOAD_PROFILE_LIMIT").ok().filter(|v| v.parse::<u32>().is_ok());
@@ -1803,18 +2111,19 @@ pub(crate) async fn run(
     if count == 0 {
         discard_unfinished(&rec.dir, &name);
         inner.update(id, |r| r.part_started = false);
-        let msg = last_error
-            .lock()
-            .unwrap()
-            .take()
-            .map(|e| friendly(&e))
-            .unwrap_or_else(|| {
-                if status.success() {
-                    "Nothing to download was found on this profile".into()
-                } else {
-                    format!("the profile downloader stopped unexpectedly ({status})")
-                }
-            });
+        let said = last_error.lock().unwrap().take();
+        // A sign-in Instagram has ended is let go of (instagram.rs), and the
+        // profile is fetched as any visitor sees it instead.
+        if let Some(error) = said.as_deref().filter(|e| instagram && instagram_wants_sign_in(e)) {
+            crate::instagram::sign_in_ended(inner, error).await;
+            inner.update(id, |r| r.part_started = true);
+            return run_instagram_public(inner, id, live, rec, &profile, &name).await;
+        }
+        let msg = match said {
+            Some(error) => friendly(&error),
+            None if status.success() => "Nothing to download was found on this profile".into(),
+            None => format!("the profile downloader stopped unexpectedly ({status})"),
+        };
         return Err(Fail::Fatal(msg));
     }
     // Whatever was fetched is kept, even if the site cut the run short.
@@ -2065,8 +2374,24 @@ ERROR: [vk:uservideos] @someone: Unable to extract cursor data"));
         let unsigned = friendly("[instagram][error] NotFoundError: Requested user could not be found");
         assert!(unsigned.contains("sign in to the site on the Sign in page"), "{unsigned}");
         assert_eq!(friendly("ERROR: [site] NotFoundError: profile does not exist"), "This profile was not found");
+        // Instagram wanting a sign-in it accepts: a public profile is then read as a visitor
+        assert!(instagram_wants_sign_in("[instagram][error] HTTP redirect to home page (https://www.instagram.com/)"));
+        assert!(instagram_wants_sign_in("[instagram][error] HttpError: '401 Unauthorized' for 'https://www.instagram.com/graphql/query'"));
+        assert!(!instagram_wants_sign_in("[instagram][error] HttpError: '429 Too Many Requests' for 'https://www.instagram.com/x'"));
+        assert_eq!(picture_ext("https://cdn.test/v/t51/photo_n.webp?stp=dst-jpg&x=1"), "webp");
+        assert_eq!(picture_ext("https://cdn.test/v/t51/photo"), "jpg");
+        // a sign-in the site has stopped accepting: gallery-dl is sent to the front page
+        let refused = friendly("[instagram][error] HTTP redirect to home page (https://www.instagram.com/)");
+        assert!(refused.contains("stopped accepting the sign-in kept in the app"), "{refused}");
+        assert!(refused.contains("Wait a few minutes") && refused.contains("Sign in page"), "{refused}");
+        // a check only the person can finish
+        let check = friendly("[instagram][error] HTTP redirect to challenge page (https://www.instagram.com/challenge/)");
+        assert!(check.contains("really you") && check.contains("Sign in page"), "{check}");
+        // not signed in at all: still the plain request to sign in
+        let wall = friendly("[instagram][error] HTTP redirect to login page (https://www.instagram.com/accounts/login/)");
+        assert!(wall.contains("signed-in visitors"), "{wall}");
         // a list the site showed something else in place of
-        let withheld = friendly("ERROR: [vk:uservideos] @someone: Unable to extract cursor data; please report this issue");
+        let withheld =friendly("ERROR: [vk:uservideos] @someone: Unable to extract cursor data; please report this issue");
         assert!(withheld.contains("sign in to the site on the Sign in page"), "{withheld}");
     }
 
